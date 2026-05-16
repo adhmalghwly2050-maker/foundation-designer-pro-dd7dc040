@@ -758,9 +758,16 @@ export function generateHTMLConstructionSheets(
   const modelW = maxX - minX;
   const modelH = maxY - minY;
 
-  // SVG coordinate system - use 690×645 viewbox matching drawing zone
-  const svgW = 690;
-  const svgH = 645;
+  // Determine paper size (auto picks A4/A3/A1 based on plan extent) — always landscape
+  const _paper = getPaperPx(paperSize, modelW, modelH);
+  _SHEET_W = _paper.sheetW;
+  _SHEET_H = _paper.sheetH;
+  _CSS_PAPER = _paper.cssSize;
+
+  // SVG viewbox matches full-width drawing zone of the chosen paper
+  const titleBlockH = 135 + 36 + 10;
+  const svgW = _SHEET_W - 90;
+  const svgH = _SHEET_H - 45 - titleBlockH;
   const mmPerM = Math.min((svgW - 80) / modelW, (svgH - 80) / modelH) * 0.85;
   const planOffsetX = 50 + ((svgW - 80) - modelW * mmPerM) / 2;
   const planOffsetY = 40 + ((svgH - 80) - modelH * mmPerM) / 2;
