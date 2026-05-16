@@ -437,41 +437,38 @@ function generateSheetHTML(
   titleBlockConfig: Partial<TitleBlockConfig>,
   extraSvgBottom?: string,
 ): string {
-  // A3 landscape: 420mm × 297mm → use pixel ratio for screen
-  // We use 1260 × 891 px (3x mm for good resolution)
-  const sheetW = 1260;
-  const sheetH = 891;
-  const drawZoneW = 690; // ~55% of sheet for drawing
-  const drawZoneH = 645; // drawing zone height
-  const tableZoneX = 756; // right side for tables
-  const tableZoneW = 460;
+  // Auto-fit drawing to full page width; tables go on a follow-up sheet.
+  const sheetW = _SHEET_W;
+  const sheetH = _SHEET_H;
+  const titleBlockH = 135 + 36 + 10;
+  const drawZoneW = sheetW - 90;       // full content width inside borders
+  const contentH = sheetH - 45 - titleBlockH;
 
-  // Title block occupies bottom-right: height=135px, bottom=36px → top of title block = sheetH-36-135 = 720px
-  // Safe content zone ends at 715px (5px clearance above title block)
-  const safeBottom = sheetH - 36 - 135 - 10; // = 715px
-  const contentH = safeBottom - 45; // from top=45px → 670px
-
-  return `
+  const drawingPage = `
   <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     ${htmlSheetBorder()}
-    
-    <!-- Drawing Zone — hard height enforced, no overflow -->
     <div style="position:absolute; top:45px; left:45px; width:${drawZoneW}px; height:${contentH}px; overflow:hidden; border:0.5px solid #ccc;">
       <svg viewBox="0 0 ${svgDrawW} ${svgDrawH}" width="${drawZoneW}" height="${contentH}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
         ${svgDrawingZone}
       </svg>
     </div>
-    
-    <!-- Table Zone — hard height enforced, never reaches title block -->
-    <div style="position:absolute; top:45px; left:${tableZoneX}px; width:${tableZoneW}px; height:${contentH}px; overflow:hidden; direction:rtl;">
-      ${tableContent}
-    </div>
-    
     ${extraSvgBottom || ''}
-    
-    <!-- Title Block -->
     ${htmlTitleBlock(titleBlockConfig)}
   </div>`;
+
+  const hasTable = tableContent && tableContent.trim().length > 0;
+  if (!hasTable) return drawingPage;
+
+  const tablePage = `
+  <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
+    ${htmlSheetBorder()}
+    <div style="position:absolute; top:45px; left:45px; right:45px; height:${contentH}px; overflow:hidden; direction:rtl; padding:6px;">
+      ${tableContent}
+    </div>
+    ${htmlTitleBlock({ ...titleBlockConfig, drawingSubTitle: (titleBlockConfig.drawingSubTitle || '') + ' — Schedule' })}
+  </div>`;
+
+  return drawingPage + tablePage;
 }
 
 // ─── Beam Elevation Sheet (HTML) ─── 
