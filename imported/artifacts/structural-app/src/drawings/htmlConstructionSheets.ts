@@ -547,7 +547,7 @@ function htmlBeamElevationSheet(
   beams: Beam[], beamDesigns: BeamDesignData[],
   tbBase: Partial<TitleBlockConfig>, floorCode: string, startSheetNo: number,
 ): string {
-  const sheetW = 1260, sheetH = 891;
+  const sheetW = _SHEET_W, sheetH = _SHEET_H;
   const titleH = 135 + 36 + 10;
   const contentH = sheetH - 45 - titleH;
   const cols = 2, rows = 3;
