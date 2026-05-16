@@ -163,7 +163,7 @@ export default function ExportPanel({
               openHTMLSheetsForPrint(
                 filtSlabs, filtBeams, filtCols,
                 filtBeamDesigns, filtColDesigns, filtSlabDesigns,
-                projectName, exportOptions
+                projectName, exportOptions, sheetSize
               );
             } else {
               generateConstructionSheets(
