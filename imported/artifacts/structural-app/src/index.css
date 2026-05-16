@@ -1,0 +1,412 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design system. All colors are HSL triples consumed by tailwind.config.ts via hsl(var(--xxx)). */
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+
+    --canvas-grid: 220 13% 91%;
+    --canvas-crosshair: 220 13% 70%;
+    --slab: 210 60% 55%;
+    --slab-fill: 210 60% 55%;
+    --column: 222 47% 30%;
+    --beam: 200 50% 45%;
+    --stress-safe: 142 71% 45%;
+    --stress-warn: 45 93% 47%;
+    --stress-danger: 0 84% 60%;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+
+    --canvas-grid: 220 10% 30%;
+    --canvas-crosshair: 220 10% 50%;
+    --slab: 210 50% 60%;
+    --slab-fill: 210 50% 60%;
+    --column: 210 40% 70%;
+    --beam: 200 40% 55%;
+    --stress-safe: 142 60% 50%;
+    --stress-warn: 45 80% 55%;
+    --stress-danger: 0 70% 55%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; }
+  html { direction: rtl; }
+}
+
+/* Helper class used by Index.tsx */
+.property-label {
+  @apply text-xs font-medium text-muted-foreground;
+}
+
+/* ===================== PROFESSIONAL MOBILE APP SHELL ===================== */
+
+/* Override root colors for a richer engineering feel */
+:root {
+  --primary: 221 83% 26%;
+  --primary-foreground: 210 40% 98%;
+  --accent: 199 89% 48%;
+  --accent-foreground: 0 0% 100%;
+  --nav-height: 68px;
+  --header-height: 60px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ─── APP HEADER ─────────────────────────────────────────────────────────── */
+.app-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  padding-top: env(safe-area-inset-top, 0px);
+  background: linear-gradient(135deg, hsl(221 83% 20%) 0%, hsl(221 83% 28%) 100%);
+  box-shadow: 0 2px 20px rgba(0,0,0,0.25), 0 1px 0 rgba(255,255,255,0.08) inset;
+  backdrop-filter: blur(10px);
+}
+
+.app-header-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.app-header-center {
+  flex: 1;
+  text-align: center;
+}
+
+.app-header-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: white;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.app-header-subtitle {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  margin: 1px 0 0;
+  letter-spacing: 0.2px;
+}
+
+.app-header-right {
+  width: 38px;
+  flex-shrink: 0;
+}
+
+/* ─── BOTTOM NAV ─────────────────────────────────────────────────────────── */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  height: calc(var(--nav-height) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  display: flex;
+  align-items: flex-start;
+  background: hsl(var(--card));
+  border-top: 1px solid hsl(var(--border));
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.10), 0 -1px 0 rgba(255,255,255,0.04) inset;
+}
+
+.bottom-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  gap: 4px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.bottom-nav-item:active {
+  transform: scale(0.92);
+}
+
+.bottom-nav-icon-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 28px;
+}
+
+.bottom-nav-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: hsl(var(--primary) / 0.13);
+  animation: pill-in 0.2s ease;
+}
+
+@keyframes pill-in {
+  from { transform: scaleX(0.6); opacity: 0; }
+  to   { transform: scaleX(1);   opacity: 1; }
+}
+
+.bottom-nav-icon {
+  position: relative;
+  z-index: 1;
+  color: hsl(var(--muted-foreground));
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.bottom-nav-item.active .bottom-nav-icon {
+  color: hsl(var(--primary));
+  transform: translateY(-1px);
+}
+
+.bottom-nav-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  transition: color 0.2s ease;
+  letter-spacing: 0.1px;
+}
+
+.bottom-nav-item.active .bottom-nav-label {
+  color: hsl(var(--primary));
+  font-weight: 700;
+}
+
+/* ─── MAIN CONTENT AREA ──────────────────────────────────────────────────── */
+.app-main {
+  padding-top: var(--header-height);
+  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 8px);
+  min-height: 100dvh;
+}
+
+/* ─── CARD ELEVATION SYSTEM ──────────────────────────────────────────────── */
+.card-elevated {
+  background: hsl(var(--card));
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
+  border: 1px solid hsl(var(--border));
+  overflow: hidden;
+}
+
+.card-elevated-hover {
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+.card-elevated-hover:active {
+  transform: scale(0.985);
+  box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+}
+
+/* ─── SECTION HEADERS ────────────────────────────────────────────────────── */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 10px;
+}
+
+.section-header-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  flex-shrink: 0;
+}
+
+.section-header-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+
+.section-header-sub {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  margin-top: 1px;
+}
+
+/* ─── STAT CHIPS ─────────────────────────────────────────────────────────── */
+.stat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.stat-chip-primary {
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+
+.stat-chip-success {
+  background: hsl(142 71% 45% / 0.12);
+  color: hsl(142 71% 35%);
+}
+
+.stat-chip-warning {
+  background: hsl(45 93% 47% / 0.12);
+  color: hsl(35 90% 38%);
+}
+
+.stat-chip-danger {
+  background: hsl(0 84% 60% / 0.12);
+  color: hsl(0 72% 45%);
+}
+
+/* ─── EXPORT ACTION BUTTON ───────────────────────────────────────────────── */
+.export-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.export-btn:active { transform: scale(0.97); }
+.export-btn-primary {
+  background: hsl(var(--primary));
+  color: white;
+  box-shadow: 0 4px 16px hsl(var(--primary) / 0.35);
+}
+.export-btn-outline {
+  background: transparent;
+  color: hsl(var(--primary));
+  border: 1.5px solid hsl(var(--primary) / 0.4);
+}
+
+/* ─── LOADING / SPINNER ──────────────────────────────────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* ─── MODEL CANVAS ELEMENTS (fixes invisible beams/columns/nodes/slabs) ──── */
+.element-slab {
+  fill: hsl(var(--slab-fill) / 0.18);
+  stroke: hsl(var(--slab));
+  stroke-linejoin: round;
+  cursor: pointer;
+}
+.element-beam {
+  stroke: hsl(var(--beam));
+  stroke-linecap: round;
+  cursor: pointer;
+  fill: none;
+}
+.element-column {
+  fill: hsl(var(--column));
+  stroke: hsl(var(--column));
+  stroke-width: 0.02;
+  cursor: pointer;
+}
+.element-node {
+  fill: hsl(var(--background));
+  stroke: hsl(var(--foreground));
+  stroke-width: 0.03;
+  cursor: pointer;
+}
