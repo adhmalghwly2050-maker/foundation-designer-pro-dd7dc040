@@ -1002,7 +1002,7 @@ export function generateHTMLConstructionSheets(
   <meta charset="utf-8">
   <title>${projectName} - ${floorCode} - لوحات إنشائية</title>
   <style>
-    @page { size: A3 landscape; margin: 0; }
+    @page { size: ${_CSS_PAPER} landscape; margin: 0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #e0e0e0; font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif; direction: ltr; }
     .sheet-page { margin: 10px auto; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
