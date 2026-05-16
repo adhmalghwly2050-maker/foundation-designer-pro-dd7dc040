@@ -323,3 +323,227 @@ export function generateReinforcementDXF(slabs: Slab[], beams: Beam[], columns: 
 export function downloadDXF(content: string, filename: string): void {
   import('@/lib/capacitorDownload').then(({ downloadDXF: dl }) => dl(content, filename));
 }
+
+// =================== FOUNDATION DXF (WSM/ASD) ===================
+// Layers dedicated for foundation drawings, matching the export tables
+// (Type, B×L, t, d, q_actual, bars_x, bars_y, shear checks, status).
+
+const FOUNDATION_LAYERS = {
+  FOOTING:      { name: 'FOUNDATION_FOOTING',  color: 5 },
+  FOOTING_HID:  { name: 'FOUNDATION_HIDDEN',   color: 8 },
+  COLUMN:       { name: 'FOUNDATION_COLUMN',   color: 1 },
+  GRID:         { name: 'FOUNDATION_GRID',     color: 8 },
+  TEXT:         { name: 'FOUNDATION_TEXT',     color: 7 },
+  DIM:          { name: 'FOUNDATION_DIM',      color: 2 },
+  REBAR_X:      { name: 'FOUNDATION_REBAR_X',  color: 4 },
+  REBAR_Y:      { name: 'FOUNDATION_REBAR_Y',  color: 6 },
+  SCHEDULE:     { name: 'FOUNDATION_SCHEDULE', color: 7 },
+  FAIL:         { name: 'FOUNDATION_FAIL',     color: 1 },
+};
+
+function dxfTablesFoundation(): string {
+  const all = Object.values(FOUNDATION_LAYERS);
+  const entries = all.map(l =>
+    `0\nLAYER\n2\n${l.name}\n70\n0\n62\n${l.color}\n6\nCONTINUOUS`
+  ).join('\n');
+  return `0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n${all.length}\n${entries}\n0\nENDTAB\n0\nENDSEC\n`;
+}
+
+// Minimal shape of a foundation design result the DXF needs.
+// Matches FootingDesignResult fields used in the on-screen tables.
+export interface FoundationDXFInput {
+  colId: string;
+  x: number;          // column position (m)
+  y: number;          // column position (m)
+  colB: number;       // column width  (mm, along X)
+  colH: number;       // column height (mm, along Y)
+  B: number;          // footing dimension along X (mm)
+  L: number;          // footing dimension along Y (mm)
+  t: number;          // footing thickness (mm)
+  d: number;          // effective depth (mm)
+  P_service: number;  // service axial load (kN)
+  q_actual: number;   // actual soil pressure (kN/m²)
+  bars_x: number;
+  dia_x: number;
+  spacing_x: number;
+  bars_y: number;
+  dia_y: number;
+  spacing_y: number;
+  bearing_ok: boolean;
+  wide_shear_ok: boolean;
+  punch_shear_ok: boolean;
+  adequate: boolean;
+}
+
+export interface FoundationDXFMaterials {
+  fc: number; fy: number; qa: number; cover: number;
+  gamma_conc: number; gamma_soil: number; Df: number;
+}
+
+/**
+ * Generate a DXF file for the foundation design.
+ *
+ * Produces:
+ *   1) Foundation Plan — every footing rectangle (B×L), the column footprint,
+ *      grid lines, dimensions between footings, and per-footing labels
+ *      (TYPE, colId, B×L, t, bars_x, bars_y, q_actual).
+ *   2) Type Schedule (as DXF text rows) — one row per unique footing type
+ *      (key = B×L×t), listing the same columns shown in the on-screen
+ *      "جدول تصميم الأساسات المنفردة" + per-type reinforcement.
+ *   3) Per-column results table (as DXF text rows) — mirrors the design
+ *      table exactly: colId, P_service, B×L, t, d, q_actual, bearing,
+ *      bars_x, bars_y, wide-shear, punch-shear, status.
+ *
+ * The label content is taken verbatim from the FoundationDesignResult fields,
+ * which guarantees the DXF labels match the export tables.
+ */
+export function generateFoundationDXF(
+  results: FoundationDXFInput[],
+  mat: FoundationDXFMaterials,
+  projectName: string = 'Foundation Plan',
+): string {
+  if (results.length === 0) {
+    return `999\nFoundation DXF (empty)\n${dxfHeader()}${dxfTablesFoundation()}0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n`;
+  }
+
+  const L = FOUNDATION_LAYERS;
+
+  // ── Group footings by type (B×L×t) — same key used in the on-screen schedule
+  type FType = {
+    label: string; B: number; L: number; t: number;
+    bars_x: number; dia_x: number; spacing_x: number;
+    bars_y: number; dia_y: number; spacing_y: number;
+    members: FoundationDXFInput[];
+  };
+  const typeMap = new Map<string, FType>();
+  const colToType = new Map<string, string>();
+  let typeIdx = 1;
+  for (const r of results) {
+    const key = `${r.B}x${r.L}x${r.t}`;
+    if (!typeMap.has(key)) {
+      typeMap.set(key, {
+        label: `F${typeIdx++}`, B: r.B, L: r.L, t: r.t,
+        bars_x: r.bars_x, dia_x: r.dia_x, spacing_x: r.spacing_x,
+        bars_y: r.bars_y, dia_y: r.dia_y, spacing_y: r.spacing_y,
+        members: [],
+      });
+    }
+    const ft = typeMap.get(key)!;
+    ft.members.push(r);
+    colToType.set(r.colId, ft.label);
+  }
+
+  let entities = '';
+
+  // ── 1) PLAN ────────────────────────────────────────────────────────────────
+  const xs = results.map(r => r.x);
+  const ys = results.map(r => r.y);
+  const minX = Math.min(...xs) - 2;
+  const maxX = Math.max(...xs) + 2;
+  const minY = Math.min(...ys) - 2;
+  const maxY = Math.max(...ys) + 2;
+
+  // Plan title
+  entities += dxfText(minX, maxY + 1.2, `FOUNDATION PLAN — ${projectName}`, L.TEXT.name, 0.4);
+  entities += dxfText(minX, maxY + 0.6, `WSM / ASD — UBC 1997 / ACI 318`, L.TEXT.name, 0.2);
+
+  // Grid through unique column positions
+  const uXs = [...new Set(xs)].sort((a, b) => a - b);
+  const uYs = [...new Set(ys)].sort((a, b) => a - b);
+  for (let i = 0; i < uXs.length; i++) {
+    entities += dxfLine(uXs[i], minY, uXs[i], maxY, L.GRID.name);
+    entities += dxfCircle(uXs[i], maxY + 0.35, 0.25, L.GRID.name);
+    entities += dxfText(uXs[i] - 0.08, maxY + 0.27, String.fromCharCode(65 + i), L.TEXT.name, 0.18);
+  }
+  for (let i = 0; i < uYs.length; i++) {
+    entities += dxfLine(minX, uYs[i], maxX, uYs[i], L.GRID.name);
+    entities += dxfCircle(minX - 0.35, uYs[i], 0.25, L.GRID.name);
+    entities += dxfText(minX - 0.45, uYs[i] - 0.08, (i + 1).toString(), L.TEXT.name, 0.18);
+  }
+
+  // Footings + columns + labels
+  for (const r of results) {
+    const halfB = (r.B / 1000) / 2;
+    const halfL = (r.L / 1000) / 2;
+    const halfCB = (r.colB / 1000) / 2;
+    const halfCH = (r.colH / 1000) / 2;
+
+    // Footing outline (B × L)
+    entities += dxfPolyline([
+      { x: r.x - halfB, y: r.y - halfL },
+      { x: r.x + halfB, y: r.y - halfL },
+      { x: r.x + halfB, y: r.y + halfL },
+      { x: r.x - halfB, y: r.y + halfL },
+    ], L.FOOTING.name);
+
+    // Column footprint inside footing
+    entities += dxfPolyline([
+      { x: r.x - halfCB, y: r.y - halfCH },
+      { x: r.x + halfCB, y: r.y - halfCH },
+      { x: r.x + halfCB, y: r.y + halfCH },
+      { x: r.x - halfCB, y: r.y + halfCH },
+    ], L.COLUMN.name);
+
+    // Labels — exactly mirror what's in the design table
+    const typeLabel = colToType.get(r.colId) || '?';
+    const statusLayer = r.adequate ? L.TEXT.name : L.FAIL.name;
+    entities += dxfText(r.x - halfB, r.y + halfL + 0.05, `${typeLabel}  ${r.colId}`, L.TEXT.name, 0.22);
+    entities += dxfText(r.x - halfB, r.y + halfL - 0.20, `${r.B}x${r.L}x${r.t} mm`, L.TEXT.name, 0.14);
+    entities += dxfText(r.x - halfB, r.y - halfL - 0.18, `P=${r.P_service.toFixed(0)}kN  q=${r.q_actual.toFixed(0)}`, L.TEXT.name, 0.12);
+    entities += dxfText(r.x - halfB, r.y - halfL - 0.34, `Bx:${r.bars_x}D${r.dia_x}@${r.spacing_x}`, L.REBAR_X.name, 0.12);
+    entities += dxfText(r.x - halfB, r.y - halfL - 0.48, `Ly:${r.bars_y}D${r.dia_y}@${r.spacing_y}`, L.REBAR_Y.name, 0.12);
+    if (!r.adequate) {
+      entities += dxfText(r.x + halfB - 0.4, r.y + halfL + 0.05, 'REVIEW', statusLayer, 0.18);
+    }
+  }
+
+  // Dimensions between grids
+  for (let i = 0; i < uXs.length - 1; i++) {
+    entities += dxfDimension(uXs[i], minY - 0.5, uXs[i + 1], minY - 0.5, L.DIM.name, 0.6);
+  }
+  for (let i = 0; i < uYs.length - 1; i++) {
+    entities += dxfDimension(minX - 0.5, uYs[i], minX - 0.5, uYs[i + 1], L.DIM.name, 0.6);
+  }
+
+  // ── 2) TYPE SCHEDULE (as DXF text grid) ───────────────────────────────────
+  const schedX = maxX + 3;
+  let schedY = maxY;
+  const rowH = 0.35;
+  entities += dxfText(schedX, schedY, 'FOOTING TYPE SCHEDULE', L.TEXT.name, 0.3);
+  schedY -= rowH * 1.4;
+  const schedHeader = 'TYPE | B(mm) | L(mm) | t(mm) | Bars_x | Bars_y | Count';
+  entities += dxfText(schedX, schedY, schedHeader, L.SCHEDULE.name, 0.18);
+  schedY -= rowH;
+  for (const ft of typeMap.values()) {
+    const row = `${ft.label} | ${ft.B} | ${ft.L} | ${ft.t} | ${ft.bars_x}D${ft.dia_x}@${ft.spacing_x} | ${ft.bars_y}D${ft.dia_y}@${ft.spacing_y} | ${ft.members.length}`;
+    entities += dxfText(schedX, schedY, row, L.SCHEDULE.name, 0.16);
+    schedY -= rowH;
+  }
+
+  // ── 3) PER-COLUMN RESULTS TABLE — mirrors UI design table ────────────────
+  schedY -= rowH;
+  entities += dxfText(schedX, schedY, 'FOOTING DESIGN RESULTS (WSM)', L.TEXT.name, 0.3);
+  schedY -= rowH * 1.4;
+  const resHeader = 'COL | P(kN) | BxL | t | d | q | BearOk | Bars_x | Bars_y | WideShr | Punch | Status';
+  entities += dxfText(schedX, schedY, resHeader, L.SCHEDULE.name, 0.16);
+  schedY -= rowH;
+  for (const r of results) {
+    const layer = r.adequate ? L.SCHEDULE.name : L.FAIL.name;
+    const row =
+      `${r.colId} | ${r.P_service.toFixed(0)} | ${r.B}x${r.L} | ${r.t} | ${r.d} | ${r.q_actual.toFixed(0)} | ` +
+      `${r.bearing_ok ? 'OK' : 'X'} | ${r.bars_x}D${r.dia_x}@${r.spacing_x} | ${r.bars_y}D${r.dia_y}@${r.spacing_y} | ` +
+      `${r.wide_shear_ok ? 'OK' : 'X'} | ${r.punch_shear_ok ? 'OK' : 'X'} | ${r.adequate ? 'OK' : 'REVIEW'}`;
+    entities += dxfText(schedX, schedY, row, layer, 0.14);
+    schedY -= rowH;
+  }
+
+  // ── 4) Material bar ───────────────────────────────────────────────────────
+  schedY -= rowH;
+  const matBar =
+    `f'c=${mat.fc}MPa  fy=${mat.fy}MPa  qa=${mat.qa}kN/m2  ` +
+    `fc,allow=${(0.45 * mat.fc).toFixed(1)}MPa  fs,allow=${Math.min(0.5 * mat.fy, 207).toFixed(0)}MPa  ` +
+    `Df=${mat.Df}m  cover=${mat.cover}mm`;
+  entities += dxfText(schedX, schedY, matBar, L.TEXT.name, 0.16);
+
+  return `999\nFoundation DXF — Structural Design Studio (WSM/ASD)\n${dxfHeader()}${dxfTablesFoundation()}0\nSECTION\n2\nENTITIES\n${entities}0\nENDSEC\n0\nEOF\n`;
+}
