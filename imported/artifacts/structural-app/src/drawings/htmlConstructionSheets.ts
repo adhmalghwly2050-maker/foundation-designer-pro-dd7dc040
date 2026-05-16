@@ -898,11 +898,12 @@ export function generateHTMLConstructionSheets(
     </tr>`;
   }
 
+  const _gnContentH = _SHEET_H - 45 - (135 + 36 + 10);
   const generalNotesHTML = `
-  <div class="sheet-page" style="position:relative; width:1260px; height:891px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif; direction:rtl;">
+  <div class="sheet-page" style="position:relative; width:${_SHEET_W}px; height:${_SHEET_H}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif; direction:rtl;">
     ${htmlSheetBorder()}
     
-    <div style="position:absolute; top:45px; left:45px; right:45px; height:670px; overflow:hidden; padding:10px;">
+    <div style="position:absolute; top:45px; left:45px; right:45px; height:${_gnContentH}px; overflow:hidden; padding:10px;">
       <h2 style="text-align:center; font-size:16px; border-bottom:2px solid #000; padding-bottom:6px; margin-bottom:12px;">ملاحظات عامة — GENERAL NOTES</h2>
       
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; font-size:10px;">
