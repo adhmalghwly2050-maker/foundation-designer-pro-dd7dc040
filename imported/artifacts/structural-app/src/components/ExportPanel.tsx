@@ -63,7 +63,7 @@ export default function ExportPanel({
     foundationPlan: true,
   });
   const [format, setFormat] = useState<'pdf' | 'dxf' | 'both' | 'print'>('pdf');
-  const [sheetSize, setSheetSize] = useState<'A3' | 'A4' | 'A1'>('A3');
+  const [sheetSize, setSheetSize] = useState<'A3' | 'A4' | 'A1' | 'auto'>('auto');
   const [exporting, setExporting] = useState(false);
 
   const allSelected = selectedFloors.length === stories.length;
