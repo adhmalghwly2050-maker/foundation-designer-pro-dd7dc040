@@ -194,18 +194,9 @@ function drawBeamElevation(
   const leftIsEnd  = isEndSupport(beam, 'left',  allBeams);
   const rightIsEnd = isEndSupport(beam, 'right', allBeams);
 
-  // Extension = 1/5 of adjacent beam clear span (from column face), per ACI 318-19
-  const getAdjacentClearSpan = (side: 'left' | 'right'): number => {
-    const colId = side === 'left' ? beam.fromCol : beam.toCol;
-    const adjBeam = allBeams.find(ab => ab.id !== beam.id && (ab.fromCol === colId || ab.toCol === colId) && ab.direction === beam.direction);
-    if (!adjBeam) return spanMm;
-    // Adjacent clear span = beam length - half column widths at each end (approximate face-to-face)
-    return adjBeam.length * 1000;
-  };
-  const leftAdjSpanMm  = getAdjacentClearSpan('left');
-  const rightAdjSpanMm = getAdjacentClearSpan('right');
-  const leftExtMm  = leftIsEnd  ? 0 : Math.max(dlTop.ld_straight, leftAdjSpanMm / 5);
-  const rightExtMm = rightIsEnd ? 0 : Math.max(dlTop.ld_straight, rightAdjSpanMm / 5);
+  const adjExtMm   = Math.max(dlTop.ld_straight, spanMm / 5);
+  const leftExtMm  = leftIsEnd  ? 0 : adjExtMm;
+  const rightExtMm = rightIsEnd ? 0 : adjExtMm;
 
   const hookBotMm  = Math.max(12 * botDia, 150);
   const hookTopMm  = Math.max(12 * topDia, 150);
@@ -328,8 +319,7 @@ function drawBeamElevation(
   // ── BENT BARS inside beam ──
   let bentSeg1Mm = 0, bentDiagMm = 0, bentSeg3Mm = 0, bentTotalMm = 0, bentSeg5Mm = 0;
   if (hasBentBars && bentBarsCount > 0) {
-    // Single color for all rebar (black)
-    doc.setDrawColor(0);
+    doc.setDrawColor(220, 130, 0);
     doc.setLineWidth(0.4);
 
     const bentTopY = topBarY + stirD * 0.3;
@@ -517,22 +507,22 @@ function drawBeamElevation(
     doc.line(bx2, row1Y, bx2 + botHookPx * 0.15, row1Y + botHookPx * 0.5);
   }
 
-  // Label — LARGER FONT
+  // Label
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6);
+  doc.setFontSize(4.5);
   doc.text(`حديد سفلي مستقيم: ${continuousBotBars}Φ${botDia}`, detailOx, row1Y - barRowH / 2 + 3);
   doc.setFont('helvetica', 'normal');
 
   // Dimensions
   const dimRow1Y = row1Y + 6;
   if (leftIsEnd) {
-    drawDimLine(doc, detailOx, detailOx + botHookPx * 0.15, dimRow1Y, `${hookBotMm}`, [0, 0, 0]);
+    drawDimLine(doc, detailOx, detailOx + botHookPx * 0.15, dimRow1Y, `${hookBotMm}`, [0, 0, 180]);
   }
   const mainStartX = leftIsEnd ? detailOx + botHookPx * 0.15 : detailOx;
   const mainEndX = bx2;
-  drawDimLine(doc, mainStartX, mainEndX, dimRow1Y, `${Math.round(botTotalMm - (leftIsEnd ? hookBotMm : 0) - (rightIsEnd ? hookBotMm : 0))}`, [0, 0, 0]);
+  drawDimLine(doc, mainStartX, mainEndX, dimRow1Y, `${Math.round(botTotalMm - (leftIsEnd ? hookBotMm : 0) - (rightIsEnd ? hookBotMm : 0))}`, [0, 0, 180]);
   if (rightIsEnd) {
-    drawDimLine(doc, bx2, bx2 + botHookPx * 0.15, dimRow1Y, `${hookBotMm}`, [0, 0, 0]);
+    drawDimLine(doc, bx2, bx2 + botHookPx * 0.15, dimRow1Y, `${hookBotMm}`, [0, 0, 180]);
   }
   // Total length
   drawDimLine(doc, detailOx, rightIsEnd ? bx2 + botHookPx * 0.15 : bx2, dimRow1Y + 6, `إجمالي = ${Math.round(botTotalMm)} mm`, [180, 0, 0]);
@@ -540,15 +530,14 @@ function drawBeamElevation(
   // ── ROW 2 (middle): Bent bar (if exists) ──
   if (hasBentBars && bentBarsCount > 0) {
     const row2Y = detailStartY + barRowH + barRowH / 2;
-    // Single color (black) for all rebar detailing
-    doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
+    doc.setDrawColor(220, 130, 0);
+    doc.setLineWidth(0.45);
 
     const seg1Px = bentSeg1Mm * detailScl;
-    const diagPx = bentDiagMm * detailScl * 0.5;
+    const diagPx = bentDiagMm * detailScl * 0.5; // compress diagonal for display
     const seg3Px = bentSeg3Mm * detailScl;
     const seg5Px = bentSeg5Mm * detailScl;
-    const riseH  = barRowH * 0.5;
+    const riseH  = barRowH * 0.5; // visual rise for bent
 
     const mx1 = detailOx;
     const mx2 = mx1 + seg1Px;
@@ -558,37 +547,39 @@ function drawBeamElevation(
     const mx6 = mx5 + seg5Px;
 
     // Draw bent bar shape
-    doc.line(mx1, row2Y - riseH / 2, mx2, row2Y - riseH / 2);
-    doc.line(mx2, row2Y - riseH / 2, mx3, row2Y + riseH / 2);
-    doc.line(mx3, row2Y + riseH / 2, mx4, row2Y + riseH / 2);
-    doc.line(mx4, row2Y + riseH / 2, mx5, row2Y - riseH / 2);
-    doc.line(mx5, row2Y - riseH / 2, mx6, row2Y - riseH / 2);
+    doc.line(mx1, row2Y - riseH / 2, mx2, row2Y - riseH / 2); // upper left straight
+    doc.line(mx2, row2Y - riseH / 2, mx3, row2Y + riseH / 2); // diagonal down
+    doc.line(mx3, row2Y + riseH / 2, mx4, row2Y + riseH / 2); // bottom straight
+    doc.line(mx4, row2Y + riseH / 2, mx5, row2Y - riseH / 2); // diagonal up
+    doc.line(mx5, row2Y - riseH / 2, mx6, row2Y - riseH / 2); // upper right straight
 
-    // Label — LARGER FONT
+    // Label
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6);
-    doc.setTextColor(0);
+    doc.setFontSize(4.5);
+    doc.setTextColor(180, 90, 0);
     doc.text(`حديد مكسح: ${bentBarsCount}Φ${botDia}`, detailOx, row2Y - barRowH / 2 + 3);
     doc.setFont('helvetica', 'normal');
+    doc.setTextColor(0);
 
-    // Segment dimensions — LARGER FONT
+    // Segment dimensions
     const dimBentAbove = row2Y - riseH / 2 - 5;
     const dimBentBelow = row2Y + riseH / 2 + 5;
-    drawDimLine(doc, mx1, mx2, dimBentAbove, `L1=${Math.round(bentSeg1Mm)}`, [0, 0, 0]);
-    drawDimLine(doc, mx2, mx3, dimBentBelow, `D=${Math.round(bentDiagMm)}`, [0, 0, 0]);
-    drawDimLine(doc, mx3, mx4, dimBentBelow, `L2=${Math.round(bentSeg3Mm)}`, [0, 0, 0]);
-    drawDimLine(doc, mx4, mx5, dimBentBelow, `D=${Math.round(bentDiagMm)}`, [0, 0, 0]);
-    drawDimLine(doc, mx5, mx6, dimBentAbove, `L3=${Math.round(bentSeg5Mm)}`, [0, 0, 0]);
+    drawDimLine(doc, mx1, mx2, dimBentAbove, `L1=${Math.round(bentSeg1Mm)}`, [180, 90, 0]);
+    drawDimLine(doc, mx2, mx3, dimBentBelow, `D=${Math.round(bentDiagMm)}`, [180, 90, 0]);
+    drawDimLine(doc, mx3, mx4, dimBentBelow, `L2=${Math.round(bentSeg3Mm)}`, [180, 90, 0]);
+    drawDimLine(doc, mx4, mx5, dimBentBelow, `D=${Math.round(bentDiagMm)}`, [180, 90, 0]);
+    drawDimLine(doc, mx5, mx6, dimBentAbove, `L3=${Math.round(bentSeg5Mm)}`, [180, 90, 0]);
 
-    // Angle labels — larger
-    doc.setFontSize(5);
-    doc.setTextColor(0);
+    // Angle labels
+    doc.setFontSize(4.5);
+    doc.setTextColor(180, 90, 0);
     doc.text('45°', (mx2 + mx3) / 2 - 2, row2Y);
     doc.text('45°', (mx4 + mx5) / 2 - 2, row2Y);
+    doc.setTextColor(0);
 
     // Total length BELOW the bent bar drawing
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6);
+    doc.setFontSize(4.5);
     doc.text(`إجمالي المكسح ≈ ${Math.round(bentTotalMm)} mm`, (mx1 + mx6) / 2 - 15, row2Y + riseH / 2 + 14);
     doc.setFont('helvetica', 'normal');
   }
@@ -615,26 +606,26 @@ function drawBeamElevation(
     doc.line(tx2 - hookTopMm * detailScl * 0.1, row3Y, tx2, row3Y - hookTopMm * detailScl * 0.15);
   }
 
-  // Label — LARGER FONT
+  // Label
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6);
+  doc.setFontSize(4.5);
   doc.text(`حديد علوي: ${unifiedTopBars}Φ${topDia}`, detailOx, row3Y - barRowH / 2 + 3);
   doc.setFont('helvetica', 'normal');
 
   // Dimensions
   const dimTopY = row3Y + 6;
   if (!leftIsEnd) {
-    drawDimLine(doc, tx1, tx1 + (leftExtMm + colWidthMm / 2) * detailScl, dimTopY, `L/5=${Math.round(leftExtMm)}`, [0, 0, 0]);
+    drawDimLine(doc, tx1, tx1 + (leftExtMm + colWidthMm / 2) * detailScl, dimTopY, `L/5=${Math.round(leftExtMm)}`, [0, 0, 180]);
   } else {
-    drawDimLine(doc, tx1, tx1 + hookTopMm * detailScl * 0.3, dimTopY, `hook=${hookTopMm}`, [0, 0, 0]);
+    drawDimLine(doc, tx1, tx1 + hookTopMm * detailScl * 0.3, dimTopY, `hook=${hookTopMm}`, [0, 0, 180]);
   }
   const topMidStart = leftIsEnd ? tx1 + hookTopMm * detailScl * 0.3 : tx1 + (leftExtMm + colWidthMm / 2) * detailScl;
   const topMidEnd = rightIsEnd ? tx2 - hookTopMm * detailScl * 0.3 : tx2 - (rightExtMm + colWidthMm / 2) * detailScl;
-  drawDimLine(doc, topMidStart, topMidEnd, dimTopY, `span=${Math.round(spanMm)}`, [0, 0, 0]);
+  drawDimLine(doc, topMidStart, topMidEnd, dimTopY, `span=${Math.round(spanMm)}`, [0, 0, 180]);
   if (!rightIsEnd) {
-    drawDimLine(doc, topMidEnd, tx2, dimTopY, `L/5=${Math.round(rightExtMm)}`, [0, 0, 0]);
+    drawDimLine(doc, topMidEnd, tx2, dimTopY, `L/5=${Math.round(rightExtMm)}`, [0, 0, 180]);
   } else {
-    drawDimLine(doc, tx2 - hookTopMm * detailScl * 0.3, tx2, dimTopY, `hook=${hookTopMm}`, [0, 0, 0]);
+    drawDimLine(doc, tx2 - hookTopMm * detailScl * 0.3, tx2, dimTopY, `hook=${hookTopMm}`, [0, 0, 180]);
   }
   // Total
   drawDimLine(doc, tx1, tx2, dimTopY + 6, `إجمالي = ${Math.round(topTotalMm)} mm`, [180, 0, 0]);

@@ -534,11 +534,13 @@ function buildTypeDetailSVG(
 
 /**
  * Generate a printable ACI 318-compliant HTML foundation drawing.
+ * Follows ISO 7200 engineering drawing standard with proper title block,
+ * drawing zone, and table zone — matching the other structural sheets.
  *
- * The drawing contains:
- *   1. Global foundation plan (all footings at building positions)
- *   2. Per-type footing detail sheets (Plan + Section A-A + Section B-B)
- *   3. Footing schedule table
+ * Layout per plate (A3 landscape):
+ *   - Drawing zone  (left 65%):  Plan view + Type detail (Plan+Sections)
+ *   - Table zone    (right 33%): Footing schedule + results table
+ *   - Title block   (bottom):    ISO 7200 standard block
  */
 export function generateFoundationDrawingHTML(
   results: FootingDesignResult[],
@@ -555,8 +557,23 @@ export function generateFoundationDrawingHTML(
 ): string {
   if (results.length === 0) return '<html><body>لا توجد نتائج</body></html>';
 
-  const today = titleBlock.date || new Date().toLocaleDateString('ar-EG');
-  const proj = titleBlock.projectName || 'المشروع';
+  const today = titleBlock.date ?? new Date().toLocaleDateString('ar-EG');
+  const proj  = titleBlock.projectName ?? 'المشروع';
+
+  // ── Sheet constants (A3 landscape at 3 px/mm = 1260 × 891 px) ────────────
+  const SHEET_W = 1260;
+  const SHEET_H = 891;
+  const MARGIN  = 8;          // outer border distance from edge
+  const FRAME   = 20;         // inner working frame (left binding)
+  const TB_H    = 118;        // ISO 7200 title block height (px)
+  // working area inside frame, above title block
+  const WK_X    = FRAME;
+  const WK_Y    = FRAME;
+  const WK_W    = SHEET_W - FRAME - MARGIN;
+  const WK_H    = SHEET_H - FRAME - MARGIN - TB_H;
+  const DZ_W    = Math.round(WK_W * 0.64);   // drawing zone (left 64%)
+  const TZ_X    = WK_X + DZ_W + 1;           // table zone starts here
+  const TZ_W    = WK_W - DZ_W - 1;           // table zone width (right 36%)
 
   // ── Unique footing types ──────────────────────────────────────────────────
   type FType = {
@@ -584,264 +601,376 @@ export function generateFoundationDrawingHTML(
     colToType.set(r.colId, ft.key);
   }
 
-  // ── Per-type sheet builder (one drawing plate per foundation type) ───────
-  const buildPlateForType = (ft: FType, plateIndex: number, totalPlates: number): string => {
+  // ── ISO 7200 Title Block SVG (bottom of every plate) ─────────────────────
+  const buildTitleBlock = (ft: FType, plateIndex: number, totalPlates: number, drawingNo: string): string => {
+    const TBY  = SHEET_H - MARGIN - TB_H; // top-y of title block
+    const TBX  = FRAME;
+    const TBW  = WK_W;
+    const COL1 = 260; // firm/project section width
+    const COL2 = 180; // drawing title section width
+    const COL3 = 130; // signatures/dates section width
+    const COL4 = TBW - COL1 - COL2 - COL3; // drawing number section
+    const fs   = 8;   // base font size (used in field helper)
+    const fsS  = 7;   // small font size (used in field helper)
+
+    // outer border of title block
+    const border = `<rect x="${TBX}" y="${TBY}" width="${TBW}" height="${TB_H}"
+      fill="#fff" stroke="#1a3a5c" stroke-width="1.5"/>`;
+
+    // vertical dividers
+    const div1 = `<line x1="${TBX + COL1}" y1="${TBY}" x2="${TBX + COL1}" y2="${TBY + TB_H}" stroke="#1a3a5c" stroke-width="1"/>`;
+    const div2 = `<line x1="${TBX + COL1 + COL2}" y1="${TBY}" x2="${TBX + COL1 + COL2}" y2="${TBY + TB_H}" stroke="#1a3a5c" stroke-width="1"/>`;
+    const div3 = `<line x1="${TBX + COL1 + COL2 + COL3}" y1="${TBY}" x2="${TBX + COL1 + COL2 + COL3}" y2="${TBY + TB_H}" stroke="#1a3a5c" stroke-width="1"/>`;
+
+    // horizontal dividers in signatures column
+    const hr1 = `<line x1="${TBX + COL1 + COL2}" y1="${TBY + TB_H * 0.33}" x2="${TBX + COL1 + COL2 + COL3}" y2="${TBY + TB_H * 0.33}" stroke="#1a3a5c" stroke-width="0.8"/>`;
+    const hr2 = `<line x1="${TBX + COL1 + COL2}" y1="${TBY + TB_H * 0.66}" x2="${TBX + COL1 + COL2 + COL3}" y2="${TBY + TB_H * 0.66}" stroke="#1a3a5c" stroke-width="0.8"/>`;
+
+    // horizontal dividers in drawing-number column
+    const hr3 = `<line x1="${TBX + COL1 + COL2 + COL3}" y1="${TBY + TB_H * 0.5}" x2="${TBX + TBW}" y2="${TBY + TB_H * 0.5}" stroke="#1a3a5c" stroke-width="0.8"/>`;
+
+    // horizontal divider in title column
+    const hr4 = `<line x1="${TBX + COL1}" y1="${TBY + TB_H * 0.55}" x2="${TBX + COL1 + COL2}" y2="${TBY + TB_H * 0.55}" stroke="#1a3a5c" stroke-width="0.8"/>`;
+
+    // header background stripe in COL1
+    const hdr1 = `<rect x="${TBX}" y="${TBY}" width="${COL1}" height="18" fill="#1a3a5c"/>`;
+    const hdr2 = `<rect x="${TBX + COL1}" y="${TBY}" width="${COL2}" height="18" fill="#1a3a5c"/>`;
+    const hdr3 = `<rect x="${TBX + COL1 + COL2}" y="${TBY}" width="${COL3}" height="18" fill="#2c5e8a"/>`;
+    const hdr4 = `<rect x="${TBX + COL1 + COL2 + COL3}" y="${TBY}" width="${COL4}" height="18" fill="#2c5e8a"/>`;
+
+    // field helper
+    const field = (x: number, y: number, label: string, value: string, anchor = 'start', bold = false) =>
+      `<text x="${x}" y="${y}" font-size="${fsS}" fill="#555" text-anchor="${anchor}" font-family="Arial,sans-serif">${label}</text>
+       <text x="${x}" y="${y + 11}" font-size="${fs}" fill="#111" font-weight="${bold ? 'bold' : 'normal'}" text-anchor="${anchor}" font-family="Arial,sans-serif">${value}</text>`;
+
+    const cx1 = TBX + COL1 / 2;
+    const cx2 = TBX + COL1 + COL2 / 2;
+    const cx3 = TBX + COL1 + COL2 + COL3 / 2;
+    const cx4 = TBX + COL1 + COL2 + COL3 + COL4 / 2;
+
+    const firmText = `
+<text x="${cx1}" y="${TBY + 13}" font-size="9" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,sans-serif">${titleBlock.firmName ?? 'مكتب استشارات هندسية'}</text>
+${field(TBX + 8, TBY + 26, 'المشروع / Project:', proj, 'start', true)}
+${field(TBX + 8, TBY + 52, 'الموقع / Location:', '—', 'start')}
+${field(TBX + 8, TBY + 78, 'العميل / Client:', '—', 'start')}`;
+
+    const titleText = `
+<text x="${cx2}" y="${TBY + 13}" font-size="9" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,sans-serif">لوحة تنفيذية — أساسات</text>
+<text x="${cx2}" y="${TBY + 34}" font-size="8.5" font-weight="bold" fill="#1a3a5c" text-anchor="middle" font-family="Arial,sans-serif">قاعدة نوع ${ft.key} — ${ft.B}×${ft.L}×${ft.t} mm</text>
+<text x="${cx2}" y="${TBY + 50}" font-size="7" fill="#555" text-anchor="middle" font-family="Arial,sans-serif">WSM / ASD — ACI 318</text>
+<rect x="${TBX + COL1 + 4}" y="${TBY + 60}" width="${COL2 - 8}" height="16" fill="#eef3fa" rx="2"/>
+<text x="${cx2}" y="${TBY + 72}" font-size="7" fill="#880000" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold">
+  f\'c=${mat.fc}MPa · fy=${mat.fy}MPa · qa=${mat.qa}kN/m² · غ=${mat.cover}mm · Df=${mat.Df}m
+</text>
+<text x="${cx2}" y="${TBY + 100}" font-size="7" fill="#444" text-anchor="middle" font-family="Arial,sans-serif">أعمدة مرتبطة: ${ft.ids.join(' · ')}</text>`;
+
+    const sigText = `
+<text x="${cx3}" y="${TBY + 13}" font-size="8" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,sans-serif">التوقيعات</text>
+<text x="${TBX + COL1 + COL2 + 4}" y="${TBY + 28}" font-size="6.5" fill="#777" font-family="Arial,sans-serif">صمّمه / Designed</text>
+<text x="${cx3}" y="${TBY + 38}" font-size="8" fill="#111" text-anchor="middle" font-family="Arial,sans-serif">${titleBlock.designedBy ?? '—'}</text>
+<text x="${TBX + COL1 + COL2 + 4}" y="${TBY + TB_H * 0.33 + 10}" font-size="6.5" fill="#777" font-family="Arial,sans-serif">راجعه / Checked</text>
+<text x="${cx3}" y="${TBY + TB_H * 0.33 + 22}" font-size="8" fill="#111" text-anchor="middle" font-family="Arial,sans-serif">${titleBlock.checkedBy ?? '—'}</text>
+<text x="${TBX + COL1 + COL2 + 4}" y="${TBY + TB_H * 0.66 + 10}" font-size="6.5" fill="#777" font-family="Arial,sans-serif">التاريخ / Date</text>
+<text x="${cx3}" y="${TBY + TB_H * 0.66 + 22}" font-size="8" fill="#111" text-anchor="middle" font-family="Arial,sans-serif">${today}</text>`;
+
+    const dnText = `
+<text x="${cx4}" y="${TBY + 13}" font-size="8" font-weight="bold" fill="#fff" text-anchor="middle" font-family="Arial,sans-serif">رقم اللوحة</text>
+<text x="${cx4}" y="${TBY + 40}" font-size="14" font-weight="bold" fill="#1a3a5c" text-anchor="middle" font-family="Arial,sans-serif">${drawingNo}</text>
+<text x="${cx4}" y="${TBY + TB_H * 0.5 + 15}" font-size="7" fill="#777" text-anchor="middle" font-family="Arial,sans-serif">المقياس / Scale</text>
+<text x="${cx4}" y="${TBY + TB_H * 0.5 + 28}" font-size="9" font-weight="bold" fill="#111" text-anchor="middle" font-family="Arial,sans-serif">N.T.S.</text>
+<text x="${cx4}" y="${TBY + TB_H * 0.5 + 44}" font-size="7" fill="#777" text-anchor="middle" font-family="Arial,sans-serif">الورقة ${plateIndex} / ${totalPlates}</text>`;
+
+    return `${border}${hdr1}${hdr2}${hdr3}${hdr4}${div1}${div2}${div3}${hr1}${hr2}${hr3}${hr4}${firmText}${titleText}${sigText}${dnText}`;
+  };
+
+  // ── Plan SVG generator for one footing type ───────────────────────────────
+  const buildPlanSVG = (ft: FType, typeResults: FootingDesignResult[], w: number, h: number): string => {
+    const xs = typeResults.map(r => r.x);
+    const ys = typeResults.map(r => r.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const spanX = Math.max(maxX - minX, 0.001);
+    const spanY = Math.max(maxY - minY, 0.001);
+    const PAD = Math.max(2, Math.max(spanX, spanY) * 0.22);
+    const worldW = spanX + 2 * PAD;
+    const worldH = spanY + 2 * PAD;
+    const scX = (w - 4) / worldW;
+    const scY = (h - 4) / worldH;
+    const sc = Math.min(scX, scY);
+    const offX = (w - worldW * sc) / 2;
+    const offY = (h - worldH * sc) / 2;
+    const px2 = (mx: number) => offX + (mx - minX + PAD) * sc;
+    const py2 = (my: number) => offY + (worldH - (my - minY + PAD)) * sc;
+    const mm2p = (mm: number) => (mm / 1000) * sc;
+
+    const uid = 'pln_' + ft.key;
+    let elems = `
+<defs>
+  <marker id="arr${uid}" markerWidth="5" markerHeight="4" refX="4" refY="2" orient="auto"><path d="M0,0 L5,2 L0,4 Z" fill="#c00"/></marker>
+  <marker id="arrl${uid}" markerWidth="5" markerHeight="4" refX="1" refY="2" orient="auto-start-reverse"><path d="M5,0 L0,2 L5,4 Z" fill="#c00"/></marker>
+  <pattern id="htch${uid}" patternUnits="userSpaceOnUse" width="7" height="7" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="7" stroke="#b0b8c8" stroke-width="0.9"/></pattern>
+</defs>
+<rect width="${w}" height="${h}" fill="#f8f9fb"/>`;
+
+    const uXs = [...new Set(xs)].sort((a, b) => a - b);
+    const uYs = [...new Set(ys)].sort((a, b) => a - b);
+
+    // grid lines
+    for (const mx of uXs) elems += `<line x1="${px2(mx).toFixed(1)}" y1="2" x2="${px2(mx).toFixed(1)}" y2="${h - 2}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
+    for (const my of uYs) elems += `<line x1="2" y1="${py2(my).toFixed(1)}" x2="${w - 2}" y2="${py2(my).toFixed(1)}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
+
+    // footings
+    for (const r of typeResults) {
+      const cx = px2(r.x), cy = py2(r.y);
+      const bw = mm2p(r.B), lh = mm2p(r.L);
+      const cw = mm2p(Math.min(r.B * 0.28, 400)), ch = mm2p(Math.min(r.L * 0.28, 400));
+      elems += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${(cy - lh / 2).toFixed(1)}" width="${bw.toFixed(1)}" height="${lh.toFixed(1)}" fill="url(#htch${uid})" fill-opacity="0.4" stroke="#1a3a5c" stroke-width="1.2" stroke-dasharray="5,2.5" rx="1"/>`;
+      elems += `<rect x="${(cx - cw / 2).toFixed(1)}" y="${(cy - ch / 2).toFixed(1)}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}" fill="#1a3a5c" fill-opacity="0.85" stroke="#1a3a5c" stroke-width="1"/>`;
+      elems += `<text x="${cx.toFixed(1)}" y="${(cy + 3).toFixed(1)}" text-anchor="middle" font-size="7.5" fill="#fff" font-weight="bold" font-family="Arial,sans-serif">${r.colId}</text>`;
+      elems += `<text x="${cx.toFixed(1)}" y="${(cy - lh / 2 - 4).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="bold" fill="#1a3a5c" font-family="Arial,sans-serif">${ft.key}</text>`;
+      elems += `<text x="${cx.toFixed(1)}" y="${(cy + lh / 2 + 9).toFixed(1)}" text-anchor="middle" font-size="6.5" fill="#880000" font-family="Arial,sans-serif">${r.B}×${r.L}</text>`;
+    }
+
+    // dimension lines (horizontal between columns)
+    if (uXs.length > 1) {
+      const dimY = h - 8;
+      for (let i = 0; i < uXs.length - 1; i++) {
+        const x1 = px2(uXs[i]), x2 = px2(uXs[i + 1]);
+        const mid = (x1 + x2) / 2;
+        const dist = ((uXs[i + 1] - uXs[i]) * 1000).toFixed(0);
+        elems += `<line x1="${x1.toFixed(1)}" y1="${dimY}" x2="${x2.toFixed(1)}" y2="${dimY}" stroke="#c00" stroke-width="0.7" marker-start="url(#arrl${uid})" marker-end="url(#arr${uid})"/>`;
+        elems += `<text x="${mid.toFixed(1)}" y="${(dimY - 2).toFixed(1)}" text-anchor="middle" font-size="6.5" fill="#c00" font-family="Arial,sans-serif">${dist}</text>`;
+      }
+    }
+    // vertical dimension lines
+    if (uYs.length > 1) {
+      const dimX = w - 6;
+      for (let i = 0; i < uYs.length - 1; i++) {
+        const y1 = py2(uYs[i]), y2 = py2(uYs[i + 1]);
+        const mid = (y1 + y2) / 2;
+        const dist = ((uYs[i + 1] - uYs[i]) * 1000).toFixed(0);
+        elems += `<line x1="${dimX}" y1="${y2.toFixed(1)}" x2="${dimX}" y2="${y1.toFixed(1)}" stroke="#c00" stroke-width="0.7" marker-start="url(#arrl${uid})" marker-end="url(#arr${uid})"/>`;
+        elems += `<text x="${(dimX - 3).toFixed(1)}" y="${mid.toFixed(1)}" text-anchor="end" font-size="6.5" fill="#c00" font-family="Arial,sans-serif">${dist}</text>`;
+      }
+    }
+
+    // legend
+    elems += `<line x1="6" y1="${h - 8}" x2="18" y2="${h - 8}" stroke="#1a3a5c" stroke-width="1.2" stroke-dasharray="5,2.5"/>
+<text x="21" y="${h - 5}" font-size="6.5" fill="#555" font-family="Arial,sans-serif">حدود القاعدة</text>
+<rect x="80" y="${h - 13}" width="10" height="8" fill="#1a3a5c" fill-opacity="0.85"/>
+<text x="93" y="${h - 5}" font-size="6.5" fill="#555" font-family="Arial,sans-serif">مقطع العمود</text>
+<text x="160" y="${h - 5}" font-size="6" fill="#888" font-family="Arial,sans-serif">الأبعاد بالمليمتر</text>`;
+
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="display:block">${elems}</svg>`;
+  };
+
+  // ── Table zone SVG (right panel): schedule + per-column results ───────────
+  const buildTableZoneSVG = (ft: FType, typeResults: FootingDesignResult[], x: number, y: number, w: number, h: number): string => {
+    const lh = 16; // line height per row
+    const pad = 4;
+    const headerH = 22;
+    let out = '';
+    let curY = y + 6;
+
+    // ── Material properties panel ──
+    const matRows: [string, string][] = [
+      ['f\'c', `${mat.fc} MPa`],
+      ['fy', `${mat.fy} MPa`],
+      ['qa', `${mat.qa} kN/m²`],
+      ['fc,allow', `${(0.45 * mat.fc).toFixed(1)} MPa`],
+      ['fs,allow', `${Math.min(0.5 * mat.fy, 207).toFixed(0)} MPa`],
+      ['Df', `${mat.Df} m`],
+      ['غطاء', `${mat.cover} mm`],
+    ];
+    out += `<rect x="${x}" y="${curY}" width="${w}" height="16" fill="#1a3a5c" rx="2"/>`;
+    out += `<text x="${x + w / 2}" y="${curY + 11}" text-anchor="middle" font-size="8" font-weight="bold" fill="#fff" font-family="Arial,sans-serif">خصائص المواد — Materials</text>`;
+    curY += 18;
+    for (let i = 0; i < matRows.length; i++) {
+      const bg = i % 2 === 0 ? '#eef3fa' : '#fff';
+      out += `<rect x="${x}" y="${curY}" width="${w}" height="${lh - 1}" fill="${bg}"/>`;
+      out += `<text x="${x + pad}" y="${curY + 10}" font-size="8" fill="#1a3a5c" font-family="Arial,sans-serif" font-weight="bold">${matRows[i][0]}</text>`;
+      out += `<text x="${x + w - pad}" y="${curY + 10}" text-anchor="end" font-size="8" fill="#111" font-family="Arial,sans-serif">${matRows[i][1]}</text>`;
+      curY += lh - 1;
+    }
+    out += `<rect x="${x}" y="${y + 6}" width="${w}" height="${curY - y - 6}" fill="none" stroke="#1a3a5c" stroke-width="0.8" rx="2"/>`;
+    curY += 8;
+
+    // ── Footing schedule ──
+    out += `<rect x="${x}" y="${curY}" width="${w}" height="16" fill="#1a3a5c" rx="2"/>`;
+    out += `<text x="${x + w / 2}" y="${curY + 11}" text-anchor="middle" font-size="8" font-weight="bold" fill="#fff" font-family="Arial,sans-serif">جدول القواعد — Schedule</text>`;
+    curY += 18;
+    const schedHdrs = ['B (mm)', 'L (mm)', 't (mm)', 'تسليح B', 'تسليح L'];
+    const schedVals = [String(ft.B), String(ft.L), String(ft.t), `${ft.bars_x}Ø${ft.dia_x}@${ft.spacing_x}`, `${ft.bars_y}Ø${ft.dia_y}@${ft.spacing_y}`];
+    for (let i = 0; i < schedHdrs.length; i++) {
+      const bg = i % 2 === 0 ? '#f4f7fb' : '#fff';
+      out += `<rect x="${x}" y="${curY}" width="${w}" height="${lh - 1}" fill="${bg}"/>`;
+      out += `<text x="${x + pad}" y="${curY + 10}" font-size="7" fill="#555" font-family="Arial,sans-serif">${schedHdrs[i]}</text>`;
+      out += `<text x="${x + w - pad}" y="${curY + 10}" text-anchor="end" font-size="8" font-weight="bold" fill="#880000" font-family="Arial,sans-serif">${schedVals[i]}</text>`;
+      curY += lh - 1;
+    }
+    // extra schedule row: t_min,ACI
+    out += `<rect x="${x}" y="${curY}" width="${w}" height="${lh - 1}" fill="#eef3fa"/>`;
+    out += `<text x="${x + pad}" y="${curY + 10}" font-size="7" fill="#555" font-family="Arial,sans-serif">t_min,ACI (mm)</text>`;
+    out += `<text x="${x + w - pad}" y="${curY + 10}" text-anchor="end" font-size="8" font-weight="bold" fill="#1a3a5c" font-family="Arial,sans-serif">${ft.t_min_aci}</text>`;
+    curY += lh - 1;
+    out += `<rect x="${x}" y="${y + 6 + (matRows.length * (lh - 1)) + 18 + 8 + 18}" width="${w}" height="${curY - y - 6 - (matRows.length * (lh - 1)) - 18 - 8 - 18}" fill="none" stroke="#1a3a5c" stroke-width="0.8" rx="2"/>`;
+    curY += 8;
+
+    // ── Per-column results ──
+    out += `<rect x="${x}" y="${curY}" width="${w}" height="16" fill="#1a3a5c" rx="2"/>`;
+    out += `<text x="${x + w / 2}" y="${curY + 11}" text-anchor="middle" font-size="8" font-weight="bold" fill="#fff" font-family="Arial,sans-serif">نتائج الأعمدة — Column Results</text>`;
+    curY += 18;
+
+    const colW1 = Math.round(w * 0.18);
+    const colW2 = Math.round(w * 0.18);
+    const colW3 = Math.round(w * 0.14);
+    const colW4 = Math.round(w * 0.14);
+    const colW5 = Math.round(w * 0.18);
+    const colW6 = w - colW1 - colW2 - colW3 - colW4 - colW5;
+
+    const thBg = '#2c5e8a';
+    let cx_ = x;
+    for (const [lbl, cw] of [['عمود', colW1], ['P kN', colW2], ['B×L', colW3], ['t mm', colW4], ['q kN/m²', colW5], ['حالة', colW6]] as [string, number][]) {
+      out += `<rect x="${cx_}" y="${curY}" width="${cw}" height="16" fill="${thBg}"/>`;
+      out += `<text x="${cx_ + cw / 2}" y="${curY + 10}" text-anchor="middle" font-size="6.5" fill="#fff" font-family="Arial,sans-serif">${lbl}</text>`;
+      cx_ += cw;
+    }
+    curY += 16;
+
+    for (let ri = 0; ri < typeResults.length; ri++) {
+      const r = typeResults[ri];
+      const ok = r.adequate;
+      const bg = ri % 2 === 0 ? '#f4f7fb' : '#fff';
+      const fg = ok ? '#111' : '#c00';
+      const rowH = 14;
+      cx_ = x;
+      out += `<rect x="${x}" y="${curY}" width="${w}" height="${rowH}" fill="${ok ? bg : '#fff5f5'}"/>`;
+      for (const [val, cw] of [
+        [r.colId, colW1],
+        [r.P_service.toFixed(0), colW2],
+        [`${r.B}×${r.L}`, colW3],
+        [String(r.t), colW4],
+        [r.q_actual.toFixed(0), colW5],
+        [ok ? '✓ OK' : '✗ NG', colW6],
+      ] as [string, number][]) {
+        out += `<text x="${cx_ + cw / 2}" y="${curY + 9}" text-anchor="middle" font-size="7" fill="${fg}" font-family="Arial,sans-serif">${val}</text>`;
+        cx_ += cw;
+      }
+      curY += rowH;
+    }
+    out += `<rect x="${x}" y="${curY - typeResults.length * 14 - 34}" width="${w}" height="${typeResults.length * 14 + 34}" fill="none" stroke="#1a3a5c" stroke-width="0.8" rx="2"/>`;
+    curY += 8;
+
+    // ── Construction notes ──
+    if (curY + 6 < y + h - 10) {
+      out += `<rect x="${x}" y="${curY}" width="${w}" height="16" fill="#1a3a5c" rx="2"/>`;
+      out += `<text x="${x + w / 2}" y="${curY + 11}" text-anchor="middle" font-size="8" font-weight="bold" fill="#fff" font-family="Arial,sans-serif">ملاحظات — Notes</text>`;
+      curY += 18;
+      const notes = [
+        `طبقة نظافة 50 mm خرسانة عادية قبل الحديد`,
+        `الغطاء الخرساني ≥ ${mat.cover} mm (ACI §20.6.1.3)`,
+        `الحديد fy = ${mat.fy} MPa`,
+        `منسوب التأسيس Df = ${mat.Df} m`,
+        `جميع الأبعاد بالمليمتر ما لم يُذكر خلافه`,
+      ];
+      for (let ni = 0; ni < notes.length; ni++) {
+        if (curY + 11 > y + h - 10) break;
+        out += `<text x="${x + pad + 6}" y="${curY + 9}" font-size="7" fill="#333" font-family="Arial,sans-serif">• ${notes[ni]}</text>`;
+        curY += 13;
+      }
+    }
+
+    return out;
+  };
+
+  // ── Build one complete plate SVG ──────────────────────────────────────────
+  const buildPlate = (ft: FType, plateIndex: number, totalPlates: number): string => {
     const typeResults = results.filter(r => colToType.get(r.colId) === ft.key);
     if (typeResults.length === 0) return '';
 
-    // Plan geometry — based ONLY on this type's footings
-    const xs = typeResults.map(r => r.x);
-    const ys = typeResults.map(r => r.y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    const spanX = Math.max(maxX - minX, 0.001);
-    const spanY = Math.max(maxY - minY, 0.001);
-    const PAD = Math.max(2, Math.max(spanX, spanY) * 0.2);
-    const worldW = spanX + 2 * PAD;
-    const worldH = spanY + 2 * PAD;
-    const PLAN_W = 560;
-    const PLAN_H = Math.max(280, Math.round(PLAN_W * (worldH / Math.max(worldW, 0.1))));
-    const scale = PLAN_W / worldW;
-    const px = (mx: number) => ((mx - minX + PAD) * scale);
-    const py = (my: number) => (PLAN_H - (my - minY + PAD) * scale);
-    const mm2px = (mm: number) => (mm / 1000) * scale;
+    const drawingNo = `${titleBlock.drawingNumber ?? 'F'}-${String(plateIndex).padStart(2, '0')}`;
 
-    const markers = `
-    <defs>
-      <marker id="arrP_${ft.key}" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-        <path d="M0,0 L6,2 L0,4 Z" fill="#c00"/>
-      </marker>
-      <marker id="arrlP_${ft.key}" markerWidth="6" markerHeight="4" refX="1" refY="2" orient="auto-start-reverse">
-        <path d="M6,0 L0,2 L6,4 Z" fill="#c00"/>
-      </marker>
-      <pattern id="hatch_${ft.key}" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
-        <line x1="0" y1="0" x2="0" y2="6" stroke="#b0b8c8" stroke-width="0.8"/>
-      </pattern>
-    </defs>`;
+    // ── Plan SVG fits in top half of drawing zone ──────────────────────────
+    const planH = Math.min(Math.round(WK_H * 0.42), 320);
+    const planSVG = buildPlanSVG(ft, typeResults, DZ_W, planH);
 
-    let planElems = '';
-    let dimLines = '';
-    let colLabels = '';
-    const uXs = [...new Set(typeResults.map(r => r.x))].sort((a, b) => a - b);
-    const uYs = [...new Set(typeResults.map(r => r.y))].sort((a, b) => a - b);
-    for (const mx of uXs) {
-      planElems += `<line x1="${px(mx).toFixed(1)}" y1="0" x2="${px(mx).toFixed(1)}" y2="${PLAN_H}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
-    }
-    for (const my of uYs) {
-      planElems += `<line x1="0" y1="${py(my).toFixed(1)}" x2="${PLAN_W}" y2="${py(my).toFixed(1)}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
-    }
+    // ── Detail SVG (3-panel: Plan + Sec A-A + Sec B-B) ────────────────────
+    const detailRaw = buildTypeDetailSVG(ft.rep, mat, ft.key, ft.ids, ft.t_min_aci);
+    const detailH = WK_H - planH - 24; // remaining drawing zone height
 
-    for (const r of typeResults) {
-      const cx = px(r.x);
-      const cy = py(r.y);
-      const bpx = mm2px(r.B);
-      const lpx = mm2px(r.L);
-      const colBp = mm2px(Math.min(r.B * 0.3, 400));
-      const colHp = mm2px(Math.min(r.L * 0.3, 400));
-      planElems += `<rect x="${(cx - bpx / 2).toFixed(1)}" y="${(cy - lpx / 2).toFixed(1)}" width="${bpx.toFixed(1)}" height="${lpx.toFixed(1)}"
-        fill="url(#hatch_${ft.key})" fill-opacity="0.4" stroke="#1a3a5c" stroke-width="1.2" stroke-dasharray="5,2.5" rx="1"/>`;
-      planElems += `<rect x="${(cx - colBp / 2).toFixed(1)}" y="${(cy - colHp / 2).toFixed(1)}" width="${colBp.toFixed(1)}" height="${colHp.toFixed(1)}"
-        fill="#1a3a5c" fill-opacity="0.85" stroke="#1a3a5c" stroke-width="1"/>`;
-      colLabels += `<text x="${cx.toFixed(1)}" y="${(cy - lpx / 2 - 5).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="bold" fill="#1a3a5c">${ft.key}</text>`;
-      colLabels += `<text x="${cx.toFixed(1)}" y="${(cy + 4).toFixed(1)}" text-anchor="middle" font-size="7.5" fill="#fff" font-weight="bold">${r.colId}</text>`;
-      colLabels += `<text x="${cx.toFixed(1)}" y="${(cy + lpx / 2 + 10).toFixed(1)}" text-anchor="middle" font-size="7" fill="#880000">${r.B}×${r.L}</text>`;
-    }
+    // ── Table zone SVG ────────────────────────────────────────────────────
+    const tableZoneSVG = buildTableZoneSVG(ft, typeResults, TZ_X, WK_Y, TZ_W, WK_H);
 
-    if (uXs.length > 1) {
-      const dimY = PLAN_H - 5;
-      for (let i = 0; i < uXs.length - 1; i++) {
-        const x1 = px(uXs[i]);
-        const x2 = px(uXs[i + 1]);
-        const dist = ((uXs[i + 1] - uXs[i]) * 1000).toFixed(0) + ' mm';
-        const mid = (x1 + x2) / 2;
-        dimLines += `<line x1="${x1.toFixed(1)}" y1="${dimY}" x2="${x2.toFixed(1)}" y2="${dimY}" stroke="#c00" stroke-width="0.7" marker-start="url(#arrlP_${ft.key})" marker-end="url(#arrP_${ft.key})"/>`;
-        dimLines += `<text x="${mid.toFixed(1)}" y="${(dimY - 3).toFixed(1)}" text-anchor="middle" font-size="7" fill="#c00">${dist}</text>`;
-      }
-    }
-    if (uYs.length > 1) {
-      const dimX = PLAN_W - 5;
-      for (let i = 0; i < uYs.length - 1; i++) {
-        const y1 = py(uYs[i]);
-        const y2 = py(uYs[i + 1]);
-        const dist = ((uYs[i + 1] - uYs[i]) * 1000).toFixed(0) + ' mm';
-        const mid = (y1 + y2) / 2;
-        dimLines += `<line x1="${dimX}" y1="${y2.toFixed(1)}" x2="${dimX}" y2="${y1.toFixed(1)}" stroke="#c00" stroke-width="0.7" marker-start="url(#arrlP_${ft.key})" marker-end="url(#arrP_${ft.key})"/>`;
-        dimLines += `<text x="${(dimX - 3).toFixed(1)}" y="${mid.toFixed(1)}" text-anchor="end" font-size="7" fill="#c00">${dist}</text>`;
-      }
-    }
+    // ── Zone label headers ─────────────────────────────────────────────────
+    const planHdr = `
+<rect x="${WK_X}" y="${WK_Y}" width="${DZ_W}" height="16" fill="#2c5e8a"/>
+<text x="${WK_X + DZ_W / 2}" y="${WK_Y + 11}" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#fff" font-family="Arial,sans-serif">مسقط الأساسات — نوع ${ft.key} (${typeResults.length} قاعدة)</text>`;
 
-    // Per-type schedule + design rows for THIS type only
-    const typeSchedRow = `
-      <tr>
-        <td class="ftype"><b>${ft.key}</b></td>
-        <td>${ft.B}</td>
-        <td>${ft.L}</td>
-        <td>${ft.t}</td>
-        <td>${ft.t_min_aci}</td>
-        <td class="rebar">${ft.bars_x}Ø${ft.dia_x}@${ft.spacing_x}</td>
-        <td class="rebar">${ft.bars_y}Ø${ft.dia_y}@${ft.spacing_y}</td>
-        <td>${ft.ids.length} عمود</td>
-      </tr>`;
-    const typeDetailRows = typeResults.map(r => `
-      <tr class="${r.adequate ? '' : 'fail'}">
-        <td class="ftype">${r.colId}</td>
-        <td>${r.P_service.toFixed(0)}</td>
-        <td>${r.B}×${r.L}</td>
-        <td>${r.t}</td>
-        <td>${r.d}</td>
-        <td>${r.q_actual.toFixed(0)}</td>
-        <td class="${r.bearing_ok ? 'ok' : 'fail'}">${r.bearing_ok ? '✓' : '✗'}</td>
-        <td class="rebar">${r.bars_x}Ø${r.dia_x}@${r.spacing_x}</td>
-        <td class="rebar">${r.bars_y}Ø${r.dia_y}@${r.spacing_y}</td>
-        <td class="${r.wide_shear_ok ? 'ok' : 'fail'}">${r.wide_shear_ok ? '✓' : '✗'}</td>
-        <td class="${r.punch_shear_ok ? 'ok' : 'fail'}">${r.punch_shear_ok ? '✓' : '✗'}</td>
-      </tr>`).join('');
+    const detailHdr = `
+<rect x="${WK_X}" y="${WK_Y + 16 + planH + 2}" width="${DZ_W}" height="16" fill="#2c5e8a"/>
+<text x="${WK_X + DZ_W / 2}" y="${WK_Y + 16 + planH + 13}" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#fff" font-family="Arial,sans-serif">تفاصيل نوع ${ft.key} — مسقط + قطاع أ-أ + قطاع ب-ب</text>`;
 
-    const drawingNo = `${titleBlock.drawingNumber || 'F'}-${String(plateIndex).padStart(2, '0')}`;
+    const titleBlockSVG = buildTitleBlock(ft, plateIndex, totalPlates, drawingNo);
+
+    // ── Vertical separator between drawing zone and table zone ─────────────
+    const separator = `<line x1="${TZ_X - 1}" y1="${WK_Y}" x2="${TZ_X - 1}" y2="${WK_Y + WK_H}" stroke="#1a3a5c" stroke-width="1"/>`;
+
+    // ── Sheet borders ──────────────────────────────────────────────────────
+    const outerBorder = `<rect x="${MARGIN}" y="${MARGIN}" width="${SHEET_W - 2 * MARGIN}" height="${SHEET_H - 2 * MARGIN}" fill="none" stroke="#1a3a5c" stroke-width="2"/>`;
+    const innerBorder = `<rect x="${FRAME}" y="${FRAME}" width="${WK_W + MARGIN - FRAME + MARGIN}" height="${WK_H + TB_H + MARGIN - FRAME + MARGIN}" fill="none" stroke="#1a3a5c" stroke-width="0.8"/>`;
+
+    // ── Horizontal separator above title block ─────────────────────────────
+    const tbSep = `<line x1="${FRAME}" y1="${SHEET_H - MARGIN - TB_H}" x2="${SHEET_W - MARGIN}" y2="${SHEET_H - MARGIN - TB_H}" stroke="#1a3a5c" stroke-width="1.5"/>`;
+
     const pageBreak = plateIndex < totalPlates ? 'page-break-after: always;' : '';
 
-    return `
-<section class="plate" style="${pageBreak}">
-
-  <!-- Title block (per-plate) -->
-  <div class="title-block">
-    <div class="tb-main">
-      <h1>لوحة تنفيذية — أساسات نوع ${ft.key} (${ft.B}×${ft.L}×${ft.t} mm)</h1>
-      <div class="sub">طريقة الإجهادات العاملة (WSM / ASD) · ACI 318 · UBC 1997</div>
-      <div class="sub" style="margin-top:2px">المشروع: <b>${proj}</b> &nbsp;|&nbsp; مكتب الاستشارات: <b>${titleBlock.firmName || '—'}</b></div>
-      <div class="sub" style="margin-top:2px">عدد الأعمدة المرتبطة بهذا النوع: <b>${ft.ids.length}</b> &nbsp;|&nbsp; الورقة <b>${plateIndex} / ${totalPlates}</b></div>
-    </div>
-    <div class="tb-side">
-      <div class="tb-cell"><b>صمّمه:</b><span>${titleBlock.designedBy || '—'}</span></div>
-      <div class="tb-cell"><b>راجعه:</b><span>${titleBlock.checkedBy || '—'}</span></div>
-      <div class="tb-cell"><b>التاريخ:</b><span>${today}</span></div>
-      <div class="tb-cell"><b>رقم اللوحة:</b><span>${drawingNo}</span></div>
-    </div>
-  </div>
-
-  <!-- Material bar -->
-  <div class="mat-bar">
-    <span><b>f'c</b> = ${mat.fc} MPa</span>
-    <span><b>fy</b> = ${mat.fy} MPa</span>
-    <span><b>qa</b> = ${mat.qa} kN/m²</span>
-    <span><b>fc,allow</b> = ${(0.45 * mat.fc).toFixed(1)} MPa</span>
-    <span><b>fs,allow</b> = ${Math.min(0.5 * mat.fy, 207).toFixed(0)} MPa</span>
-    <span><b>Df</b> = ${mat.Df} m</span>
-    <span><b>Cover</b> = ${mat.cover} mm</span>
-  </div>
-
-  <!-- Plan: only this type's footings -->
-  <div class="sec-hdr">مسقط الأساسات — النوع ${ft.key} فقط</div>
-  <div class="draw-box" style="margin-bottom:8px">
-    <svg class="plan-svg" viewBox="0 0 ${PLAN_W} ${PLAN_H}" xmlns="http://www.w3.org/2000/svg">
-      ${markers}
-      <rect width="${PLAN_W}" height="${PLAN_H}" fill="#f8f9fb"/>
-      ${planElems}
-      ${dimLines}
-      ${colLabels}
-    </svg>
-    <div style="font-size:7pt;color:#555;margin-top:3px;text-align:center">
-      ▬ ▬ حدود الأساس &nbsp;|&nbsp; ■ العمود &nbsp;|&nbsp; ${ft.key} نوع القاعدة &nbsp;|&nbsp; جميع الأبعاد بالمليمتر
-    </div>
-  </div>
-
-  <!-- Detail drawing for this type -->
-  <div class="sec-hdr">تفاصيل النوع ${ft.key} — Plan + Section A-A + Section B-B</div>
-  <div style="margin-bottom:10px;page-break-inside:avoid">
-    ${buildTypeDetailSVG(ft.rep, mat, ft.key, ft.ids, ft.t_min_aci)}
-  </div>
-
-  <!-- Schedule (this type only) -->
-  <div class="sec-hdr">جدول النوع ${ft.key} — Footing Type Schedule</div>
-  <table>
-    <thead>
-      <tr>
-        <th>النوع</th>
-        <th>B (mm)</th>
-        <th>L (mm)</th>
-        <th>t مختار (mm)</th>
-        <th>t<sub>min,ACI</sub> (mm)</th>
-        <th>تسليح اتجاه B</th>
-        <th>تسليح اتجاه L</th>
-        <th>عدد القواعد</th>
-      </tr>
-    </thead>
-    <tbody>${typeSchedRow}</tbody>
-  </table>
-
-  <!-- Per-column results in this type -->
-  <div class="sec-hdr">نتائج التصميم لكل عمود — النوع ${ft.key}</div>
-  <table>
-    <thead>
-      <tr>
-        <th>العمود</th>
-        <th>P (kN)</th>
-        <th>B×L (mm)</th>
-        <th>t (mm)</th>
-        <th>d (mm)</th>
-        <th>q فعلي<br/>kN/m²</th>
-        <th>ضغط التربة</th>
-        <th>تسليح B</th>
-        <th>تسليح L</th>
-        <th>قص عريض</th>
-        <th>قص ثقبي</th>
-      </tr>
-    </thead>
-    <tbody>${typeDetailRows}</tbody>
-  </table>
-
-  <!-- Notes -->
-  <div class="sec-hdr">ملاحظات تنفيذية — Construction Notes</div>
-  <ol class="notes">
-    <li>تُصَب طبقة نظافة سُمكها <b>50 mm</b> من الخرسانة العادية قبل وضع حديد التسليح.</li>
-    <li>الغطاء الخرساني لأساسات الأرض ≥ <b>${mat.cover} mm</b> (ACI 318 §20.6.1.3).</li>
-    <li>جميع الحديد ${mat.fy === 420 ? 'Grade 60 (fy = 420 MPa)' : mat.fy === 280 ? 'Grade 40 (fy = 280 MPa)' : `fy = ${mat.fy} MPa`}.</li>
-    <li>طول التماسك الأساسي: ld ≥ 0.02 × fy/√f'c × db (ACI 318 §25.5).</li>
-    <li>منسوب التأسيس Df = ${mat.Df} m من منسوب الطبيعي.</li>
-  </ol>
-
-</section>`;
+    return `<div class="plate" style="${pageBreak}">
+<svg width="${SHEET_W}" height="${SHEET_H}" viewBox="0 0 ${SHEET_W} ${SHEET_H}"
+  xmlns="http://www.w3.org/2000/svg" style="display:block;width:100%;height:auto;background:#fff">
+  ${outerBorder}
+  ${innerBorder}
+  ${tbSep}
+  ${planHdr}
+  <g transform="translate(${WK_X},${WK_Y + 16})">${planSVG}</g>
+  ${detailHdr}
+  <g transform="translate(${WK_X},${WK_Y + 16 + planH + 18})" style="max-width:${DZ_W}px">
+    <foreignObject x="0" y="0" width="${DZ_W}" height="${detailH}">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="transform-origin:top left;transform:scale(${Math.min(1, DZ_W / 780)});width:780px">
+        ${detailRaw}
+      </div>
+    </foreignObject>
+  </g>
+  ${separator}
+  ${tableZoneSVG}
+  ${titleBlockSVG}
+</svg>
+</div>`;
   };
 
   const types = [...typeMap.values()];
-  const platesHTML = types.map((ft, i) => buildPlateForType(ft, i + 1, types.length)).join('');
+  const platesHTML = types.map((ft, i) => buildPlate(ft, i + 1, types.length)).join('\n');
 
   return `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
 <meta charset="UTF-8"/>
-<title>لوحة الأساسات — ${proj}</title>
+<title>لوحات الأساسات — ${proj}</title>
 <style>
-  @page { size: ${paperSize} landscape; margin: 8mm; }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Arial',sans-serif;font-size:9pt;color:#111;background:#fff;padding:8mm}
-  section.plate{padding-bottom:6mm}
-  .title-block{display:grid;grid-template-columns:repeat(6,1fr);border:2px solid #1a3a5c;margin-bottom:8px}
-  .tb-main{grid-column:1/5;padding:4px 10px;border-left:1px solid #ccc}
-  .tb-main h1{font-size:13pt;color:#1a3a5c;border-bottom:1px solid #ccc;padding-bottom:3px;margin-bottom:3px}
-  .tb-main .sub{font-size:8pt;color:#555}
-  .tb-side{grid-column:5/7;display:grid;grid-template-rows:repeat(4,1fr);border-right:1px solid #aaa}
-  .tb-cell{padding:3px 8px;border-bottom:1px solid #ddd;font-size:8pt;display:flex;justify-content:space-between}
-  .tb-cell b{color:#1a3a5c}
-  .sec-hdr{background:#1a3a5c;color:#fff;font-size:9pt;font-weight:bold;padding:3px 8px;margin:8px 0 4px}
-  .draw-box{border:1px solid #ccc;padding:4px;background:#fafbfc}
-  svg.plan-svg{display:block;width:100%}
-  table{width:100%;border-collapse:collapse;font-size:8pt;margin-bottom:8px}
-  th{background:#1a3a5c;color:#fff;padding:4px 6px;text-align:center;border:1px solid #1a3a5c}
-  td{border:1px solid #ccc;padding:3px 5px;text-align:center}
-  tr:nth-child(even) td{background:#f4f7fb}
-  .ftype{font-weight:bold;color:#1a3a5c}
-  .rebar{font-family:monospace;color:#880000;font-weight:bold}
-  .ok{color:green}
-  .fail{color:red;background:#fff0f0 !important}
-  .notes{font-size:8pt;border:1px solid #ccc;padding:6px 10px;background:#fafbfc}
-  .notes li{margin:2px 0;margin-right:16px}
-  .mat-bar{display:flex;flex-wrap:wrap;gap:12px;background:#eef3fa;padding:5px 10px;font-size:8pt;border:1px solid #c0cfe0;margin-bottom:6px}
-  .mat-bar span{white-space:nowrap}
-  .mat-bar b{color:#1a3a5c}
-  @media print{body{padding:4mm} .no-print{display:none} section.plate{padding-bottom:0}}
+  @page { size: ${paperSize} landscape; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #e8eaf0; padding: 8px; }
+  .plate {
+    background: #fff;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+    margin-bottom: 24px;
+    display: inline-block;
+    width: 100%;
+  }
+  .plate svg { display: block; width: 100%; height: auto; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .plate { box-shadow: none; margin: 0; page-break-inside: avoid; }
+  }
 </style>
 </head>
 <body>
