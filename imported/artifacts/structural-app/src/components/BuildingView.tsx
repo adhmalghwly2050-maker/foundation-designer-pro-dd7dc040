@@ -19,6 +19,8 @@ interface BuildingViewProps {
   bobConnections?: BeamOnBeamConnection[];
   /** Show beam moment diagrams (ETABS style) */
   showMoments?: boolean;
+  /** Show slab rectangles (default: false — hidden to keep the view uncluttered) */
+  showSlabs?: boolean;
 }
 
 function getStressColor(ratio: number): string {
@@ -29,7 +31,7 @@ function getStressColor(ratio: number): string {
 
 export default function BuildingView({
   slabs, beams, columns, analyzed, frameResults, beamDesigns, onSelectElement,
-  removedColumnIds = [], bobConnections = [], showMoments = false,
+  removedColumnIds = [], bobConnections = [], showMoments = false, showSlabs = false,
 }: BuildingViewProps) {
   const allX = slabs.flatMap(s => [s.x1, s.x2]);
   const allY = slabs.flatMap(s => [s.y1, s.y2]);
@@ -91,8 +93,8 @@ export default function BuildingView({
           stroke="hsl(var(--canvas-grid))" strokeWidth="0.5" strokeDasharray="4" />
       ))}
 
-      {/* Slabs */}
-      {slabs.map(s => (
+      {/* Slabs — only rendered when showSlabs is true */}
+      {showSlabs && slabs.map(s => (
         <g key={s.id} className="cursor-pointer" onClick={() => onSelectElement?.('slab', s.id)}>
           <rect x={tx(s.x1)} y={ty(s.y1)} width={(s.x2 - s.x1) * scale} height={(s.y2 - s.y1) * scale}
             fill="hsl(var(--slab-fill) / 0.08)" stroke="hsl(var(--slab))" strokeWidth="0.5" />

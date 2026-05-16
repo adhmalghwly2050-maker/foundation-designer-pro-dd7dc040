@@ -1407,15 +1407,30 @@ const Index = () => {
   const handleAnalysisElementClick = useCallback((beamId: string) => {
     const design = beamDesigns.find(d => d.beamId === beamId);
     const beam = beamsWithLoads.find(b => b.id === beamId);
-    if (!design || !beam) return;
-    const wu = 1.2 * beam.deadLoad + 1.6 * beam.liveLoad;
+
+    // Fallback: search frameResults when design not yet executed (designExecuted === false)
+    type FrBeam = typeof frameResults[number]['beams'][number];
+    let frBeam: FrBeam | undefined;
+    if (!design) {
+      for (const fr of frameResults) {
+        const found = fr.beams.find(b => b.beamId === beamId);
+        if (found) { frBeam = found; break; }
+      }
+    }
+
+    // Nothing found at all — nothing to show
+    if (!design && !frBeam) return;
+
+    const wu = beam ? 1.2 * beam.deadLoad + 1.6 * beam.liveLoad : 0;
 
     // Determine moment release (hinge) status at each end — يدوي فقط من محرر الإصدارات
     let hingeLeft = false;
     let hingeRight = false;
-    const releaseState = getBeamReleaseState(beam);
-    if (releaseState.nodeI.rz) hingeLeft  = true;
-    if (releaseState.nodeJ.rz) hingeRight = true;
+    if (beam) {
+      const releaseState = getBeamReleaseState(beam);
+      if (releaseState.nodeI.rz) hingeLeft  = true;
+      if (releaseState.nodeJ.rz) hingeRight = true;
+    }
 
     // Carrier-beam point load (from BOB connections on this beam as primary)
     const carrierConn = bobConnections.find(c => c.primaryBeamId === beamId);
@@ -1424,14 +1439,16 @@ const Index = () => {
     const isCarrierLeft = !!(carrierConn && carrierConn.continuationBeamId); // A1: right end connects to A2
     const isCarrierRight = !!contConn; // A2: left end connects to A1
 
+    const effectiveSpan = design?.span ?? frBeam?.span ?? (beam ? beam.length / 1000 : 5);
+
     // Calculate total girder span for carrier beams
     let totalGirderSpan: number | undefined;
     if (carrierConn && carrierConn.continuationBeamId) {
       const contBeam = beamsWithLoads.find(b => b.id === carrierConn.continuationBeamId);
-      if (contBeam) totalGirderSpan = design.span + contBeam.length / 1000;
+      if (contBeam) totalGirderSpan = effectiveSpan + contBeam.length / 1000;
     } else if (contConn) {
       const primaryBeam = beamsWithLoads.find(b => b.id === contConn.primaryBeamId);
-      if (primaryBeam) totalGirderSpan = primaryBeam.length / 1000 + design.span;
+      if (primaryBeam) totalGirderSpan = primaryBeam.length / 1000 + effectiveSpan;
     }
 
     dispatch({
@@ -1439,15 +1456,15 @@ const Index = () => {
       data: {
         elementId: beamId,
         elementType: 'beam' as const,
-        span: design.span,
-        Mleft: design.Mleft,
-        Mmid:  design.Mmid,
-        Mright: design.Mright,
-        Vu: design.Vu,
-        deflection: design.deflection.deflection,
+        span:   effectiveSpan,
+        Mleft:  design?.Mleft  ?? frBeam?.Mleft  ?? 0,
+        Mmid:   design?.Mmid   ?? frBeam?.Mmid   ?? 0,
+        Mright: design?.Mright ?? frBeam?.Mright ?? 0,
+        Vu:     design?.Vu     ?? frBeam?.Vu     ?? 0,
+        deflection: design?.deflection?.deflection,
         wu,
-        Rleft:  design.Rleft,
-        Rright: design.Rright,
+        Rleft:  design?.Rleft  ?? frBeam?.Rleft  ?? 0,
+        Rright: design?.Rright ?? frBeam?.Rright ?? 0,
         hingeLeft,
         hingeRight,
         isCarrierLeft,
@@ -1460,7 +1477,7 @@ const Index = () => {
         } : {}),
       },
     });
-  }, [beamDesigns, beamsWithLoads, detectedConnections, bobConnections, getBeamReleaseState]);
+  }, [beamDesigns, beamsWithLoads, frameResults, detectedConnections, bobConnections, getBeamReleaseState]);
 
   const currentNodes = modelManager.getAllNodes();
   const currentFrames = modelManager.getAllFrames();
@@ -1683,7 +1700,7 @@ const Index = () => {
                   <ModelCanvas
                     nodes={currentNodes}
                     frames={currentFrames}
-                    areas={currentAreas}
+                    areas={[]}
                     activeTool={activeTool}
                     onCanvasClick={handleCanvasClick}
                     onNodeClick={handleNodeClick}

@@ -34,6 +34,22 @@ outputType = "webview"
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 18293
+externalPort = 3001
+
+[[ports]]
+localPort = 24596
+externalPort = 3002
+
 [deployment]
 deploymentTarget = "static"
 build = ["bash", "-c", "cd imported && PORT=5000 BASE_PATH=/ pnpm --filter @workspace/structural-app run build"]
