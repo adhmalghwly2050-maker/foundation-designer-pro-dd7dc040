@@ -721,6 +721,7 @@ export function generateHTMLConstructionSheets(
   slabDesigns: SlabDesignData[],
   projectName: string = 'Structural Design Studio',
   options?: ExportOptions,
+  paperSize: PaperSize = 'auto',
 ): string {
   const floorCode = options?.floorCode || 'GF';
   const storyLabel = options?.storyLabel || '';
