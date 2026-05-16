@@ -28,6 +28,29 @@ interface SlabDesignData {
   design: SlabDesignResult;
 }
 
+// ─── Paper size handling (auto + landscape, drawing fills the page) ───
+type PaperSize = 'A4' | 'A3' | 'A1' | 'auto';
+const PAPER_DIMS_MM: Record<Exclude<PaperSize, 'auto'>, [number, number]> = {
+  A4: [297, 210],
+  A3: [420, 297],
+  A1: [841, 594],
+};
+const PX_PER_MM = 3;
+function pickAutoPaper(modelW: number, modelH: number): Exclude<PaperSize, 'auto'> {
+  const maxDim = Math.max(modelW, modelH);
+  if (maxDim > 20) return 'A1';
+  if (maxDim > 8) return 'A3';
+  return 'A4';
+}
+function getPaperPx(paperSize: PaperSize, modelW: number, modelH: number) {
+  const ps = paperSize === 'auto' ? pickAutoPaper(modelW, modelH) : paperSize;
+  const [mmW, mmH] = PAPER_DIMS_MM[ps];
+  return { sheetW: Math.round(mmW * PX_PER_MM), sheetH: Math.round(mmH * PX_PER_MM), cssSize: ps };
+}
+let _SHEET_W = 1260;
+let _SHEET_H = 891;
+let _CSS_PAPER: Exclude<PaperSize, 'auto'> = 'A3';
+
 // ─── SVG helpers for drawing zone ───
 
 function svgGridSystem(
@@ -414,41 +437,38 @@ function generateSheetHTML(
   titleBlockConfig: Partial<TitleBlockConfig>,
   extraSvgBottom?: string,
 ): string {
-  // A3 landscape: 420mm × 297mm → use pixel ratio for screen
-  // We use 1260 × 891 px (3x mm for good resolution)
-  const sheetW = 1260;
-  const sheetH = 891;
-  const drawZoneW = 690; // ~55% of sheet for drawing
-  const drawZoneH = 645; // drawing zone height
-  const tableZoneX = 756; // right side for tables
-  const tableZoneW = 460;
+  // Auto-fit drawing to full page width; tables go on a follow-up sheet.
+  const sheetW = _SHEET_W;
+  const sheetH = _SHEET_H;
+  const titleBlockH = 135 + 36 + 10;
+  const drawZoneW = sheetW - 90;       // full content width inside borders
+  const contentH = sheetH - 45 - titleBlockH;
 
-  // Title block occupies bottom-right: height=135px, bottom=36px → top of title block = sheetH-36-135 = 720px
-  // Safe content zone ends at 715px (5px clearance above title block)
-  const safeBottom = sheetH - 36 - 135 - 10; // = 715px
-  const contentH = safeBottom - 45; // from top=45px → 670px
-
-  return `
+  const drawingPage = `
   <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     ${htmlSheetBorder()}
-    
-    <!-- Drawing Zone — hard height enforced, no overflow -->
     <div style="position:absolute; top:45px; left:45px; width:${drawZoneW}px; height:${contentH}px; overflow:hidden; border:0.5px solid #ccc;">
       <svg viewBox="0 0 ${svgDrawW} ${svgDrawH}" width="${drawZoneW}" height="${contentH}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
         ${svgDrawingZone}
       </svg>
     </div>
-    
-    <!-- Table Zone — hard height enforced, never reaches title block -->
-    <div style="position:absolute; top:45px; left:${tableZoneX}px; width:${tableZoneW}px; height:${contentH}px; overflow:hidden; direction:rtl;">
-      ${tableContent}
-    </div>
-    
     ${extraSvgBottom || ''}
-    
-    <!-- Title Block -->
     ${htmlTitleBlock(titleBlockConfig)}
   </div>`;
+
+  const hasTable = tableContent && tableContent.trim().length > 0;
+  if (!hasTable) return drawingPage;
+
+  const tablePage = `
+  <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
+    ${htmlSheetBorder()}
+    <div style="position:absolute; top:45px; left:45px; right:45px; height:${contentH}px; overflow:hidden; direction:rtl; padding:6px;">
+      ${tableContent}
+    </div>
+    ${htmlTitleBlock({ ...titleBlockConfig, drawingSubTitle: (titleBlockConfig.drawingSubTitle || '') + ' — Schedule' })}
+  </div>`;
+
+  return drawingPage + tablePage;
 }
 
 // ─── Beam Elevation Sheet (HTML) ─── 
@@ -527,7 +547,7 @@ function htmlBeamElevationSheet(
   beams: Beam[], beamDesigns: BeamDesignData[],
   tbBase: Partial<TitleBlockConfig>, floorCode: string, startSheetNo: number,
 ): string {
-  const sheetW = 1260, sheetH = 891;
+  const sheetW = _SHEET_W, sheetH = _SHEET_H;
   const titleH = 135 + 36 + 10;
   const contentH = sheetH - 45 - titleH;
   const cols = 2, rows = 3;
@@ -637,7 +657,7 @@ function htmlBBSSheet(
     `<tr><td>Φ${d}</td><td>${w.toFixed(1)} kg</td></tr>`
   ).join('');
 
-  const sheetW = 1260, sheetH = 891;
+  const sheetW = _SHEET_W, sheetH = _SHEET_H;
   const titleH = 135 + 36 + 10;
   const contentH = sheetH - 45 - titleH;
 
@@ -701,6 +721,7 @@ export function generateHTMLConstructionSheets(
   slabDesigns: SlabDesignData[],
   projectName: string = 'Structural Design Studio',
   options?: ExportOptions,
+  paperSize: PaperSize = 'auto',
 ): string {
   const floorCode = options?.floorCode || 'GF';
   const storyLabel = options?.storyLabel || '';
@@ -737,9 +758,16 @@ export function generateHTMLConstructionSheets(
   const modelW = maxX - minX;
   const modelH = maxY - minY;
 
-  // SVG coordinate system - use 690×645 viewbox matching drawing zone
-  const svgW = 690;
-  const svgH = 645;
+  // Determine paper size (auto picks A4/A3/A1 based on plan extent) — always landscape
+  const _paper = getPaperPx(paperSize, modelW, modelH);
+  _SHEET_W = _paper.sheetW;
+  _SHEET_H = _paper.sheetH;
+  _CSS_PAPER = _paper.cssSize;
+
+  // SVG viewbox matches full-width drawing zone of the chosen paper
+  const titleBlockH = 135 + 36 + 10;
+  const svgW = _SHEET_W - 90;
+  const svgH = _SHEET_H - 45 - titleBlockH;
   const mmPerM = Math.min((svgW - 80) / modelW, (svgH - 80) / modelH) * 0.85;
   const planOffsetX = 50 + ((svgW - 80) - modelW * mmPerM) / 2;
   const planOffsetY = 40 + ((svgH - 80) - modelH * mmPerM) / 2;
@@ -878,11 +906,12 @@ export function generateHTMLConstructionSheets(
     </tr>`;
   }
 
+  const _gnContentH = _SHEET_H - 45 - (135 + 36 + 10);
   const generalNotesHTML = `
-  <div class="sheet-page" style="position:relative; width:1260px; height:891px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif; direction:rtl;">
+  <div class="sheet-page" style="position:relative; width:${_SHEET_W}px; height:${_SHEET_H}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif; direction:rtl;">
     ${htmlSheetBorder()}
     
-    <div style="position:absolute; top:45px; left:45px; right:45px; height:670px; overflow:hidden; padding:10px;">
+    <div style="position:absolute; top:45px; left:45px; right:45px; height:${_gnContentH}px; overflow:hidden; padding:10px;">
       <h2 style="text-align:center; font-size:16px; border-bottom:2px solid #000; padding-bottom:6px; margin-bottom:12px;">ملاحظات عامة — GENERAL NOTES</h2>
       
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; font-size:10px;">
@@ -973,7 +1002,7 @@ export function generateHTMLConstructionSheets(
   <meta charset="utf-8">
   <title>${projectName} - ${floorCode} - لوحات إنشائية</title>
   <style>
-    @page { size: A3 landscape; margin: 0; }
+    @page { size: ${_CSS_PAPER} landscape; margin: 0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #e0e0e0; font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif; direction: ltr; }
     .sheet-page { margin: 10px auto; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
@@ -1001,9 +1030,10 @@ export function openHTMLSheetsForPrint(
   slabDesigns: SlabDesignData[],
   projectName: string,
   options?: ExportOptions,
+  paperSize: 'A1' | 'A3' | 'A4' | 'auto' = 'auto',
 ): void {
   const htmlContent = generateHTMLConstructionSheets(
-    slabs, beams, columns, beamDesigns, colDesigns, slabDesigns, projectName, options,
+    slabs, beams, columns, beamDesigns, colDesigns, slabDesigns, projectName, options, paperSize,
   );
   
   import('@/lib/capacitorDownload').then(({ openHTMLForPrint }) =>

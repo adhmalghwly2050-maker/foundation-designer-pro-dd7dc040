@@ -63,7 +63,7 @@ export default function ExportPanel({
     foundationPlan: true,
   });
   const [format, setFormat] = useState<'pdf' | 'dxf' | 'both' | 'print'>('pdf');
-  const [sheetSize, setSheetSize] = useState<'A3' | 'A4' | 'A1'>('A3');
+  const [sheetSize, setSheetSize] = useState<'A3' | 'A4' | 'A1' | 'auto'>('auto');
   const [exporting, setExporting] = useState(false);
 
   const allSelected = selectedFloors.length === stories.length;
@@ -163,7 +163,7 @@ export default function ExportPanel({
               openHTMLSheetsForPrint(
                 filtSlabs, filtBeams, filtCols,
                 filtBeamDesigns, filtColDesigns, filtSlabDesigns,
-                projectName, exportOptions
+                projectName, exportOptions, sheetSize
               );
             } else {
               generateConstructionSheets(
@@ -203,7 +203,8 @@ export default function ExportPanel({
           date: titleBlockConfig?.date,
           drawingNumber: titleBlockConfig?.drawingNumber || 'F-01',
         };
-        const html = generateFoundationDrawingHTML(foundationResults, tb, foundationMat, sheetSize);
+        const _fndPaper = sheetSize === 'auto' ? 'A3' : sheetSize;
+        const html = generateFoundationDrawingHTML(foundationResults, tb, foundationMat, _fndPaper);
         if (format === 'print') {
           // Open in print window alongside other sheets
           import('@/lib/capacitorDownload').then(({ openHTMLForPrint }) =>
@@ -226,7 +227,8 @@ export default function ExportPanel({
         const allFilteredSlabs = slabs.filter(s => !s.storyId || selectedFloors.includes(s.storyId));
         const allFilteredBeams = beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId));
         const allFilteredCols = columns.filter(c => !c.storyId || selectedFloors.includes(c.storyId));
-        exportStructuralDrawingPDF(allFilteredSlabs, allFilteredBeams, allFilteredCols, sheetSize === 'A1' ? 'A3' : sheetSize, projectName);
+        const _drawPaper = (sheetSize === 'A1' || sheetSize === 'auto') ? 'A3' : sheetSize;
+        exportStructuralDrawingPDF(allFilteredSlabs, allFilteredBeams, allFilteredCols, _drawPaper, projectName);
       }
 
       // Total BBS for all selected floors combined
@@ -327,9 +329,9 @@ export default function ExportPanel({
           <div>
             <p className="text-xs font-medium mb-1">حجم اللوحة:</p>
             <div className="flex gap-1">
-              {(['A3', 'A4', 'A1'] as const).map(s => (
+              {(['auto', 'A3', 'A4', 'A1'] as const).map(s => (
                 <button key={s} onClick={() => setSheetSize(s)} className={`px-2 py-1 rounded border text-[11px] transition-colors ${sheetSize === s ? 'bg-primary text-primary-foreground' : 'border-border hover:bg-muted'}`}>
-                  {s}
+                  {s === 'auto' ? 'تلقائي' : s}
                 </button>
               ))}
             </div>
