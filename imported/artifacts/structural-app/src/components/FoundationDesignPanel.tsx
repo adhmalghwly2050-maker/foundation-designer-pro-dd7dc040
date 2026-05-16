@@ -27,6 +27,7 @@ import {
 import type { Column } from '@/lib/structuralEngine';
 import type { ETABSReaction } from './ETABSAnalysisImport';
 import { downloadCSV } from '@/lib/capacitorDownload';
+import { generateFoundationDXF, downloadDXF, type FoundationDXFInput } from '@/export/dxfExporter';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -286,6 +287,40 @@ export default function FoundationDesignPanel({
     downloadCSV('foundation_design.csv', header + '\n' + rows.join('\n'));
   };
 
+  // ── Export results DXF (matches the on-screen design tables exactly) ──────
+  const handleExportDXF = () => {
+    if (results.length === 0) return;
+    const dxfInputs: FoundationDXFInput[] = results.map(r => ({
+      colId: r.colId,
+      x: r.x,
+      y: r.y,
+      colB: r.colB,
+      colH: r.colH,
+      B: r.B,
+      L: r.L,
+      t: r.t,
+      d: r.d,
+      P_service: r.P_service,
+      q_actual: r.q_actual,
+      bars_x: r.bars_x,
+      dia_x: r.dia_x,
+      spacing_x: r.spacing_x,
+      bars_y: r.bars_y,
+      dia_y: r.dia_y,
+      spacing_y: r.spacing_y,
+      bearing_ok: r.bearing_ok,
+      wide_shear_ok: r.wide_shear_ok,
+      punch_shear_ok: r.punch_shear_ok,
+      adequate: r.adequate,
+    }));
+    const footingMat = {
+      fc, fy, qa, cover, gamma_conc: gammaConc, gamma_soil: gammaSoil, Df,
+    };
+    const projectName = titleBlockConfig?.projectName || 'Foundation_Plan';
+    const dxf = generateFoundationDXF(dxfInputs, footingMat, projectName);
+    downloadDXF(dxf, `${projectName}_Foundations.dxf`);
+  };
+
   // ── Summary stats ──────────────────────────────────────────────────────────
   const allOk = results.length > 0 && results.every(r => r.adequate);
   const failCount = results.filter(r => !r.adequate).length;
@@ -481,6 +516,15 @@ export default function FoundationDesignPanel({
                 <div className="flex gap-1 mr-auto">
                   <Button size="sm" variant="outline" className="h-8 text-xs gap-1" onClick={handleExportCSV}>
                     <Download size={12} /> CSV
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs gap-1 border-blue-300 text-blue-700 hover:bg-blue-50"
+                    onClick={handleExportDXF}
+                    title="تصدير لوحة الأساسات + الجداول إلى ملف DXF متوافق مع AutoCAD"
+                  >
+                    <Download size={12} /> DXF
                   </Button>
                 </div>
               </div>
