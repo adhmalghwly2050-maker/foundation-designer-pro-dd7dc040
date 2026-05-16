@@ -1030,9 +1030,10 @@ export function openHTMLSheetsForPrint(
   slabDesigns: SlabDesignData[],
   projectName: string,
   options?: ExportOptions,
+  paperSize: 'A1' | 'A3' | 'A4' | 'auto' = 'auto',
 ): void {
   const htmlContent = generateHTMLConstructionSheets(
-    slabs, beams, columns, beamDesigns, colDesigns, slabDesigns, projectName, options,
+    slabs, beams, columns, beamDesigns, colDesigns, slabDesigns, projectName, options, paperSize,
   );
   
   import('@/lib/capacitorDownload').then(({ openHTMLForPrint }) =>
