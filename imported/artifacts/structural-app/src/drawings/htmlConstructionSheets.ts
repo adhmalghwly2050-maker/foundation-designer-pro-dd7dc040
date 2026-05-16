@@ -28,6 +28,29 @@ interface SlabDesignData {
   design: SlabDesignResult;
 }
 
+// ─── Paper size handling (auto + landscape, drawing fills the page) ───
+type PaperSize = 'A4' | 'A3' | 'A1' | 'auto';
+const PAPER_DIMS_MM: Record<Exclude<PaperSize, 'auto'>, [number, number]> = {
+  A4: [297, 210],
+  A3: [420, 297],
+  A1: [841, 594],
+};
+const PX_PER_MM = 3;
+function pickAutoPaper(modelW: number, modelH: number): Exclude<PaperSize, 'auto'> {
+  const maxDim = Math.max(modelW, modelH);
+  if (maxDim > 20) return 'A1';
+  if (maxDim > 8) return 'A3';
+  return 'A4';
+}
+function getPaperPx(paperSize: PaperSize, modelW: number, modelH: number) {
+  const ps = paperSize === 'auto' ? pickAutoPaper(modelW, modelH) : paperSize;
+  const [mmW, mmH] = PAPER_DIMS_MM[ps];
+  return { sheetW: Math.round(mmW * PX_PER_MM), sheetH: Math.round(mmH * PX_PER_MM), cssSize: ps };
+}
+let _SHEET_W = 1260;
+let _SHEET_H = 891;
+let _CSS_PAPER: Exclude<PaperSize, 'auto'> = 'A3';
+
 // ─── SVG helpers for drawing zone ───
 
 function svgGridSystem(
