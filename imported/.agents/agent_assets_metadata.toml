@@ -1,0 +1,67 @@
+uploads = []
+
+[[generated]]
+id = "WcLWpRlupvN5kolqqp70H"
+uri = "file://artifacts/structural-mobile/assets/images/icon.png"
+type = "image"
+title = "generated_image"
+
+[[outputs]]
+id = "4HJu-WSjghK7j8VZEqIdS"
+uri = "file://structural-master-apk.zip"
+type = "unspecified"
+title = "Structural Master APK - تطبيق Android"
+
+[[outputs]]
+id = "c_UUC-T7f0KK2zvKgzlDX"
+uri = "file://StructuralMaster_v2.zip"
+type = "unspecified"
+title = "StructuralMaster v2 APK (مُحدَّث)"
+
+[[outputs]]
+id = "XiIAeLYZWNtphQ1zl9Kww"
+uri = "file://structural-master-v2-fixed.zip"
+type = "unspecified"
+title = "Structural Master v2 - Fixed APK (داخل الضغط)"
+
+[[outputs]]
+id = "pKLFWeZeRnde3MnsdL5CE"
+uri = "file://structural-master-v3-fixed.zip"
+type = "unspecified"
+title = "Structural Master v3 - شاشة بيضاء مصلحة + طباعة + تصدير"
+
+[[outputs]]
+id = "CFbIgAdzLJPux8P0lpG4n"
+uri = "file://structural-master-v4-tabs-fixed.zip"
+type = "unspecified"
+title = "Structural Master v4 - التبويبات الفرعية مصلحة"
+
+[[outputs]]
+id = "fTpcZ7ZWRPnZH81_vng2j"
+uri = "file://structural-master-v5-export-fixed.zip"
+type = "unspecified"
+title = "Structural Master v5 - تصدير مباشر بدون مشاركة"
+
+[[outputs]]
+id = "30f_z8lPlslk58sUMyITK"
+uri = "file://structural-master-v6-etabs-import.zip"
+type = "unspecified"
+title = "Structural Master v6 - استيراد ETABS محسّن"
+
+[[outputs]]
+id = "43c-FZHoxxNnguOZNSyTf"
+uri = "file://structural-master-v7-etabs-names.zip"
+type = "unspecified"
+title = "Structural Master v7 - أسماء أصلية + إيقاف التوليد التلقائي"
+
+[[outputs]]
+id = "Rtsc63R0mgF4gXnXGmEeS"
+uri = "file://structural-master-v8.zip"
+type = "unspecified"
+title = "Structural Master v8 APK"
+
+[[outputs]]
+id = "7S--TKkl-CYCk8LVpiJb6"
+uri = "file://structural-master-capacitor.zip"
+type = "unspecified"
+title = "Structural Master APK (Capacitor) - جاهز للتثبيت"
