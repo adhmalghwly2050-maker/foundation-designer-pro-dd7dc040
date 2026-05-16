@@ -227,7 +227,8 @@ export default function ExportPanel({
         const allFilteredSlabs = slabs.filter(s => !s.storyId || selectedFloors.includes(s.storyId));
         const allFilteredBeams = beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId));
         const allFilteredCols = columns.filter(c => !c.storyId || selectedFloors.includes(c.storyId));
-        exportStructuralDrawingPDF(allFilteredSlabs, allFilteredBeams, allFilteredCols, sheetSize === 'A1' ? 'A3' : sheetSize, projectName);
+        const _drawPaper = (sheetSize === 'A1' || sheetSize === 'auto') ? 'A3' : sheetSize;
+        exportStructuralDrawingPDF(allFilteredSlabs, allFilteredBeams, allFilteredCols, _drawPaper, projectName);
       }
 
       // Total BBS for all selected floors combined
