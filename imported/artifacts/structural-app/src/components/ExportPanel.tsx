@@ -329,9 +329,9 @@ export default function ExportPanel({
           <div>
             <p className="text-xs font-medium mb-1">حجم اللوحة:</p>
             <div className="flex gap-1">
-              {(['A3', 'A4', 'A1'] as const).map(s => (
+              {(['auto', 'A3', 'A4', 'A1'] as const).map(s => (
                 <button key={s} onClick={() => setSheetSize(s)} className={`px-2 py-1 rounded border text-[11px] transition-colors ${sheetSize === s ? 'bg-primary text-primary-foreground' : 'border-border hover:bg-muted'}`}>
-                  {s}
+                  {s === 'auto' ? 'تلقائي' : s}
                 </button>
               ))}
             </div>
