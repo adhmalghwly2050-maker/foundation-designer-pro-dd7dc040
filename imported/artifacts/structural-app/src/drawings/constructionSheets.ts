@@ -468,76 +468,150 @@ function drawBeamElevation(
   doc.text('تفريد الحديد — BAR DETAILING', x, detailY);
   doc.setFont('helvetica', 'normal');
 
-  // Detail area layout: 3 bars stacked with spacing
-  const detailStartY = detailY + 6;
-  const barRowH = (detailAreaH - 12) / 3; // height allocated per bar type
-  const detailMargin = 15;
-  const detailW = mainAreaW - detailMargin * 2;
-
-  // Scale for detailing (use same horizontal scale for consistency)
-  // Total bar length determines scale
+  // ── Bar schedule table (top-right of detail zone) ──
+  const schX = x + mainAreaW - 55;
+  const schY = detailY + 1;
+  const schW = 55;
+  const schRowH = 4.5;
+  const schRows = hasBentBars && bentBarsCount > 0 ? 4 : 3;
+  doc.setDrawColor(0); doc.setLineWidth(0.2);
+  doc.rect(schX, schY, schW, schRowH * (schRows + 1));
+  // Header
+  doc.setFillColor(220, 230, 245);
+  doc.rect(schX, schY, schW, schRowH, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(4);
+  doc.text('رقم', schX + 2, schY + 3);
+  doc.text('القطر', schX + 9, schY + 3);
+  doc.text('العدد', schX + 18, schY + 3);
+  doc.text('الطول (mm)', schX + 26, schY + 3);
+  doc.text('البيان', schX + 44, schY + 3);
+  // vertical grid
+  for (const cx of [schX + 7, schX + 16, schX + 24, schX + 42]) {
+    doc.line(cx, schY, cx, schY + schRowH * (schRows + 1));
+  }
+  // horizontal grid
+  for (let ri = 1; ri <= schRows; ri++) {
+    doc.line(schX, schY + ri * schRowH, schX + schW, schY + ri * schRowH);
+  }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(3.8);
   const topTotalMm = (leftIsEnd ? hookTopMm : leftExtMm + colWidthMm / 2) + spanMm + (rightIsEnd ? hookTopMm : rightExtMm + colWidthMm / 2);
   const botTotalMm = (leftIsEnd ? hookBotMm : colWidthMm * 0.65) + spanMm + (rightIsEnd ? hookBotMm : colWidthMm * 0.65);
+  const schData: [string, string, string, string, string][] = [
+    ['1', `Φ${topDia}`, `${unifiedTopBars}`, `${Math.round(topTotalMm)}`, 'علوي مستقيم'],
+    ['2', `Φ${botDia}`, `${continuousBotBars}`, `${Math.round(botTotalMm)}`, 'سفلي مستقيم'],
+    ...(hasBentBars && bentBarsCount > 0
+      ? [['3', `Φ${botDia}`, `${bentBarsCount}`, `${Math.round(bentTotalMm)}`, 'مكسح 45°'] as [string,string,string,string,string]]
+      : []),
+  ];
+  schData.forEach(([n, d, c, l, b], i) => {
+    const ry = schY + (i + 1) * schRowH + 3;
+    doc.text(n, schX + 2, ry);
+    doc.text(d, schX + 9, ry);
+    doc.text(c, schX + 18, ry);
+    doc.text(l, schX + 26, ry);
+    doc.text(b, schX + 44, ry);
+  });
+
+  // Detail area layout: 3 bar rows stacked
+  const detailStartY = detailY + 6;
+  const barRowH = (detailAreaH - 14) / 3;
+  const detailMargin = 8;
+  const detailW = mainAreaW - detailMargin * 2 - 60; // reserve right space for schedule
+
+  // Scale: fit the longest bar in detailW
   const maxBarLen = Math.max(topTotalMm, botTotalMm, bentTotalMm || 0);
-  const detailScl = (detailW - 20) / maxBarLen;
+  const detailScl = (detailW - 10) / maxBarLen;
+  const detailOx = x + detailMargin + 8;
 
-  const detailOx = x + detailMargin + 10;
+  // ── Helper: draw column-face markers ─────────────────────────────────────
+  function drawColFaceMarkers(leftFaceX: number, rightFaceX: number, topY: number, botY: number) {
+    doc.setDrawColor(80);
+    doc.setLineWidth(0.2);
+    drawDashedLine(doc, leftFaceX,  topY - 2, leftFaceX,  botY + 2);
+    drawDashedLine(doc, rightFaceX, topY - 2, rightFaceX, botY + 2);
+    doc.setFontSize(3.2);
+    doc.setTextColor(80);
+    doc.text('CF', leftFaceX - 1,  topY - 3);
+    doc.text('CF', rightFaceX - 1, topY - 3);
+    doc.setTextColor(0);
+  }
 
-  // ── ROW 1 (bottom): Straight bottom bar ──
-  const row1Y = detailStartY + barRowH * 2 + barRowH / 2;
-  doc.setDrawColor(0);
+  // ── ROW 3 (top slot): Top straight bar ──────────────────────────────────
+  const row3Y = detailStartY + barRowH / 2;
+
+  const topExtLeftPx  = leftIsEnd  ? hookTopMm * detailScl * 0.3 : (leftExtMm + colWidthMm / 2) * detailScl;
+  const topExtRightPx = rightIsEnd ? hookTopMm * detailScl * 0.3 : (rightExtMm + colWidthMm / 2) * detailScl;
+  const topSpanPx     = spanMm * detailScl;
+
+  const tx1 = detailOx;
+  const tx2 = tx1 + topExtLeftPx + topSpanPx + topExtRightPx;
+  // column face X positions for this row
+  const txCFL = tx1 + topExtLeftPx;
+  const txCFR = tx1 + topExtLeftPx + topSpanPx;
+
+  // Extension zones shaded with dashed overlay before drawing bar
+  doc.setDrawColor(0, 0, 200);
   doc.setLineWidth(0.5);
-
-  const botHookPx = hookBotMm * detailScl;
-  const botSpanPx = spanMm * detailScl;
-  const botExtLeftPx = leftIsEnd ? 0 : colWidthMm * 0.65 * detailScl;
-  const botExtRightPx = rightIsEnd ? 0 : colWidthMm * 0.65 * detailScl;
-  
-  let bx1 = detailOx;
   if (leftIsEnd) {
-    // Hook down
-    doc.line(bx1, row1Y + botHookPx * 0.5, bx1 + botHookPx * 0.15, row1Y);
-    bx1 += botHookPx * 0.15;
+    // standard hook
+    doc.line(tx1, row3Y - hookTopMm * detailScl * 0.15, tx1 + hookTopMm * detailScl * 0.1, row3Y);
+    doc.line(tx1 + hookTopMm * detailScl * 0.1, row3Y, tx2, row3Y);
   } else {
-    bx1 = detailOx;
+    // Extension part (left) — dashed to show it enters adjacent beam
+    doc.setLineWidth(0.35);
+    drawDashedLine(doc, tx1, row3Y, txCFL, row3Y);
+    doc.setLineWidth(0.5);
+    doc.line(txCFL, row3Y, tx2, row3Y);
   }
-  const bx2 = bx1 + (leftIsEnd ? 0 : botExtLeftPx) + botSpanPx + (rightIsEnd ? 0 : botExtRightPx);
-  doc.line(bx1, row1Y, bx2, row1Y);
   if (rightIsEnd) {
-    doc.line(bx2, row1Y, bx2 + botHookPx * 0.15, row1Y + botHookPx * 0.5);
+    doc.line(tx2 - hookTopMm * detailScl * 0.1, row3Y, tx2, row3Y - hookTopMm * detailScl * 0.15);
+  } else {
+    // Extension part (right) — dashed
+    doc.setLineWidth(0.35);
+    drawDashedLine(doc, txCFR, row3Y, tx2, row3Y);
+    doc.setLineWidth(0.5);
   }
+
+  // Column face markers
+  drawColFaceMarkers(txCFL, txCFR, row3Y - 2, row3Y + 2);
+
+  // Extension labels
+  doc.setFontSize(3.5); doc.setTextColor(0, 0, 180);
+  if (!leftIsEnd)  doc.text(`امتداد\n${Math.round(leftExtMm)}mm`, tx1 + (txCFL - tx1) / 2 - 4, row3Y - 4, { align: 'center' });
+  if (!rightIsEnd) doc.text(`امتداد\n${Math.round(rightExtMm)}mm`, txCFR + (tx2 - txCFR) / 2 - 4, row3Y - 4, { align: 'center' });
+  doc.setTextColor(0);
 
   // Label
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(4.5);
-  doc.text(`حديد سفلي مستقيم: ${continuousBotBars}Φ${botDia}`, detailOx, row1Y - barRowH / 2 + 3);
-  doc.setFont('helvetica', 'normal');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(4.5); doc.setTextColor(0, 0, 160);
+  doc.text(`① حديد علوي: ${unifiedTopBars}Φ${topDia}`, detailOx, row3Y - barRowH / 2 + 3);
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(0);
 
   // Dimensions
-  const dimRow1Y = row1Y + 6;
-  if (leftIsEnd) {
-    drawDimLine(doc, detailOx, detailOx + botHookPx * 0.15, dimRow1Y, `${hookBotMm}`, [0, 0, 180]);
+  const dimTopY = row3Y + 5;
+  if (!leftIsEnd) {
+    drawDimLine(doc, tx1, txCFL, dimTopY, `Ld=${Math.round(leftExtMm + colWidthMm/2)}`, [0, 0, 180]);
+  } else {
+    drawDimLine(doc, tx1, tx1 + hookTopMm * detailScl * 0.1, dimTopY, `hook=${hookTopMm}`, [0, 0, 180]);
   }
-  const mainStartX = leftIsEnd ? detailOx + botHookPx * 0.15 : detailOx;
-  const mainEndX = bx2;
-  drawDimLine(doc, mainStartX, mainEndX, dimRow1Y, `${Math.round(botTotalMm - (leftIsEnd ? hookBotMm : 0) - (rightIsEnd ? hookBotMm : 0))}`, [0, 0, 180]);
-  if (rightIsEnd) {
-    drawDimLine(doc, bx2, bx2 + botHookPx * 0.15, dimRow1Y, `${hookBotMm}`, [0, 0, 180]);
+  drawDimLine(doc, txCFL, txCFR, dimTopY, `Ln=${Math.round(spanMm)}`, [0, 0, 180]);
+  if (!rightIsEnd) {
+    drawDimLine(doc, txCFR, tx2, dimTopY, `Ld=${Math.round(rightExtMm + colWidthMm/2)}`, [0, 0, 180]);
+  } else {
+    drawDimLine(doc, tx2 - hookTopMm * detailScl * 0.1, tx2, dimTopY, `hook=${hookTopMm}`, [0, 0, 180]);
   }
-  // Total length
-  drawDimLine(doc, detailOx, rightIsEnd ? bx2 + botHookPx * 0.15 : bx2, dimRow1Y + 6, `إجمالي = ${Math.round(botTotalMm)} mm`, [180, 0, 0]);
+  drawDimLine(doc, tx1, tx2, dimTopY + 6, `إجمالي = ${Math.round(topTotalMm)} mm`, [180, 0, 0]);
 
-  // ── ROW 2 (middle): Bent bar (if exists) ──
+  // ── ROW 2 (middle): Bent bar (if exists) ────────────────────────────────
   if (hasBentBars && bentBarsCount > 0) {
     const row2Y = detailStartY + barRowH + barRowH / 2;
     doc.setDrawColor(220, 130, 0);
     doc.setLineWidth(0.45);
 
     const seg1Px = bentSeg1Mm * detailScl;
-    const diagPx = bentDiagMm * detailScl * 0.5; // compress diagonal for display
+    const diagPx = bentDiagMm * detailScl * 0.5;
     const seg3Px = bentSeg3Mm * detailScl;
     const seg5Px = bentSeg5Mm * detailScl;
-    const riseH  = barRowH * 0.5; // visual rise for bent
+    const riseH  = barRowH * 0.48;
 
     const mx1 = detailOx;
     const mx2 = mx1 + seg1Px;
@@ -546,89 +620,85 @@ function drawBeamElevation(
     const mx5 = mx4 + diagPx;
     const mx6 = mx5 + seg5Px;
 
-    // Draw bent bar shape
-    doc.line(mx1, row2Y - riseH / 2, mx2, row2Y - riseH / 2); // upper left straight
-    doc.line(mx2, row2Y - riseH / 2, mx3, row2Y + riseH / 2); // diagonal down
-    doc.line(mx3, row2Y + riseH / 2, mx4, row2Y + riseH / 2); // bottom straight
-    doc.line(mx4, row2Y + riseH / 2, mx5, row2Y - riseH / 2); // diagonal up
-    doc.line(mx5, row2Y - riseH / 2, mx6, row2Y - riseH / 2); // upper right straight
+    // Column face positions for bent bar row (same as top bar horizontal positions)
+    const bxCFL = txCFL;
+    const bxCFR = txCFR;
+
+    // Extension segments — dashed
+    doc.setLineWidth(0.35);
+    if (!leftIsEnd)  drawDashedLine(doc, mx1, row2Y - riseH / 2, bxCFL, row2Y - riseH / 2);
+    if (!rightIsEnd) drawDashedLine(doc, bxCFR, row2Y - riseH / 2, mx6, row2Y - riseH / 2);
+    doc.setLineWidth(0.45);
+
+    // Bent bar shape
+    doc.line(leftIsEnd ? mx1 : bxCFL, row2Y - riseH / 2, mx2, row2Y - riseH / 2);
+    doc.line(mx2, row2Y - riseH / 2, mx3, row2Y + riseH / 2);
+    doc.line(mx3, row2Y + riseH / 2, mx4, row2Y + riseH / 2);
+    doc.line(mx4, row2Y + riseH / 2, mx5, row2Y - riseH / 2);
+    doc.line(mx5, row2Y - riseH / 2, rightIsEnd ? mx6 : bxCFR, row2Y - riseH / 2);
+
+    // Column face markers
+    drawColFaceMarkers(bxCFL, bxCFR, row2Y - riseH / 2 - 2, row2Y + riseH / 2 + 2);
 
     // Label
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(4.5);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(4.5);
     doc.setTextColor(180, 90, 0);
-    doc.text(`حديد مكسح: ${bentBarsCount}Φ${botDia}`, detailOx, row2Y - barRowH / 2 + 3);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(0);
+    doc.text(`② حديد مكسح: ${bentBarsCount}Φ${botDia}`, detailOx, row2Y - barRowH / 2 + 3);
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(0);
 
     // Segment dimensions
     const dimBentAbove = row2Y - riseH / 2 - 5;
     const dimBentBelow = row2Y + riseH / 2 + 5;
     drawDimLine(doc, mx1, mx2, dimBentAbove, `L1=${Math.round(bentSeg1Mm)}`, [180, 90, 0]);
-    drawDimLine(doc, mx2, mx3, dimBentBelow, `D=${Math.round(bentDiagMm)}`, [180, 90, 0]);
+    drawDimLine(doc, mx2, mx3, dimBentBelow, `45°\nD=${Math.round(bentDiagMm)}`, [180, 90, 0]);
     drawDimLine(doc, mx3, mx4, dimBentBelow, `L2=${Math.round(bentSeg3Mm)}`, [180, 90, 0]);
-    drawDimLine(doc, mx4, mx5, dimBentBelow, `D=${Math.round(bentDiagMm)}`, [180, 90, 0]);
+    drawDimLine(doc, mx4, mx5, dimBentBelow, `45°\nD=${Math.round(bentDiagMm)}`, [180, 90, 0]);
     drawDimLine(doc, mx5, mx6, dimBentAbove, `L3=${Math.round(bentSeg5Mm)}`, [180, 90, 0]);
-
-    // Angle labels
-    doc.setFontSize(4.5);
-    doc.setTextColor(180, 90, 0);
-    doc.text('45°', (mx2 + mx3) / 2 - 2, row2Y);
-    doc.text('45°', (mx4 + mx5) / 2 - 2, row2Y);
-    doc.setTextColor(0);
-
-    // Total length BELOW the bent bar drawing
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(4.5);
-    doc.text(`إجمالي المكسح ≈ ${Math.round(bentTotalMm)} mm`, (mx1 + mx6) / 2 - 15, row2Y + riseH / 2 + 14);
-    doc.setFont('helvetica', 'normal');
+    drawDimLine(doc, mx1, mx6, dimBentBelow + 6, `إجمالي ≈ ${Math.round(bentTotalMm)} mm`, [180, 0, 0]);
   }
 
-  // ── ROW 3 (top): Top straight bar ──
-  const row3Y = detailStartY + barRowH / 2;
+  // ── ROW 1 (bottom): Straight bottom bar ─────────────────────────────────
+  const row1Y = detailStartY + barRowH * 2 + barRowH / 2;
   doc.setDrawColor(0);
   doc.setLineWidth(0.5);
 
-  const topExtLeftPx  = leftIsEnd  ? hookTopMm * detailScl * 0.3 : (leftExtMm + colWidthMm / 2) * detailScl;
-  const topExtRightPx = rightIsEnd ? hookTopMm * detailScl * 0.3 : (rightExtMm + colWidthMm / 2) * detailScl;
-  const topSpanPx     = spanMm * detailScl;
+  const botHookPx    = hookBotMm * detailScl;
+  const botSpanPx    = spanMm * detailScl;
+  const botExtLeftPx = leftIsEnd  ? botHookPx * 0.15 : colWidthMm * 0.65 * detailScl;
+  const botExtRightPx= rightIsEnd ? botHookPx * 0.15 : colWidthMm * 0.65 * detailScl;
 
-  const tx1 = detailOx;
-  const tx2 = tx1 + topExtLeftPx + topSpanPx + topExtRightPx;
+  const bx1 = detailOx;
+  const bxCFL2 = bx1 + (leftIsEnd ? botHookPx * 0.15 : botExtLeftPx);
+  const bxCFR2 = bxCFL2 + botSpanPx;
+  const bx2    = bxCFR2 + (rightIsEnd ? botHookPx * 0.15 : botExtRightPx);
 
+  doc.setDrawColor(0); doc.setLineWidth(0.5);
   if (leftIsEnd) {
-    doc.line(tx1, row3Y - hookTopMm * detailScl * 0.15, tx1 + hookTopMm * detailScl * 0.1, row3Y);
-    doc.line(tx1 + hookTopMm * detailScl * 0.1, row3Y, tx2, row3Y);
-  } else {
-    doc.line(tx1, row3Y, tx2, row3Y);
+    doc.line(bx1, row1Y + botHookPx * 0.4, bx1 + botHookPx * 0.15, row1Y);
   }
+  doc.line(leftIsEnd ? bx1 + botHookPx * 0.15 : bx1, row1Y, rightIsEnd ? bx2 - botHookPx * 0.15 : bx2, row1Y);
   if (rightIsEnd) {
-    doc.line(tx2 - hookTopMm * detailScl * 0.1, row3Y, tx2, row3Y - hookTopMm * detailScl * 0.15);
+    doc.line(bx2 - botHookPx * 0.15, row1Y, bx2, row1Y + botHookPx * 0.4);
   }
+
+  // Column face markers
+  drawColFaceMarkers(bxCFL2, bxCFR2, row1Y - 2, row1Y + 2);
 
   // Label
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(4.5);
-  doc.text(`حديد علوي: ${unifiedTopBars}Φ${topDia}`, detailOx, row3Y - barRowH / 2 + 3);
-  doc.setFont('helvetica', 'normal');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(4.5); doc.setTextColor(0, 100, 0);
+  doc.text(`③ حديد سفلي: ${continuousBotBars}Φ${botDia}`, detailOx, row1Y - barRowH / 2 + 3);
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(0);
 
   // Dimensions
-  const dimTopY = row3Y + 6;
-  if (!leftIsEnd) {
-    drawDimLine(doc, tx1, tx1 + (leftExtMm + colWidthMm / 2) * detailScl, dimTopY, `L/5=${Math.round(leftExtMm)}`, [0, 0, 180]);
-  } else {
-    drawDimLine(doc, tx1, tx1 + hookTopMm * detailScl * 0.3, dimTopY, `hook=${hookTopMm}`, [0, 0, 180]);
+  const dimRow1Y = row1Y + 5;
+  if (leftIsEnd) {
+    drawDimLine(doc, bx1, bxCFL2, dimRow1Y, `hook=${hookBotMm}`, [0, 100, 0]);
   }
-  const topMidStart = leftIsEnd ? tx1 + hookTopMm * detailScl * 0.3 : tx1 + (leftExtMm + colWidthMm / 2) * detailScl;
-  const topMidEnd = rightIsEnd ? tx2 - hookTopMm * detailScl * 0.3 : tx2 - (rightExtMm + colWidthMm / 2) * detailScl;
-  drawDimLine(doc, topMidStart, topMidEnd, dimTopY, `span=${Math.round(spanMm)}`, [0, 0, 180]);
-  if (!rightIsEnd) {
-    drawDimLine(doc, topMidEnd, tx2, dimTopY, `L/5=${Math.round(rightExtMm)}`, [0, 0, 180]);
-  } else {
-    drawDimLine(doc, tx2 - hookTopMm * detailScl * 0.3, tx2, dimTopY, `hook=${hookTopMm}`, [0, 0, 180]);
+  drawDimLine(doc, bxCFL2, bxCFR2, dimRow1Y, `Ln=${Math.round(spanMm)}`, [0, 100, 0]);
+  if (rightIsEnd) {
+    drawDimLine(doc, bxCFR2, bx2, dimRow1Y, `hook=${hookBotMm}`, [0, 100, 0]);
   }
-  // Total
-  drawDimLine(doc, tx1, tx2, dimTopY + 6, `إجمالي = ${Math.round(topTotalMm)} mm`, [180, 0, 0]);
+  drawDimLine(doc, bx1, bx2, dimRow1Y + 6, `إجمالي = ${Math.round(botTotalMm)} mm`, [180, 0, 0]);
 }
 
 // =================== BUILDING CROSS-SECTION ELEVATION (EXPORT-4) ===================
