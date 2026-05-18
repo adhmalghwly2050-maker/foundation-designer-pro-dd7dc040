@@ -1874,10 +1874,10 @@ const Index = () => {
                               <TableRow key={`${s.storyId}-${s.id}`}>
                                 {isAllStories && <TableCell className="text-xs font-medium text-muted-foreground">{getStoryLabel(s.storyId)}</TableCell>}
                                 <TableCell><Input value={s.id} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'id', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" value={s.x1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" value={s.y1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" value={s.x2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" value={s.y2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
                                 <TableCell className="font-mono text-xs">{((stories.find(st => st.id === s.storyId)?.elevation ?? 0) + (stories.find(st => st.id === s.storyId)?.height ?? colL)).toFixed(0)}</TableCell>
                                 <TableCell className="font-mono text-xs">{sd?.lx.toFixed(1)}</TableCell>
                                 <TableCell className="font-mono text-xs">{sd?.ly.toFixed(1)}</TableCell>

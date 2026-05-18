@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "ObeE0i8XL3H0_Pb845l_A"
+uri = "file://structural-master-debug.zip"
+type = "unspecified"
+title = "Structural Master - Debug APK (داخل الملف المضغوط)"
