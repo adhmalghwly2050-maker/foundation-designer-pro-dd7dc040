@@ -405,7 +405,8 @@ export default function ExportPanel({
                   titleBlockConfig: titleBlockConfig
                     ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy }
                     : { fc: mat.fc, fy: mat.fy },
-                },
+                  devLengths,
+                } as any,
                 sheetSize === 'A4' ? 'A4' : 'A3',
               );
             }}

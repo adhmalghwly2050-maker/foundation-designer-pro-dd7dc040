@@ -473,122 +473,359 @@ function generateSheetHTML(
 
 // ─── Beam Elevation Sheet (HTML/SVG) ───
 
-function svgSingleBeamElevation(
-  beam: Beam, design: BeamDesignData,
-  ox: number, oy: number, zoneW: number, zoneH: number,
+// ── Helpers ──
+
+function _isEndSupport(beam: Beam, side: 'left' | 'right', allBeams: Beam[]): boolean {
+  const colId = side === 'left' ? (beam as any).fromCol : (beam as any).toCol;
+  const others = allBeams.filter(b => b.id !== beam.id && ((b as any).fromCol === colId || (b as any).toCol === colId));
+  return !others.some(b => (b as any).direction === (beam as any).direction);
+}
+
+function _svgDimH(x1: number, x2: number, y: number, text: string, color = '#3c3c3c', fsz = 5.5): string {
+  if (Math.abs(x2 - x1) < 1) return '';
+  const mid = (x1 + x2) / 2;
+  return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${color}" stroke-width="0.4"/>
+    <line x1="${x1}" y1="${y - 2.5}" x2="${x1}" y2="${y + 2.5}" stroke="${color}" stroke-width="0.4"/>
+    <line x1="${x2}" y1="${y - 2.5}" x2="${x2}" y2="${y + 2.5}" stroke="${color}" stroke-width="0.4"/>
+    <text x="${mid}" y="${y - 2}" text-anchor="middle" font-size="${fsz}" fill="${color}" font-family="Arial">${text}</text>`;
+}
+
+function _svgDimV(x: number, y1: number, y2: number, text: string, color = '#3c3c3c', fsz = 5.5): string {
+  if (Math.abs(y2 - y1) < 1) return '';
+  const mid = (y1 + y2) / 2;
+  return `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="${color}" stroke-width="0.4"/>
+    <line x1="${x - 2.5}" y1="${y1}" x2="${x + 2.5}" y2="${y1}" stroke="${color}" stroke-width="0.4"/>
+    <line x1="${x - 2.5}" y1="${y2}" x2="${x + 2.5}" y2="${y2}" stroke="${color}" stroke-width="0.4"/>
+    <text x="${x + 3}" y="${mid + 2}" font-size="${fsz}" fill="${color}" font-family="Arial">${text}</text>`;
+}
+
+function _svgDash(x1: number, y1: number, x2: number, y2: number, color = '#999', sw = 0.5): string {
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${sw}" stroke-dasharray="3,2"/>`;
+}
+
+function _svgCrossSection(
+  x: number, y: number, w: number, h: number,
+  bMm: number, hMm: number, coverMm: number, stirDiaMm: number,
+  nTop: number, topDia: number, nBot: number, botDia: number, title: string,
 ): string {
-  const spanM = beam.length;
-  const isShort = spanM <= 2.0;
-  const scl = (zoneW - 36) / spanM;
-  const bh = Math.min(zoneH - 48, Math.max(24, (beam.h / 1000) * scl * 2.5));
-  const bx = ox + 18;
-  const by = oy + 22;
-  const bw = spanM * scl;
-  const cover = 4;
+  const scl = Math.min((w - 4) / bMm, (h - 16) / hMm);
+  const sW = bMm * scl; const sH = hMm * scl;
+  const sx = x + (w - sW) / 2; const sy = y + 14;
+  let s = `<rect x="${sx}" y="${sy}" width="${sW}" height="${sH}" fill="#f5f5f5" stroke="#333" stroke-width="0.8"/>`;
+  const stC = coverMm * scl; const stD = stirDiaMm * scl;
+  s += `<rect x="${sx + stC}" y="${sy + stC}" width="${sW - 2*stC}" height="${sH - 2*stC}" fill="none" stroke="#555" stroke-width="0.5"/>`;
+  const topR = Math.max((topDia * scl) / 2, 1.2);
+  if (nTop > 0) {
+    const tY = sy + stC + stD + topR;
+    const tAv = sW - 2*stC - 2*stD - 2*topR;
+    const tSp = nTop > 1 ? tAv / (nTop - 1) : 0;
+    for (let i = 0; i < nTop; i++) s += `<circle cx="${sx + stC + stD + topR + i * tSp}" cy="${tY}" r="${topR}" fill="#000"/>`;
+  }
+  const botR = Math.max((botDia * scl) / 2, 1.2);
+  if (nBot > 0) {
+    const bY = sy + sH - stC - stD - botR;
+    const bAv = sW - 2*stC - 2*stD - 2*botR;
+    const bSp = nBot > 1 ? bAv / (nBot - 1) : 0;
+    for (let i = 0; i < nBot; i++) s += `<circle cx="${sx + stC + stD + botR + i * bSp}" cy="${bY}" r="${botR}" fill="#000"/>`;
+  }
+  s += `<text x="${x + w/2}" y="${y + 9}" text-anchor="middle" font-size="5.5" font-weight="bold" fill="#000" font-family="Arial">${title}</text>`;
+  s += `<text x="${sx + sW/2}" y="${sy + sH + 8}" text-anchor="middle" font-size="4.5" fill="#666" font-family="Arial">${bMm}×${hMm} mm</text>`;
+  s += `<text x="${sx - 2}" y="${sy + sH/2 + 2}" text-anchor="end" font-size="4" fill="#999" font-family="Arial">c=${coverMm}</text>`;
+  return s;
+}
 
-  const totalBot = design.flexMid.bars;
-  const bentCount = (!isShort && totalBot >= 4) ? Math.min(2, Math.floor(totalBot / 2)) : 0;
-  const straightBot = totalBot - bentCount;
+function _svgColFaceMarkers(lfx: number, rfx: number, topY: number, botY: number): string {
+  return `<line x1="${lfx}" y1="${topY - 3}" x2="${lfx}" y2="${botY + 3}" stroke="#777" stroke-width="0.4" stroke-dasharray="2,2"/>
+    <line x1="${rfx}" y1="${topY - 3}" x2="${rfx}" y2="${botY + 3}" stroke="#777" stroke-width="0.4" stroke-dasharray="2,2"/>
+    <text x="${lfx}" y="${topY - 4}" text-anchor="middle" font-size="4" fill="#777" font-family="Arial">CF</text>
+    <text x="${rfx}" y="${topY - 4}" text-anchor="middle" font-size="4" fill="#777" font-family="Arial">CF</text>`;
+}
 
-  const stirMatch = design.shear.stirrups.match(/(\d+)Φ(\d+)@(\d+)/);
-  const stirSpacing = stirMatch ? parseInt(stirMatch[3]) : 200;
-  const nStirs = Math.min(30, Math.ceil((spanM * 1000) / stirSpacing));
+function svgBeamElevationDetailed(
+  beam: Beam, design: BeamDesignData,
+  x: number, y: number, drawW: number, drawH: number,
+  devLengths: DevelopmentLengths[], allBeams: Beam[],
+): string {
+  const spanMm  = beam.length * 1000;
+  const bH      = beam.h;
+  const bB      = beam.b;
+  const coverMm = 40;
+  const stirDMm = 10;
+  const topDia  = Math.max(design.flexLeft.dia, design.flexRight.dia);
+  const botDia  = design.flexMid.dia;
+  const uTop    = Math.max(design.flexLeft.bars, design.flexRight.bars);
+  const d_eff   = bH - coverMm - stirDMm - botDia / 2;
+
+  const dlTop = devLengths.find(d => d.dia === topDia) ?? { ld_straight: Math.round(0.6 * topDia * 420 / Math.sqrt(28)), ldh_standard_hook: Math.max(Math.round(0.24 * topDia * 420 / Math.sqrt(28)), 8 * topDia, 150), dia: topDia } as DevelopmentLengths;
+  const dlBot = devLengths.find(d => d.dia === botDia) ?? { ld_straight: Math.round(0.6 * botDia * 420 / Math.sqrt(28)), ldh_standard_hook: Math.max(Math.round(0.24 * botDia * 420 / Math.sqrt(28)), 8 * botDia, 150), dia: botDia } as DevelopmentLengths;
+
+  const leftIsEnd  = _isEndSupport(beam, 'left', allBeams);
+  const rightIsEnd = _isEndSupport(beam, 'right', allBeams);
+  const adjExtMm   = Math.max(dlTop.ld_straight, spanMm / 5);
+  const leftExtMm  = leftIsEnd  ? 0 : adjExtMm;
+  const rightExtMm = rightIsEnd ? 0 : adjExtMm;
+  const hookBot    = Math.max(12 * botDia, 150);
+  const hookTop    = Math.max(12 * topDia, 150);
+  const colWMm     = 400;
+
+  const totBot   = design.flexMid.bars;
+  const hasBent  = totBot >= 4;
+  const nBent    = hasBent ? Math.min(2, Math.floor(totBot / 2)) : 0;
+  const nStraight = totBot - nBent;
+
+  // ── Layout ──
+  const secPanelW = 88;
+  const mainW  = drawW - secPanelW - 6;
+  const elevH  = drawH * 0.50;
+  const detH   = drawH * 0.45;
+  const detY   = y + elevH + 8;
+
+  // ── Scale ──
+  const leftRes  = Math.max(leftExtMm + colWMm, colWMm * 1.1);
+  const rightRes = Math.max(rightExtMm + colWMm, colWMm * 1.1);
+  const totMm    = leftRes + spanMm + rightRes;
+  const mX = 4;
+  const avW = mainW - mX * 2;
+  const avH = elevH - 30;
+  const scl   = Math.min(avW / totMm, avH / (bH * 2.2), 0.16);
+  const beamW = spanMm * scl;
+  const beamH = bH * scl;
+  const colW  = colWMm * scl;
+  const ox = x + mX + (avW - totMm * scl) / 2 + leftRes * scl;
+  const oy = y + 18 + (avH - beamH) / 2;
+  const cov    = coverMm * scl;
+  const stirD  = stirDMm  * scl;
+  const topBarY = oy + cov + stirD + (topDia * scl) / 2;
+  const botBarY = oy + beamH - cov - stirD - (botDia * scl) / 2;
 
   let s = '';
-  // Beam body
-  s += `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="#f0f8f0" stroke="#333" stroke-width="1.2"/>`;
-  // Column stubs at supports
-  const colW = Math.min(20, bw * 0.12);
-  s += `<rect x="${bx - colW}" y="${by - 8}" width="${colW}" height="${bh + 16}" fill="#ccc" stroke="#555" stroke-width="1"/>`;
-  s += `<rect x="${bx + bw}" y="${by - 8}" width="${colW}" height="${bh + 16}" fill="#ccc" stroke="#555" stroke-width="1"/>`;
-  // Stirrups
-  for (let i = 1; i < nStirs; i++) {
-    const sx = bx + (i / nStirs) * bw;
-    s += `<line x1="${sx}" y1="${by + 2}" x2="${sx}" y2="${by + bh - 2}" stroke="#aaa" stroke-width="0.5"/>`;
+
+  // ── Header ──
+  s += `<text x="${x}" y="${y + 7}" font-size="7" font-weight="bold" fill="#000" font-family="Arial">BEAM ${beam.id}  ·  b=${bB} × h=${bH} mm  ·  L=${beam.length.toFixed(2)} m</text>`;
+  s += `<text x="${x}" y="${y + 14}" font-size="5" fill="#666" font-family="Arial">f'c=28 MPa   fy=420 MPa   cover=${coverMm} mm   d_eff=${Math.round(d_eff)} mm</text>`;
+
+  // ── Column dashed outlines ──
+  s += _svgDash(ox - colW, oy, ox, oy); s += _svgDash(ox - colW, oy + beamH, ox, oy + beamH); s += _svgDash(ox - colW, oy, ox - colW, oy + beamH);
+  s += _svgDash(ox + beamW, oy, ox + beamW + colW, oy); s += _svgDash(ox + beamW, oy + beamH, ox + beamW + colW, oy + beamH); s += _svgDash(ox + beamW + colW, oy, ox + beamW + colW, oy + beamH);
+
+  // ── Column centrelines ──
+  s += _svgDash(ox - colW / 2, oy - 8, ox - colW / 2, oy + beamH + 6, '#bbb', 0.4);
+  s += _svgDash(ox + beamW + colW / 2, oy - 8, ox + beamW + colW / 2, oy + beamH + 6, '#bbb', 0.4);
+
+  // ── Adjacent beam stubs ──
+  if (!leftIsEnd) {
+    const ap = leftExtMm * scl;
+    s += _svgDash(ox - colW - ap, oy, ox - colW, oy, '#ccc'); s += _svgDash(ox - colW - ap, oy + beamH, ox - colW, oy + beamH, '#ccc'); s += _svgDash(ox - colW - ap, oy, ox - colW - ap, oy + beamH, '#ccc');
   }
-  // Bottom straight bars
-  const botY = by + bh - cover - 2;
-  s += `<line x1="${bx + 2}" y1="${botY}" x2="${bx + bw - 2}" y2="${botY}" stroke="#1a56db" stroke-width="${Math.max(1.5, straightBot * 0.7)}" stroke-linecap="round"/>`;
-  s += `<text x="${bx + bw / 2}" y="${botY + 9}" text-anchor="middle" font-size="7" fill="#1a56db" font-family="Arial">${straightBot > 0 ? fmtRebar(straightBot, design.flexMid.dia) : ''}</text>`;
-  // Bent-up bars (only for L > 2m)
-  if (bentCount > 0) {
-    const b1 = bw * 0.22; const b2 = bw * 0.42;
-    s += `<polyline points="${bx + b1},${botY} ${bx + b2},${by + cover + 2}" fill="none" stroke="#c44" stroke-width="1.2"/>`;
-    s += `<line x1="${bx}" y1="${by + cover + 2}" x2="${bx + b2}" y2="${by + cover + 2}" stroke="#c44" stroke-width="1.2"/>`;
-    const b3 = bw * 0.58; const b4 = bw * 0.78;
-    s += `<polyline points="${bx + b4},${botY} ${bx + b3},${by + cover + 2}" fill="none" stroke="#c44" stroke-width="1.2"/>`;
-    s += `<line x1="${bx + b3}" y1="${by + cover + 2}" x2="${bx + bw}" y2="${by + cover + 2}" stroke="#c44" stroke-width="1.2"/>`;
-    s += `<text x="${bx + bw / 2}" y="${by + cover - 2}" text-anchor="middle" font-size="6.5" fill="#c44" font-family="Arial">${fmtRebar(bentCount, design.flexMid.dia)} مكسح</text>`;
+  if (!rightIsEnd) {
+    const ap = rightExtMm * scl;
+    s += _svgDash(ox + beamW + colW, oy, ox + beamW + colW + ap, oy, '#ccc'); s += _svgDash(ox + beamW + colW, oy + beamH, ox + beamW + colW + ap, oy + beamH, '#ccc'); s += _svgDash(ox + beamW + colW + ap, oy, ox + beamW + colW + ap, oy + beamH, '#ccc');
   }
-  // Top bars left
-  const topY = by + cover + 2;
-  const leftExt = Math.min(bw * 0.38, bw - 10);
-  if (design.flexLeft.bars > 0) {
-    s += `<line x1="${bx}" y1="${topY}" x2="${bx + leftExt}" y2="${topY}" stroke="#8b0000" stroke-width="${Math.max(1.5, design.flexLeft.bars * 0.6)}" stroke-linecap="round"/>`;
-    s += `<text x="${bx + leftExt / 2}" y="${topY - 3}" text-anchor="middle" font-size="7" fill="#8b0000" font-family="Arial">${fmtRebar(design.flexLeft.bars, design.flexLeft.dia)}</text>`;
+
+  // ── Beam outline ──
+  s += `<rect x="${ox}" y="${oy}" width="${beamW}" height="${beamH}" fill="#f0f8f0" stroke="#000" stroke-width="1.2"/>`;
+
+  // ── Unified top bar ──
+  const tStartX = leftIsEnd  ? ox - Math.min(hookTop * 0.5 * scl, colW * 0.7) : ox - colW - leftExtMm * scl;
+  const tEndX   = rightIsEnd ? ox + beamW + Math.min(hookTop * 0.5 * scl, colW * 0.7) : ox + beamW + colW + rightExtMm * scl;
+  if (leftIsEnd)  s += `<line x1="${tStartX}" y1="${topBarY - hookTop * scl * 0.3}" x2="${tStartX + hookTop * scl * 0.15}" y2="${topBarY}" stroke="#8b0000" stroke-width="1.2"/>`;
+  s += `<line x1="${leftIsEnd ? tStartX + hookTop * scl * 0.15 : tStartX}" y1="${topBarY}" x2="${rightIsEnd ? tEndX - hookTop * scl * 0.15 : tEndX}" y2="${topBarY}" stroke="#8b0000" stroke-width="1.2"/>`;
+  if (rightIsEnd) s += `<line x1="${tEndX - hookTop * scl * 0.15}" y1="${topBarY}" x2="${tEndX}" y2="${topBarY - hookTop * scl * 0.3}" stroke="#8b0000" stroke-width="1.2"/>`;
+
+  // ── Bottom bar ──
+  const bStartX = leftIsEnd  ? ox - hookBot * scl * 0.5 : ox - colW * 0.65;
+  const bEndX   = rightIsEnd ? ox + beamW + hookBot * scl * 0.5 : ox + beamW + colW * 0.65;
+  if (leftIsEnd)  s += `<line x1="${bStartX}" y1="${botBarY + hookBot * scl * 0.5}" x2="${bStartX + hookBot * scl * 0.2}" y2="${botBarY}" stroke="#1a56db" stroke-width="1.2"/>`;
+  s += `<line x1="${leftIsEnd ? bStartX + hookBot * scl * 0.2 : bStartX}" y1="${botBarY}" x2="${rightIsEnd ? bEndX - hookBot * scl * 0.2 : bEndX}" y2="${botBarY}" stroke="#1a56db" stroke-width="1.2"/>`;
+  if (rightIsEnd) s += `<line x1="${bEndX - hookBot * scl * 0.2}" y1="${botBarY}" x2="${bEndX}" y2="${botBarY + hookBot * scl * 0.5}" stroke="#1a56db" stroke-width="1.2"/>`;
+
+  // ── Bent bars ──
+  let bSeg1 = 0, bDiag = 0, bSeg3 = 0, bSeg5 = 0, bTotal = 0;
+  if (hasBent && nBent > 0) {
+    const bTY = topBarY + stirD * 0.3; const bBY = botBarY - stirD * 0.3;
+    const rise = bBY - bTY; const riseMm = rise / scl; const horiz = riseMm; const diagMm = Math.sqrt(2) * riseMm;
+    const dnSt = ox + spanMm * 0.22 * scl; const dnEnd = dnSt + horiz * scl;
+    const upEnd = ox + spanMm * 0.78 * scl; const upSt = upEnd - horiz * scl;
+    const bLSt = leftIsEnd  ? ox + 2 : ox - colW - leftExtMm * scl;
+    const bREn = rightIsEnd ? ox + beamW - 2 : ox + beamW + colW + rightExtMm * scl;
+    for (let bi = 0; bi < nBent; bi++) {
+      const yo = bi * 2;
+      s += `<polyline points="${bLSt},${bTY+yo} ${dnSt},${bTY+yo} ${dnEnd},${bBY+yo} ${upSt},${bBY+yo} ${upEnd},${bTY+yo} ${bREn},${bTY+yo}" fill="none" stroke="#dc6400" stroke-width="1"/>`;
+    }
+    const lExtB = leftIsEnd  ? 0 : colWMm * 0.5 + leftExtMm;
+    const rExtB = rightIsEnd ? 0 : colWMm * 0.5 + rightExtMm;
+    bSeg1 = spanMm * 0.22 + lExtB; bDiag = diagMm; bSeg3 = spanMm * (0.78 - 0.22) - 2 * horiz; bSeg5 = spanMm * (1 - 0.78) + rExtB;
+    bTotal = bSeg1 + bDiag + bSeg3 + bDiag + bSeg5;
   }
-  // Top bars right
-  const rightExt = Math.min(bw * 0.38, bw - 10);
-  if (design.flexRight.bars > 0) {
-    s += `<line x1="${bx + bw - rightExt}" y1="${topY}" x2="${bx + bw}" y2="${topY}" stroke="#8b0000" stroke-width="${Math.max(1.5, design.flexRight.bars * 0.6)}" stroke-linecap="round"/>`;
-    s += `<text x="${bx + bw - rightExt / 2}" y="${topY - 3}" text-anchor="middle" font-size="7" fill="#8b0000" font-family="Arial">${fmtRebar(design.flexRight.bars, design.flexRight.dia)}</text>`;
+
+  // ── Stirrups ──
+  const stM = design.shear.stirrups.match(/(\d+)Φ(\d+)@(\d+)/);
+  const stSp = stM ? parseInt(stM[3]) : 150; const stDv = stM ? parseInt(stM[2]) : 10;
+  const z1Sp = Math.max(Math.floor(stSp * 0.6 / 25) * 25, 75);
+  const z1L = d_eff * scl; const z1Px = z1Sp * scl; const z2Px = stSp * scl; const fstPx = 50 * scl;
+  for (let sx = ox + fstPx; sx <= ox + z1L; sx += z1Px) s += `<line x1="${sx}" y1="${oy+1}" x2="${sx}" y2="${oy+beamH-1}" stroke="#0000b4" stroke-width="0.3"/>`;
+  for (let sx = ox + beamW - fstPx; sx >= ox + beamW - z1L; sx -= z1Px) s += `<line x1="${sx}" y1="${oy+1}" x2="${sx}" y2="${oy+beamH-1}" stroke="#0000b4" stroke-width="0.3"/>`;
+  for (let sx = ox + z1L + z2Px; sx < ox + beamW - z1L; sx += z2Px) s += `<line x1="${sx}" y1="${oy+1}" x2="${sx}" y2="${oy+beamH-1}" stroke="#0000b4" stroke-width="0.3"/>`;
+
+  // ── Beam dimensions ──
+  s += _svgDimV(ox - 14, oy, oy + beamH, `h=${bH}`, '#000');
+  s += _svgDimH(ox, ox + beamW, oy + beamH + 10, `Ln = ${beam.length.toFixed(2)} m`, '#000');
+  s += `<text x="${ox + beamW/2}" y="${oy + beamH - 2}" text-anchor="middle" font-size="5" fill="#777" font-family="Arial">b=${bB}</text>`;
+
+  // ── Bar info (right of beam) ──
+  const inX = ox + beamW + colW + 6; const inY = oy + 8;
+  s += `<text x="${inX}" y="${inY}"    font-size="6.5" font-weight="bold" fill="#8b0000" font-family="Arial">حديد علوي: ${uTop}Φ${topDia}</text>`;
+  s += `<text x="${inX}" y="${inY+9}"  font-size="6.5" font-weight="bold" fill="#1a56db" font-family="Arial">حديد سفلي: ${nStraight}Φ${botDia}</text>`;
+  if (nBent > 0) s += `<text x="${inX}" y="${inY+18}" font-size="6.5" font-weight="bold" fill="#dc6400" font-family="Arial">مكسح: ${nBent}Φ${botDia}</text>`;
+  s += `<text x="${inX}" y="${inY+27}" font-size="6.5" font-weight="bold" fill="#0000a0" font-family="Arial">كانات: Φ${stDv}@${z1Sp}/${stSp}</text>`;
+
+  // ── Section cut marks A-A, B-B, C-C ──
+  const secPos: [number, string][] = [[ox + colW * 0.1, 'A'], [ox + beamW / 2, 'B'], [ox + beamW - colW * 0.1, 'C']];
+  for (const [sx, lb] of secPos) {
+    s += `<line x1="${sx-3}" y1="${oy-8}" x2="${sx+3}" y2="${oy-8}" stroke="#000" stroke-width="0.8"/>`;
+    s += `<line x1="${sx}" y1="${oy-8}" x2="${sx}" y2="${oy}" stroke="#000" stroke-width="0.8"/>`;
+    s += `<line x1="${sx}" y1="${oy+beamH}" x2="${sx}" y2="${oy+beamH+5}" stroke="#000" stroke-width="0.8"/>`;
+    s += `<text x="${sx}" y="${oy-10}" text-anchor="middle" font-size="6" font-weight="bold" fill="#000" font-family="Arial">${lb}-${lb}</text>`;
   }
-  // Stirrup label
-  if (stirMatch) {
-    s += `<text x="${bx + 6}" y="${by + bh / 2 + 3}" font-size="6" fill="#555" font-family="Arial">Φ${stirMatch[2]}@${stirMatch[3]}</text>`;
+
+  // ── Cross-sections right panel ──
+  const spX = x + mainW + 4; const spH = (elevH - 12) / 3;
+  s += _svgCrossSection(spX, y+2,        secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop,            topDia, design.flexMid.bars,          botDia, 'SEC A-A (LEFT)');
+  s += _svgCrossSection(spX, y+spH+2,    secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, 0,               topDia, Math.max(nStraight, 2),        botDia, 'SEC B-B (MID)');
+  s += _svgCrossSection(spX, y+2*spH+2,  secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop,            topDia, design.flexMid.bars,          botDia, 'SEC C-C (RIGHT)');
+
+  // ═══════════════════════════════════════════════════════
+  // PART 2: BAR DETAILING — تفريد الحديد
+  // ═══════════════════════════════════════════════════════
+  s += `<line x1="${x}" y1="${detY - 6}" x2="${x + drawW}" y2="${detY - 6}" stroke="#000" stroke-width="0.5"/>`;
+  s += `<text x="${x}" y="${detY + 1}" font-size="7" font-weight="bold" fill="#000" font-family="Arial">تفريد الحديد — BAR DETAILING</text>`;
+
+  // Bar schedule table
+  const topTot = (leftIsEnd ? hookTop : leftExtMm + colWMm/2) + spanMm + (rightIsEnd ? hookTop : rightExtMm + colWMm/2);
+  const botTot = (leftIsEnd ? hookBot : colWMm * 0.65) + spanMm + (rightIsEnd ? hookBot : colWMm * 0.65);
+  const schX = x + mainW - 72; const schY = detY + 4; const schW = 72; const schRowH = 6;
+  const schRows = hasBent && nBent > 0 ? 3 : 2;
+  s += `<rect x="${schX}" y="${schY}" width="${schW}" height="${schRowH*(schRows+1)}" fill="white" stroke="#000" stroke-width="0.4"/>`;
+  s += `<rect x="${schX}" y="${schY}" width="${schW}" height="${schRowH}" fill="#d0d8f0" stroke="#000" stroke-width="0.4"/>`;
+  const cs = [schX+2, schX+12, schX+22, schX+32, schX+52];
+  ['رقم','القطر','العدد','الطول mm','البيان'].forEach((h, i) => { s += `<text x="${cs[i]}" y="${schY+schRowH-1}" font-size="4.5" font-weight="bold" fill="#000" font-family="Arial">${h}</text>`; });
+  [cs[0]+8, cs[1]+8, cs[2]+8, cs[3]+18].forEach(cx => { s += `<line x1="${cx}" y1="${schY}" x2="${cx}" y2="${schY+schRowH*(schRows+1)}" stroke="#000" stroke-width="0.3"/>`; });
+  for (let ri = 1; ri <= schRows; ri++) s += `<line x1="${schX}" y1="${schY+ri*schRowH}" x2="${schX+schW}" y2="${schY+ri*schRowH}" stroke="#000" stroke-width="0.3"/>`;
+  const schData = [['1',`Φ${topDia}`,`${uTop}`,`${Math.round(topTot)}`,'علوي'],['2',`Φ${botDia}`,`${nStraight}`,`${Math.round(botTot)}`,'سفلي'],...(hasBent&&nBent>0?[['3',`Φ${botDia}`,`${nBent}`,`${Math.round(bTotal)}`,'مكسح']]:[])] as string[][];
+  schData.forEach(([n,d,c,l,b],i) => {
+    const ry = schY+(i+1)*schRowH+schRowH-1;
+    [n,d,c,l,b].forEach((v,j) => { s += `<text x="${cs[j]}" y="${ry}" font-size="4.5" fill="#000" font-family="Arial">${v}</text>`; });
+  });
+
+  // Detail rows layout
+  const dSt = detY + 8; const rowCount = hasBent && nBent > 0 ? 3 : 2;
+  const bRowH = (detH - 16) / rowCount;
+  const dMarg = 8; const dW = mainW - dMarg * 2 - 80;
+  const maxL = Math.max(topTot, botTot, bTotal || 0);
+  const dScl = (dW - 10) / maxL;
+  const dOx = x + dMarg + 8;
+
+  // ROW TOP: Top straight bar
+  const r3Y = dSt + bRowH / 2;
+  const tELP = leftIsEnd  ? hookTop * dScl * 0.3 : (leftExtMm + colWMm/2) * dScl;
+  const tERP = rightIsEnd ? hookTop * dScl * 0.3 : (rightExtMm + colWMm/2) * dScl;
+  const tSpP = spanMm * dScl;
+  const tx1 = dOx; const tx2 = tx1 + tELP + tSpP + tERP;
+  const tCFL = tx1 + tELP; const tCFR = tx1 + tELP + tSpP;
+  if (leftIsEnd) {
+    s += `<line x1="${tx1}" y1="${r3Y - hookTop*dScl*0.15}" x2="${tx1+hookTop*dScl*0.1}" y2="${r3Y}" stroke="#0000c8" stroke-width="1"/>`;
+    s += `<line x1="${tx1+hookTop*dScl*0.1}" y1="${r3Y}" x2="${tx2}" y2="${r3Y}" stroke="#0000c8" stroke-width="1"/>`;
+  } else {
+    s += `<line x1="${tx1}" y1="${r3Y}" x2="${tCFL}" y2="${r3Y}" stroke="#0000c8" stroke-width="0.5" stroke-dasharray="3,2"/>`;
+    s += `<line x1="${tCFL}" y1="${r3Y}" x2="${tx2}" y2="${r3Y}" stroke="#0000c8" stroke-width="1"/>`;
   }
-  // Beam label and dimensions
-  s += `<text x="${bx}" y="${oy + 12}" font-size="8" font-weight="bold" fill="#000" font-family="Arial">${beam.id}  ${beam.b}×${beam.h}mm</text>`;
-  // Span dimension line
-  s += `<line x1="${bx}" y1="${by + bh + 6}" x2="${bx + bw}" y2="${by + bh + 6}" stroke="#666" stroke-width="0.8"/>`;
-  s += `<line x1="${bx}" y1="${by + bh + 2}" x2="${bx}" y2="${by + bh + 10}" stroke="#666" stroke-width="0.8"/>`;
-  s += `<line x1="${bx + bw}" y1="${by + bh + 2}" x2="${bx + bw}" y2="${by + bh + 10}" stroke="#666" stroke-width="0.8"/>`;
-  s += `<text x="${bx + bw / 2}" y="${by + bh + 18}" text-anchor="middle" font-size="7" fill="#555" font-family="Arial">L = ${spanM.toFixed(2)} m${isShort ? '  ← حديد سفلي مستمر كامل' : ''}</text>`;
+  if (rightIsEnd) s += `<line x1="${tx2-hookTop*dScl*0.1}" y1="${r3Y}" x2="${tx2}" y2="${r3Y-hookTop*dScl*0.15}" stroke="#0000c8" stroke-width="1"/>`;
+  else { s += `<line x1="${tCFR}" y1="${r3Y}" x2="${tx2}" y2="${r3Y}" stroke="#0000c8" stroke-width="0.5" stroke-dasharray="3,2"/>`; }
+  s += _svgColFaceMarkers(tCFL, tCFR, r3Y-3, r3Y+3);
+  if (!leftIsEnd)  s += `<text x="${(tx1+tCFL)/2}" y="${r3Y-7}" text-anchor="middle" font-size="4.5" fill="#0000b4" font-family="Arial">امتداد ${Math.round(leftExtMm)}mm</text>`;
+  if (!rightIsEnd) s += `<text x="${(tCFR+tx2)/2}" y="${r3Y-7}" text-anchor="middle" font-size="4.5" fill="#0000b4" font-family="Arial">امتداد ${Math.round(rightExtMm)}mm</text>`;
+  s += `<text x="${dOx}" y="${r3Y-bRowH/2+5}" font-size="6" font-weight="bold" fill="#0000a0" font-family="Arial">① حديد علوي: ${uTop}Φ${topDia}</text>`;
+  const dTY = r3Y + 8;
+  if (!leftIsEnd) s += _svgDimH(tx1, tCFL, dTY, `Ld=${Math.round(leftExtMm+colWMm/2)}`, '#0000b4');
+  else            s += _svgDimH(tx1, tx1+hookTop*dScl*0.1, dTY, `hook=${hookTop}`, '#0000b4');
+  s += _svgDimH(tCFL, tCFR, dTY, `Ln=${Math.round(spanMm)}`, '#0000b4');
+  if (!rightIsEnd) s += _svgDimH(tCFR, tx2, dTY, `Ld=${Math.round(rightExtMm+colWMm/2)}`, '#0000b4');
+  else             s += _svgDimH(tx2-hookTop*dScl*0.1, tx2, dTY, `hook=${hookTop}`, '#0000b4');
+  s += _svgDimH(tx1, tx2, dTY+8, `إجمالي = ${Math.round(topTot)} mm`, '#b40000');
+
+  // ROW MID: Bent bar
+  if (hasBent && nBent > 0) {
+    const r2Y = dSt + bRowH + bRowH/2;
+    const s1P = bSeg1*dScl; const dP = bDiag*dScl*0.5; const s3P = bSeg3*dScl; const s5P = bSeg5*dScl;
+    const rH  = bRowH * 0.4;
+    const mx1=dOx; const mx2=mx1+s1P; const mx3=mx2+dP; const mx4=mx3+s3P; const mx5=mx4+dP; const mx6=mx5+s5P;
+    if (!leftIsEnd)  s += `<line x1="${mx1}" y1="${r2Y-rH/2}" x2="${tCFL}" y2="${r2Y-rH/2}" stroke="#dc6400" stroke-width="0.5" stroke-dasharray="3,2"/>`;
+    if (!rightIsEnd) s += `<line x1="${tCFR}" y1="${r2Y-rH/2}" x2="${mx6}" y2="${r2Y-rH/2}" stroke="#dc6400" stroke-width="0.5" stroke-dasharray="3,2"/>`;
+    s += `<polyline points="${leftIsEnd?mx1:tCFL},${r2Y-rH/2} ${mx2},${r2Y-rH/2} ${mx3},${r2Y+rH/2} ${mx4},${r2Y+rH/2} ${mx5},${r2Y-rH/2} ${rightIsEnd?mx6:tCFR},${r2Y-rH/2}" fill="none" stroke="#dc6400" stroke-width="1.2"/>`;
+    s += _svgColFaceMarkers(tCFL, tCFR, r2Y-rH/2-3, r2Y+rH/2+3);
+    s += `<text x="${dOx}" y="${r2Y-bRowH/2+5}" font-size="6" font-weight="bold" fill="#b45a00" font-family="Arial">② حديد مكسح: ${nBent}Φ${botDia}</text>`;
+    const dBA = r2Y-rH/2-7; const dBB = r2Y+rH/2+7;
+    s += _svgDimH(mx1, mx2, dBA, `L1=${Math.round(bSeg1)}`, '#b45a00');
+    s += _svgDimH(mx2, mx3, dBB, `D=${Math.round(bDiag)}`, '#b45a00');
+    s += _svgDimH(mx3, mx4, dBB, `L2=${Math.round(bSeg3)}`, '#b45a00');
+    s += _svgDimH(mx4, mx5, dBB, `D=${Math.round(bDiag)}`, '#b45a00');
+    s += _svgDimH(mx5, mx6, dBA, `L3=${Math.round(bSeg5)}`, '#b45a00');
+    s += _svgDimH(mx1, mx6, dBB+8, `إجمالي ≈ ${Math.round(bTotal)} mm`, '#b40000');
+  }
+
+  // ROW BOTTOM: Straight bottom bar
+  const r1Y = dSt + bRowH*(rowCount-1) + bRowH/2;
+  const bHP = hookBot*dScl; const bSP = spanMm*dScl;
+  const bELP = leftIsEnd  ? bHP*0.15 : colWMm*0.65*dScl;
+  const bERP = rightIsEnd ? bHP*0.15 : colWMm*0.65*dScl;
+  const bbx1=dOx; const bCFL=bbx1+(leftIsEnd?bHP*0.15:bELP); const bCFR=bCFL+bSP; const bbx2=bCFR+(rightIsEnd?bHP*0.15:bERP);
+  if (leftIsEnd) s += `<line x1="${bbx1}" y1="${r1Y+bHP*0.4}" x2="${bbx1+bHP*0.15}" y2="${r1Y}" stroke="#006400" stroke-width="1.2"/>`;
+  s += `<line x1="${leftIsEnd?bbx1+bHP*0.15:bbx1}" y1="${r1Y}" x2="${rightIsEnd?bbx2-bHP*0.15:bbx2}" y2="${r1Y}" stroke="#006400" stroke-width="1.2"/>`;
+  if (rightIsEnd) s += `<line x1="${bbx2-bHP*0.15}" y1="${r1Y}" x2="${bbx2}" y2="${r1Y+bHP*0.4}" stroke="#006400" stroke-width="1.2"/>`;
+  s += _svgColFaceMarkers(bCFL, bCFR, r1Y-3, r1Y+3);
+  s += `<text x="${dOx}" y="${r1Y-bRowH/2+5}" font-size="6" font-weight="bold" fill="#006400" font-family="Arial">③ حديد سفلي: ${nStraight}Φ${botDia}</text>`;
+  const dR1 = r1Y+8;
+  if (leftIsEnd)  s += _svgDimH(bbx1, bCFL, dR1, `hook=${hookBot}`, '#006400');
+  s += _svgDimH(bCFL, bCFR, dR1, `Ln=${Math.round(spanMm)}`, '#006400');
+  if (rightIsEnd) s += _svgDimH(bCFR, bbx2, dR1, `hook=${hookBot}`, '#006400');
+  s += _svgDimH(bbx1, bbx2, dR1+8, `إجمالي = ${Math.round(botTot)} mm`, '#b40000');
+
   return s;
 }
 
 function htmlBeamElevationSheet(
   beams: Beam[], beamDesigns: BeamDesignData[],
   tbBase: Partial<TitleBlockConfig>, floorCode: string, startSheetNo: number,
+  devLengths: DevelopmentLengths[],
 ): string {
   const sheetW = _SHEET_W, sheetH = _SHEET_H;
   const titleH = 135 + 36 + 10;
   const contentH = sheetH - 45 - titleH;
-  const cols = 2, rows = 3;
-  const cellW = Math.floor((sheetW - 90) / cols);
-  const cellH = Math.floor(contentH / rows);
 
   let sheets = '';
   let sheetNo = startSheetNo;
-  const perPage = cols * rows;
 
-  for (let p = 0; p < beamDesigns.length; p += perPage) {
-    const chunk = beamDesigns.slice(p, p + perPage);
-    let svgContent = '';
-    chunk.forEach((d, i) => {
-      const beam = beams.find(b => b.id === d.beamId);
-      if (!beam) return;
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const ox = col * cellW;
-      const oy = row * cellH;
-      svgContent += `<rect x="${ox}" y="${oy}" width="${cellW - 4}" height="${cellH - 4}" fill="none" stroke="#ddd" stroke-width="0.5"/>`;
-      svgContent += svgSingleBeamElevation(beam, d, ox, oy, cellW - 4, cellH - 4);
-    });
+  for (let i = 0; i < beamDesigns.length; i++) {
+    const d = beamDesigns[i];
+    const beam = beams.find(b => b.id === d.beamId);
+    if (!beam) continue;
 
+    const svgContent = svgBeamElevationDetailed(beam, d, 0, 0, sheetW - 90, contentH, devLengths, beams);
     const svgZone = `<svg viewBox="0 0 ${sheetW - 90} ${contentH}" width="${sheetW - 90}" height="${contentH}" xmlns="http://www.w3.org/2000/svg">${svgContent}</svg>`;
+
     sheets += `
   <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     ${htmlSheetBorder()}
     <div style="position:absolute; top:42px; left:45px; right:45px; height:${contentH}px; overflow:hidden; border:0.5px solid #ccc;">
       ${svgZone}
     </div>
-    <div style="position:absolute; bottom:${titleH - 10}px; left:50px; font-size:7.5px; color:#333; font-family:Arial;">
-      <span style="color:#8b0000;">━━</span> حديد علوي (لحظة سالبة) &nbsp;
-      <span style="color:#1a56db;">━━</span> حديد سفلي مستقيم &nbsp;
-      <span style="color:#c44;">━━</span> حديد مكسح (L&gt;2م فقط)
+    <div style="position:absolute; bottom:${titleH - 10}px; left:50px; font-size:7px; color:#333; font-family:Arial;">
+      <span style="color:#8b0000;">━━</span> حديد علوي &nbsp;
+      <span style="color:#1a56db;">━━</span> حديد سفلي &nbsp;
+      <span style="color:#dc6400;">━━</span> حديد مكسح &nbsp;
+      <span style="color:#0000b4;">━━</span> كانات
     </div>
-    ${htmlTitleBlock({ ...tbBase, drawingTitle: 'BEAM ELEVATION / المقطع الطولي للجسور', drawingSubTitle: tbBase.drawingSubTitle || 'All Floors', drawingNumber: makeDrawingNumber(floorCode, 'BE', p / perPage + 1), sheetNo: sheetNo.toString(), scale: 'N.T.S.' })}
+    ${htmlTitleBlock({ ...tbBase, drawingTitle: `BEAM ${beam.id} — LONGITUDINAL SECTION`, drawingSubTitle: `${beam.b}×${beam.h}mm, Span ${beam.length.toFixed(2)}m`, drawingNumber: makeDrawingNumber(floorCode, 'SE', i + 1), sheetNo: sheetNo.toString(), scale: 'N.T.S.' })}
   </div>`;
     sheetNo++;
   }
@@ -604,45 +841,36 @@ export function openBeamElevationForPrint(
 ): void {
   if (beamDesigns.length === 0) return;
 
-  const floorCode = options?.floorCode || 'GF';
+  const floorCode  = options?.floorCode || 'GF';
   const storyLabel = options?.storyLabel || '';
   const fc = options?.titleBlockConfig?.fc || 28;
   const fy = options?.titleBlockConfig?.fy || 420;
+  const devLengths = (options as any)?.devLengths as DevelopmentLengths[] || [];
 
-  // Use A3 landscape as default for beam elevation
   const _paper = getPaperPx(paperSize, 20, 10);
-  _SHEET_W = _paper.sheetW;
-  _SHEET_H = _paper.sheetH;
-  _CSS_PAPER = _paper.cssSize;
+  _SHEET_W = _paper.sheetW; _SHEET_H = _paper.sheetH; _CSS_PAPER = _paper.cssSize;
 
   const tbBase: Partial<TitleBlockConfig> = {
     firmName: 'Structural Design Studio',
-    projectName,
-    projectLocation: '',
-    clientName: '',
-    drawingSubTitle: storyLabel,
-    revision: 'R0',
-    designedBy: 'ENG.',
-    drawnBy: 'ENG.',
-    checkedBy: '-',
-    approvedBy: '-',
+    projectName, projectLocation: '', clientName: '',
+    drawingSubTitle: storyLabel, revision: 'R0',
+    designedBy: 'ENG.', drawnBy: 'ENG.', checkedBy: '-', approvedBy: '-',
     designCode: 'ACI 318-19',
     ...options?.titleBlockConfig,
-    date: new Date().toLocaleDateString(),
-    fc, fy,
+    date: new Date().toLocaleDateString(), fc, fy,
   };
 
-  const sheetsHTML = htmlBeamElevationSheet(beams, beamDesigns, tbBase, floorCode, 1);
+  const sheetsHTML = htmlBeamElevationSheet(beams, beamDesigns, tbBase, floorCode, 1, devLengths);
 
   const htmlContent = `<!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html lang="ar">
 <head>
   <meta charset="utf-8">
   <title>${projectName} - ${floorCode} - مقاطع الجسور الطولية</title>
   <style>
     @page { size: ${_CSS_PAPER} landscape; margin: 0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #e0e0e0; font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif; direction: ltr; }
+    body { background: #e0e0e0; font-family: 'Segoe UI', Arial, Tahoma, sans-serif; }
     .sheet-page { margin: 10px auto; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
     @media print {
       body { background: white; }
