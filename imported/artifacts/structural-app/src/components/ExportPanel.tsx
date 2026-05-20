@@ -15,6 +15,7 @@ import { getFloorCode, makeDrawingNumber } from '@/drawings/drawingStandards';
 import type { ExportOptions, DevelopmentLengths } from '@/drawings/drawingStandards';
 import { generateFoundationDrawingHTML } from '@/lib/foundationDesign';
 import type { FootingDesignResult, FootingMaterials } from '@/lib/foundationDesign';
+import { generateBeamElevationPDF } from '@/drawings/beamElevationPDF';
 
 
 
@@ -59,7 +60,7 @@ export default function ExportPanel({
   const [selectedFloors, setSelectedFloors] = useState<string[]>(stories.map(s => s.id));
   const [drawingTypes, setDrawingTypes] = useState({
     beamLayout: true, columnLayout: true, slabPlan: true,
-    generalNotes: true, bbs: true, beamElevation: true, buildingElevation: true,
+    generalNotes: true, bbs: true, buildingElevation: true,
     foundationPlan: true,
   });
   const [format, setFormat] = useState<'pdf' | 'dxf' | 'both' | 'print'>('pdf');
@@ -156,8 +157,8 @@ export default function ExportPanel({
 
         // PDF / Print exports
         if (format === 'pdf' || format === 'both' || format === 'print') {
-          // Construction sheets (beam layout, column layout, slab plan, beam elevations)
-          if (drawingTypes.beamLayout || drawingTypes.columnLayout || drawingTypes.slabPlan || drawingTypes.beamElevation) {
+          // Construction sheets (beam layout, column layout, slab plan)
+          if (drawingTypes.beamLayout || drawingTypes.columnLayout || drawingTypes.slabPlan) {
             if (format === 'print') {
               // Use HTML-based construction sheets with full Arabic text support
               openHTMLSheetsForPrint(
@@ -299,7 +300,6 @@ export default function ExportPanel({
               ['slabPlan', 'مخطط تسليح البلاطات', 'توزيع حديد البلاطات بالاتجاهين'],
               ['generalNotes', 'لوحة الملاحظات العامة', 'ملاحظات التنفيذ وجدول أطوال التماسك'],
               ['bbs', 'جدول حصر الحديد (BBS)', 'حصر لكل دور + إجمالي المشروع'],
-              ['beamElevation', 'مقطع طولي للجسور', 'رسم تفصيلي للتسليح الطولي والكانات'],
               ['buildingElevation', 'مقطع المبنى', 'القطاع الرأسي لكامل المبنى'],
               ['foundationPlan', 'لوحة الأساسات (WSM)', 'مسقط الأساسات + قطاع نموذجي + جدول التصميم وفق ACI 318'],
             ] as [string, string, string][]).map(([key, label, desc]) => (
@@ -353,7 +353,6 @@ export default function ExportPanel({
                     {drawingTypes.beamLayout && 'جسور، '}
                     {drawingTypes.columnLayout && 'أعمدة، '}
                     {drawingTypes.slabPlan && 'بلاطات، '}
-                    {drawingTypes.beamElevation && 'مقاطع طولية، '}
                     {drawingTypes.bbs && 'BBS'}
                   </li>
                 ) : null;
@@ -379,6 +378,33 @@ export default function ExportPanel({
           <Download size={16} className="mr-2" />
           {exporting ? 'جاري التصدير...' : `إنشاء وتحميل لوحات ${selectedCount} دور`}
         </Button>
+
+        {/* Beam elevation PDF — separate detailed export */}
+        {beamDesigns.length > 0 && (
+          <Button
+            variant="outline"
+            className="w-full min-h-[44px] gap-2 text-xs"
+            disabled={!analyzed}
+            onClick={() => {
+              const allFilteredBeams = beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId));
+              const allFilteredBeamIds = new Set(allFilteredBeams.map(b => b.id));
+              const filtDesigns = beamDesigns.filter((d: any) => allFilteredBeamIds.has(d.beamId));
+              const storyLabel = selectedFloors.length === 1
+                ? stories.find(s => s.id === selectedFloors[0])?.label || ''
+                : 'All Floors';
+              generateBeamElevationPDF(
+                allFilteredBeams,
+                filtDesigns,
+                titleBlockConfig?.projectName || projectName,
+                storyLabel,
+                titleBlockConfig ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy } : { fc: mat.fc, fy: mat.fy },
+              );
+            }}
+          >
+            <FileText size={14} />
+            تصدير مقاطع الجسور الطولية (PDF تفصيلي)
+          </Button>
+        )}
       </CardContent>
     </Card>
   );

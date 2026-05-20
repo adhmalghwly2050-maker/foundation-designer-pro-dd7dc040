@@ -774,7 +774,12 @@ const Index = () => {
       }[] = [];
 
       for (const ed of etabsAnalysisData) {
-        const beam = beamsWithLoads.find(b => b.id === ed.beamId);
+        const storyForED = stories.find(s =>
+          s.label === ed.story || s.label.toLowerCase() === ed.story.toLowerCase()
+        );
+        const beam = beamsWithLoads.find(b =>
+          b.id === ed.beamId && (storyForED ? b.storyId === storyForED.id : true)
+        ) || beamsWithLoads.find(b => b.id === ed.beamId);
         if (!beam) continue;
         const span = beam.length > 0 ? beam.length / 1000 : 1;
 
@@ -1113,6 +1118,21 @@ const Index = () => {
   }, [analyzed, columns, beamsWithLoads, frameResults]);
 
   const colDesigns = useMemo(() => {
+    if (designSource === 'etabs' && designExecuted && etabsColumnResults.length > 0) {
+      return columns.filter(c => !c.isRemoved).map(c => {
+        const storyForCol = stories.find(s => s.id === c.storyId);
+        const etabsData = etabsColumnResults.find(ec =>
+          ec.colId === c.id && (storyForCol ? ec.story === storyForCol.label : true)
+        ) || etabsColumnResults.find(ec => ec.colId === c.id);
+        const Pu = etabsData ? Math.abs(etabsData.P) : 0;
+        const Mx = etabsData?.M2 ?? 0;
+        const My = etabsData?.M3 ?? 0;
+        return {
+          ...c, Pu, Mx, My, Mu: Math.max(Mx, My),
+          design: designColumnBiaxial(Pu, Mx, My, c.b, c.h, mat.fc, mat.fy, c.L),
+        };
+      });
+    }
     return columns.filter(c => !c.isRemoved).map(c => {
       const loads = colLoads3D.get(c.id) || { Pu: 0, Mx: 0, My: 0, MxTop: 0, MxBot: 0, MyTop: 0, MyBot: 0 };
       return {
@@ -1125,7 +1145,7 @@ const Index = () => {
         ),
       };
     });
-  }, [columns, colLoads3D, mat]);
+  }, [columns, colLoads3D, mat, designSource, designExecuted, etabsColumnResults, stories]);
 
   // Bent-up bars calculation
   const bentUpResults = useMemo(() => {
@@ -1861,7 +1881,7 @@ const Index = () => {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            {[...(isAllStories ? ['الدور'] : []),'الاسم','X1','Y1','X2','Y2','المنسوب Z (م)','Lx','Ly','النوع','حذف'].map(h => (
+                            {[...(isAllStories ? ['الدور'] : []),'الاسم','X1','Y1','X2','Y2','الدور / المنسوب Z','Lx','Ly','النوع','حذف'].map(h => (
                               <TableHead key={h} className="text-xs">{h}</TableHead>
                             ))}
                           </TableRow>
@@ -1878,7 +1898,19 @@ const Index = () => {
                                 <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
                                 <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
                                 <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell className="font-mono text-xs">{((stories.find(st => st.id === s.storyId)?.elevation ?? 0) + (stories.find(st => st.id === s.storyId)?.height ?? colL)).toFixed(0)}</TableCell>
+                                <TableCell>
+                                  <select
+                                    value={s.storyId || ''}
+                                    onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'storyId', value: e.target.value })}
+                                    className="h-10 text-xs border border-input rounded-md px-1 bg-background text-foreground w-28"
+                                  >
+                                    {stories.map(st => (
+                                      <option key={st.id} value={st.id}>
+                                        {st.label} (+{((st.elevation ?? 0) + st.height).toFixed(0)})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </TableCell>
                                 <TableCell className="font-mono text-xs">{sd?.lx.toFixed(1)}</TableCell>
                                 <TableCell className="font-mono text-xs">{sd?.ly.toFixed(1)}</TableCell>
                                 <TableCell className="text-xs">{sd?.isOneWay ? 'اتجاه واحد' : 'اتجاهين'}</TableCell>

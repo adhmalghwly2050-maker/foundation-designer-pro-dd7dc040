@@ -94,7 +94,7 @@ function parseETABSWorkbook(file: File): Promise<{
             const COL_M3      = Math.max(hdr.findIndex((h: string) => h === 'm3'), 11);
 
             type Pt = { station: number; m3: number; v2: number };
-            const beamMap = new Map<string, { story: string; pts: Pt[]; cases: Set<string> }>();
+            const beamMap = new Map<string, { story: string; beamName: string; pts: Pt[]; cases: Set<string> }>();
 
             for (let i = 2; i < rows.length; i++) {
               const row = rows[i];
@@ -106,13 +106,14 @@ function parseETABSWorkbook(file: File): Promise<{
               const station = Number(row[COL_STATION]) || 0;
               const v2 = Number(row[COL_V2]) || 0;
               const m3 = Number(row[COL_M3]) || 0;
-              if (!beamMap.has(beamName)) beamMap.set(beamName, { story, pts: [], cases: new Set() });
-              const entry = beamMap.get(beamName)!;
+              const mapKey = story ? `${story}_${beamName}` : beamName;
+              if (!beamMap.has(mapKey)) beamMap.set(mapKey, { story, beamName, pts: [], cases: new Set() });
+              const entry = beamMap.get(mapKey)!;
               entry.pts.push({ station, m3, v2 });
               entry.cases.add(caseStr);
             }
 
-            for (const [beamId, { story, pts, cases }] of beamMap) {
+            for (const [, { story, beamName: beamId, pts, cases }] of beamMap) {
               if (pts.length === 0) continue;
               const stations = pts.map(p => p.station);
               const minSt = Math.min(...stations), maxSt = Math.max(...stations);
@@ -144,7 +145,7 @@ function parseETABSWorkbook(file: File): Promise<{
             const COL_M3    = Math.max(hdr.findIndex((h: string) => h === 'm3'), 11);
 
             type CPt = { P: number; M2: number; M3: number; V2: number; V3: number };
-            const colMap = new Map<string, { story: string; pts: CPt[]; cases: Set<string> }>();
+            const colMap = new Map<string, { story: string; colName: string; pts: CPt[]; cases: Set<string> }>();
 
             for (let i = 2; i < rows.length; i++) {
               const row = rows[i];
@@ -158,13 +159,14 @@ function parseETABSWorkbook(file: File): Promise<{
               const V3 = Number(row[COL_V3]) || 0;
               const M2 = Number(row[COL_M2]) || 0;
               const M3 = Number(row[COL_M3]) || 0;
-              if (!colMap.has(colName)) colMap.set(colName, { story, pts: [], cases: new Set() });
-              const entry = colMap.get(colName)!;
+              const mapKey = story ? `${story}_${colName}` : colName;
+              if (!colMap.has(mapKey)) colMap.set(mapKey, { story, colName, pts: [], cases: new Set() });
+              const entry = colMap.get(mapKey)!;
               entry.pts.push({ P, M2, M3, V2, V3 });
               entry.cases.add(caseStr);
             }
 
-            for (const [colId, { story, pts, cases }] of colMap) {
+            for (const [, { story, colName: colId, pts, cases }] of colMap) {
               if (pts.length === 0) continue;
               let maxP = 0, maxM2 = 0, maxM3 = 0, maxV2 = 0, maxV3 = 0;
               for (const pt of pts) {

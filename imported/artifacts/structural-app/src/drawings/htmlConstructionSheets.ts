@@ -981,17 +981,10 @@ export function generateHTMLConstructionSheets(
   sheetsHTML += generalNotesHTML;
 
   // ═══════════════════════════════════════════════════
-  // SHEET 5: BEAM ELEVATION (longitudinal section)
-  // ═══════════════════════════════════════════════════
-  if (beamDesigns.length > 0) {
-    sheetsHTML += htmlBeamElevationSheet(beams, beamDesigns, { ...tbBase, drawingSubTitle: storyLabel || 'All Floors' }, floorCode, 5);
-  }
-
-  // ═══════════════════════════════════════════════════
-  // SHEET 6+: BBS (Bar Bending Schedule)
+  // SHEET 5+: BBS (Bar Bending Schedule)
   // ═══════════════════════════════════════════════════
   if (beamDesigns.length > 0 || colDesigns.length > 0) {
-    const bbsSheetNo = 5 + (beamDesigns.length > 0 ? Math.ceil(beamDesigns.length / 6) : 0) + 1;
+    const bbsSheetNo = 5;
     sheetsHTML += htmlBBSSheet(beams, beamDesigns, colDesigns, slabDesigns, { ...tbBase, drawingSubTitle: storyLabel || 'All Floors' }, floorCode, bbsSheetNo);
   }
 
