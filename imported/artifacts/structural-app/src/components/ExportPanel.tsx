@@ -7,7 +7,7 @@ import { Download, FileText, Layers, AlertCircle, Printer } from 'lucide-react';
 import type { Story, Slab, Beam, Column, MatProps, SlabProps } from '@/lib/structuralEngine';
 import { calculateDevelopmentLengths } from '@/lib/structuralEngine';
 import { generateConstructionSheets } from '@/drawings/constructionSheets';
-import { openHTMLSheetsForPrint } from '@/drawings/htmlConstructionSheets';
+import { openHTMLSheetsForPrint, openBeamElevationForPrint } from '@/drawings/htmlConstructionSheets';
 import { exportStructuralDrawingPDF } from '@/export/drawingExporter';
 import { generateStructuralDXF, generateBeamLayoutDXF, generateColumnLayoutDXF, downloadDXF } from '@/export/dxfExporter';
 import { generateBBS, exportBBSToPDF, exportBBSToExcel } from '@/rebar/bbsGenerator';
@@ -15,7 +15,6 @@ import { getFloorCode, makeDrawingNumber } from '@/drawings/drawingStandards';
 import type { ExportOptions, DevelopmentLengths } from '@/drawings/drawingStandards';
 import { generateFoundationDrawingHTML } from '@/lib/foundationDesign';
 import type { FootingDesignResult, FootingMaterials } from '@/lib/foundationDesign';
-import { generateBeamElevationPDF } from '@/drawings/beamElevationPDF';
 
 
 
@@ -379,7 +378,7 @@ export default function ExportPanel({
           {exporting ? 'جاري التصدير...' : `إنشاء وتحميل لوحات ${selectedCount} دور`}
         </Button>
 
-        {/* Beam elevation PDF — separate detailed export */}
+        {/* Beam elevation — separate HTML print sheet */}
         {beamDesigns.length > 0 && (
           <Button
             variant="outline"
@@ -392,17 +391,27 @@ export default function ExportPanel({
               const storyLabel = selectedFloors.length === 1
                 ? stories.find(s => s.id === selectedFloors[0])?.label || ''
                 : 'All Floors';
-              generateBeamElevationPDF(
+              const idx = selectedFloors.length === 1 ? stories.findIndex(s => s.id === selectedFloors[0]) : 0;
+              const floorCode = selectedFloors.length === 1
+                ? getFloorCode(stories.find(s => s.id === selectedFloors[0])?.label || '', idx)
+                : 'ALL';
+              openBeamElevationForPrint(
                 allFilteredBeams,
                 filtDesigns,
                 titleBlockConfig?.projectName || projectName,
-                storyLabel,
-                titleBlockConfig ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy } : { fc: mat.fc, fy: mat.fy },
+                {
+                  floorCode,
+                  storyLabel,
+                  titleBlockConfig: titleBlockConfig
+                    ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy }
+                    : { fc: mat.fc, fy: mat.fy },
+                },
+                sheetSize === 'A4' ? 'A4' : 'A3',
               );
             }}
           >
-            <FileText size={14} />
-            تصدير مقاطع الجسور الطولية (PDF تفصيلي)
+            <Printer size={14} />
+            طباعة مقاطع الجسور الطولية
           </Button>
         )}
       </CardContent>

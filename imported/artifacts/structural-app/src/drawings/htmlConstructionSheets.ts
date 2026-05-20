@@ -471,7 +471,7 @@ function generateSheetHTML(
   return drawingPage + tablePage;
 }
 
-// ─── Beam Elevation Sheet (HTML) ─── 
+// ─── Beam Elevation Sheet (HTML/SVG) ───
 
 function svgSingleBeamElevation(
   beam: Beam, design: BeamDesignData,
@@ -533,9 +533,13 @@ function svgSingleBeamElevation(
     s += `<line x1="${bx + bw - rightExt}" y1="${topY}" x2="${bx + bw}" y2="${topY}" stroke="#8b0000" stroke-width="${Math.max(1.5, design.flexRight.bars * 0.6)}" stroke-linecap="round"/>`;
     s += `<text x="${bx + bw - rightExt / 2}" y="${topY - 3}" text-anchor="middle" font-size="7" fill="#8b0000" font-family="Arial">${fmtRebar(design.flexRight.bars, design.flexRight.dia)}</text>`;
   }
-  // Labels
+  // Stirrup label
+  if (stirMatch) {
+    s += `<text x="${bx + 6}" y="${by + bh / 2 + 3}" font-size="6" fill="#555" font-family="Arial">Φ${stirMatch[2]}@${stirMatch[3]}</text>`;
+  }
+  // Beam label and dimensions
   s += `<text x="${bx}" y="${oy + 12}" font-size="8" font-weight="bold" fill="#000" font-family="Arial">${beam.id}  ${beam.b}×${beam.h}mm</text>`;
-  // Span dimension
+  // Span dimension line
   s += `<line x1="${bx}" y1="${by + bh + 6}" x2="${bx + bw}" y2="${by + bh + 6}" stroke="#666" stroke-width="0.8"/>`;
   s += `<line x1="${bx}" y1="${by + bh + 2}" x2="${bx}" y2="${by + bh + 10}" stroke="#666" stroke-width="0.8"/>`;
   s += `<line x1="${bx + bw}" y1="${by + bh + 2}" x2="${bx + bw}" y2="${by + bh + 10}" stroke="#666" stroke-width="0.8"/>`;
@@ -566,7 +570,7 @@ function htmlBeamElevationSheet(
       if (!beam) return;
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const ox = 45 + col * cellW;
+      const ox = col * cellW;
       const oy = row * cellH;
       svgContent += `<rect x="${ox}" y="${oy}" width="${cellW - 4}" height="${cellH - 4}" fill="none" stroke="#ddd" stroke-width="0.5"/>`;
       svgContent += svgSingleBeamElevation(beam, d, ox, oy, cellW - 4, cellH - 4);
@@ -579,17 +583,81 @@ function htmlBeamElevationSheet(
     <div style="position:absolute; top:42px; left:45px; right:45px; height:${contentH}px; overflow:hidden; border:0.5px solid #ccc;">
       ${svgZone}
     </div>
-    <!-- Legend colour key -->
     <div style="position:absolute; bottom:${titleH - 10}px; left:50px; font-size:7.5px; color:#333; font-family:Arial;">
       <span style="color:#8b0000;">━━</span> حديد علوي (لحظة سالبة) &nbsp;
       <span style="color:#1a56db;">━━</span> حديد سفلي مستقيم &nbsp;
-      <span style="color:#c44;">━━</span> حديد مكسح (L>2م فقط)
+      <span style="color:#c44;">━━</span> حديد مكسح (L&gt;2م فقط)
     </div>
     ${htmlTitleBlock({ ...tbBase, drawingTitle: 'BEAM ELEVATION / المقطع الطولي للجسور', drawingSubTitle: tbBase.drawingSubTitle || 'All Floors', drawingNumber: makeDrawingNumber(floorCode, 'BE', p / perPage + 1), sheetNo: sheetNo.toString(), scale: 'N.T.S.' })}
   </div>`;
     sheetNo++;
   }
   return sheets;
+}
+
+export function openBeamElevationForPrint(
+  beams: Beam[],
+  beamDesigns: BeamDesignData[],
+  projectName: string = 'Structural Design Studio',
+  options?: ExportOptions,
+  paperSize: PaperSize = 'A3',
+): void {
+  if (beamDesigns.length === 0) return;
+
+  const floorCode = options?.floorCode || 'GF';
+  const storyLabel = options?.storyLabel || '';
+  const fc = options?.titleBlockConfig?.fc || 28;
+  const fy = options?.titleBlockConfig?.fy || 420;
+
+  // Use A3 landscape as default for beam elevation
+  const _paper = getPaperPx(paperSize, 20, 10);
+  _SHEET_W = _paper.sheetW;
+  _SHEET_H = _paper.sheetH;
+  _CSS_PAPER = _paper.cssSize;
+
+  const tbBase: Partial<TitleBlockConfig> = {
+    firmName: 'Structural Design Studio',
+    projectName,
+    projectLocation: '',
+    clientName: '',
+    drawingSubTitle: storyLabel,
+    revision: 'R0',
+    designedBy: 'ENG.',
+    drawnBy: 'ENG.',
+    checkedBy: '-',
+    approvedBy: '-',
+    designCode: 'ACI 318-19',
+    ...options?.titleBlockConfig,
+    date: new Date().toLocaleDateString(),
+    fc, fy,
+  };
+
+  const sheetsHTML = htmlBeamElevationSheet(beams, beamDesigns, tbBase, floorCode, 1);
+
+  const htmlContent = `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="utf-8">
+  <title>${projectName} - ${floorCode} - مقاطع الجسور الطولية</title>
+  <style>
+    @page { size: ${_CSS_PAPER} landscape; margin: 0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #e0e0e0; font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif; direction: ltr; }
+    .sheet-page { margin: 10px auto; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
+    @media print {
+      body { background: white; }
+      .sheet-page { margin: 0; box-shadow: none; page-break-after: always; }
+    }
+  </style>
+</head>
+<body>
+  ${sheetsHTML}
+</body>
+</html>`;
+
+  import('@/lib/capacitorDownload').then(({ openHTMLForPrint }) =>
+    openHTMLForPrint(htmlContent)
+  );
 }
 
 // ─── BBS HTML Sheet ───
