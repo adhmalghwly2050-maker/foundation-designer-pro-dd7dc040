@@ -624,12 +624,15 @@ export function generateFoundationDrawingHTML(
     const minY = Math.min(...ys), maxY = Math.max(...ys);
     const spanX = Math.max(maxX - minX, 0.001);
     const spanY = Math.max(maxY - minY, 0.001);
-    const PAD = Math.max(2, Math.max(spanX, spanY) * 0.22);
+    // Adaptive padding: use footing dimensions to ensure footings fill at least 50% of the view
+    const maxFB = Math.max(...typeResults.map(r => r.B / 1000));
+    const maxFL = Math.max(...typeResults.map(r => r.L / 1000));
+    const PAD = Math.max(maxFB * 0.7, maxFL * 0.7, Math.max(spanX, spanY) * 0.18, 0.4);
     const worldW = spanX + 2 * PAD;
     const worldH = spanY + 2 * PAD;
-    const sc = Math.min((w - 4) / worldW, (h - 4) / worldH);
+    const sc = Math.min((w - 4) / worldW, (h - 22) / worldH);
     const offX = (w - worldW * sc) / 2;
-    const offY = (h - worldH * sc) / 2;
+    const offY = ((h - 22) - worldH * sc) / 2;
     const px2 = (mx: number) => offX + (mx - minX + PAD) * sc;
     const py2 = (my: number) => offY + (worldH - (my - minY + PAD)) * sc;
     const mm2p = (mm: number) => (mm / 1000) * sc;
@@ -645,30 +648,48 @@ export function generateFoundationDrawingHTML(
     const uXs = [...new Set(xs)].sort((a, b) => a - b);
     const uYs = [...new Set(ys)].sort((a, b) => a - b);
 
-    for (const mx of uXs) elems += `<line x1="${px2(mx).toFixed(1)}" y1="2" x2="${px2(mx).toFixed(1)}" y2="${h - 2}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
+    for (const mx of uXs) elems += `<line x1="${px2(mx).toFixed(1)}" y1="2" x2="${px2(mx).toFixed(1)}" y2="${h - 22}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
     for (const my of uYs) elems += `<line x1="2" y1="${py2(my).toFixed(1)}" x2="${w - 2}" y2="${py2(my).toFixed(1)}" stroke="#aac" stroke-width="0.6" stroke-dasharray="6,3,2,3"/>`;
 
+    let firstFooting = true;
     for (const r of typeResults) {
       const cx = px2(r.x), cy = py2(r.y);
       const bw = mm2p(r.B), lh2 = mm2p(r.L);
-      const cw = mm2p(Math.min(r.B * 0.28, 400)), ch = mm2p(Math.min(r.L * 0.28, 400));
-      elems += `<rect x="${(cx-bw/2).toFixed(1)}" y="${(cy-lh2/2).toFixed(1)}" width="${bw.toFixed(1)}" height="${lh2.toFixed(1)}" fill="url(#htch${uid})" fill-opacity="0.4" stroke="#1a3a5c" stroke-width="1.2" stroke-dasharray="5,2.5" rx="1"/>`;
-      elems += `<rect x="${(cx-cw/2).toFixed(1)}" y="${(cy-ch/2).toFixed(1)}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}" fill="#1a3a5c" fill-opacity="0.85" stroke="#1a3a5c" stroke-width="1"/>`;
+      const cw = mm2p(Math.min(r.colB, r.B * 0.35)), ch = mm2p(Math.min(r.colH, r.L * 0.35));
+      // Footing outline (hatched)
+      elems += `<rect x="${(cx-bw/2).toFixed(1)}" y="${(cy-lh2/2).toFixed(1)}" width="${bw.toFixed(1)}" height="${lh2.toFixed(1)}" fill="url(#htch${uid})" fill-opacity="0.5" stroke="#1a3a5c" stroke-width="1.5" rx="1"/>`;
+      // Column section (solid)
+      elems += `<rect x="${(cx-cw/2).toFixed(1)}" y="${(cy-ch/2).toFixed(1)}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}" fill="#1a3a5c" fill-opacity="0.9" stroke="#1a3a5c" stroke-width="1"/>`;
+      // Column ID inside column
       elems += `<text x="${cx.toFixed(1)}" y="${(cy+3).toFixed(1)}" text-anchor="middle" font-size="7.5" fill="#fff" font-weight="bold" font-family="Arial,sans-serif">${r.colId}</text>`;
-      elems += `<text x="${cx.toFixed(1)}" y="${(cy-lh2/2-4).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="bold" fill="#1a3a5c" font-family="Arial,sans-serif">${ft.key}</text>`;
-      elems += `<text x="${cx.toFixed(1)}" y="${(cy+lh2/2+9).toFixed(1)}" text-anchor="middle" font-size="6.5" fill="#880000" font-family="Arial,sans-serif">${r.B}×${r.L}</text>`;
+      // Footing type above
+      elems += `<text x="${cx.toFixed(1)}" y="${(cy-lh2/2-5).toFixed(1)}" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#1a3a5c" font-family="Arial,sans-serif">${ft.key}</text>`;
+      // B dimension (horizontal arrow below footing) — only for first footing to avoid clutter
+      if (firstFooting) {
+        const dimBY = cy + lh2 / 2 + 13;
+        elems += `<line x1="${(cx-bw/2).toFixed(1)}" y1="${dimBY.toFixed(1)}" x2="${(cx+bw/2).toFixed(1)}" y2="${dimBY.toFixed(1)}" stroke="#c00" stroke-width="0.8" marker-start="url(#arrl${uid})" marker-end="url(#arr${uid})"/>`;
+        elems += `<text x="${cx.toFixed(1)}" y="${(dimBY-2).toFixed(1)}" text-anchor="middle" font-size="7" font-weight="bold" fill="#c00" font-family="Arial,sans-serif">B=${r.B} mm</text>`;
+        // L dimension (vertical arrow right of footing)
+        const dimLX = cx + bw / 2 + 14;
+        elems += `<line x1="${dimLX.toFixed(1)}" y1="${(cy-lh2/2).toFixed(1)}" x2="${dimLX.toFixed(1)}" y2="${(cy+lh2/2).toFixed(1)}" stroke="#880000" stroke-width="0.8" marker-start="url(#arrl${uid})" marker-end="url(#arr${uid})"/>`;
+        elems += `<text x="${(dimLX+3).toFixed(1)}" y="${cy.toFixed(1)}" font-size="7" font-weight="bold" fill="#880000" font-family="Arial,sans-serif">L=${r.L}</text>`;
+        // colB × colH label
+        elems += `<text x="${cx.toFixed(1)}" y="${(cy+ch/2+10).toFixed(1)}" text-anchor="middle" font-size="6" fill="#555" font-family="Arial,sans-serif">${r.colB}×${r.colH}</text>`;
+        firstFooting = false;
+      }
     }
+    // Grid spacing dimension lines
     if (uXs.length > 1) {
-      const dimY = h - 8;
+      const dimY = h - 12;
       for (let i = 0; i < uXs.length - 1; i++) {
         const x1 = px2(uXs[i]), x2 = px2(uXs[i+1]);
         const dist = ((uXs[i+1] - uXs[i]) * 1000).toFixed(0);
         elems += `<line x1="${x1.toFixed(1)}" y1="${dimY}" x2="${x2.toFixed(1)}" y2="${dimY}" stroke="#c00" stroke-width="0.7" marker-start="url(#arrl${uid})" marker-end="url(#arr${uid})"/>`;
-        elems += `<text x="${((x1+x2)/2).toFixed(1)}" y="${dimY-2}" text-anchor="middle" font-size="6.5" fill="#c00" font-family="Arial,sans-serif">${dist}</text>`;
+        elems += `<text x="${((x1+x2)/2).toFixed(1)}" y="${(dimY-2)}" text-anchor="middle" font-size="6.5" fill="#c00" font-family="Arial,sans-serif">${dist}</text>`;
       }
     }
     if (uYs.length > 1) {
-      const dimX = w - 6;
+      const dimX = w - 8;
       for (let i = 0; i < uYs.length - 1; i++) {
         const y1 = py2(uYs[i]), y2 = py2(uYs[i+1]);
         const dist = ((uYs[i+1] - uYs[i]) * 1000).toFixed(0);
@@ -676,11 +697,12 @@ export function generateFoundationDrawingHTML(
         elems += `<text x="${(dimX-3).toFixed(1)}" y="${((y1+y2)/2).toFixed(1)}" text-anchor="end" font-size="6.5" fill="#c00" font-family="Arial,sans-serif">${dist}</text>`;
       }
     }
-    elems += `<line x1="6" y1="${h-8}" x2="18" y2="${h-8}" stroke="#1a3a5c" stroke-width="1.2" stroke-dasharray="5,2.5"/>
+    // Legend
+    elems += `<line x1="6" y1="${h-8}" x2="18" y2="${h-8}" stroke="#1a3a5c" stroke-width="1.5" stroke-dasharray="5,2.5"/>
 <text x="21" y="${h-5}" font-size="6.5" fill="#555" font-family="Arial,sans-serif">حدود القاعدة</text>
-<rect x="80" y="${h-13}" width="10" height="8" fill="#1a3a5c" fill-opacity="0.85"/>
-<text x="93" y="${h-5}" font-size="6.5" fill="#555" font-family="Arial,sans-serif">مقطع العمود</text>
-<text x="160" y="${h-5}" font-size="6" fill="#888" font-family="Arial,sans-serif">الأبعاد بالمليمتر</text>`;
+<rect x="88" y="${h-13}" width="10" height="8" fill="#1a3a5c" fill-opacity="0.9"/>
+<text x="101" y="${h-5}" font-size="6.5" fill="#555" font-family="Arial,sans-serif">مقطع العمود</text>
+<text x="180" y="${h-5}" font-size="6" fill="#888" font-family="Arial,sans-serif">الأبعاد بالمليمتر</text>`;
     return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="display:block">${elems}</svg>`;
   };
 
@@ -764,6 +786,34 @@ export function generateFoundationDrawingHTML(
 <text x="${(FX2+4).toFixed(1)}" y="${(REBAR_Y_LINE+3).toFixed(1)}" font-size="6" fill="#880000" font-family="Arial">${barsLine}Ø${diaLine}@${spLine}</text>`
       : `<text x="${FCX.toFixed(1)}" y="${(FY2+BH+26).toFixed(1)}" text-anchor="middle" font-size="6.5" fill="#c00" font-family="Arial">${nDots}Ø${diaDot}@${spDot} | ${barsLine}Ø${diaLine}@${spLine}</text>`;
 
+    // ── Column stub rebar (starter bars) ──────────────────────────────────
+    // Estimate column reinforcement: 40mm cover, 10mm stirrup, 20mm bar
+    const COL_COV_PX  = Math.max(2.5, 40 * sc);   // 40mm column cover
+    const COL_STIR_PX = Math.max(1,   10 * sc);   // 10mm stirrup
+    const COL_BAR_R   = Math.max(1.5,  9 * sc);   // 9mm ≈ Ø18 bar radius
+    // Stirrup rect inside column stub
+    const STIR_X1 = CX1 + COL_COV_PX;
+    const STIR_X2 = CX1 + CW - COL_COV_PX;
+    const STIR_Y1 = COL_TOP + COL_COV_PX;
+    const STIR_Y2 = FY1 + FH * 0.45;     // extends into footing as starter
+    const STIR_W  = STIR_X2 - STIR_X1;
+    const STIR_H  = STIR_Y2 - STIR_Y1;
+    // Main bar x-positions (left side, right side, and face bars)
+    const BAR_LX  = STIR_X1 + COL_STIR_PX + COL_BAR_R;
+    const BAR_RX  = STIR_X2 - COL_STIR_PX - COL_BAR_R;
+    // Additional face bars if column is wide enough
+    const nFaceBars = Math.max(0, Math.floor((STIR_W - 2 * (COL_STIR_PX + 2 * COL_BAR_R)) / Math.max(1, 100 * sc)) - 1);
+    let colFaceBars = '';
+    if (nFaceBars > 0 && BAR_RX - BAR_LX > 4 * COL_BAR_R) {
+      const faceSpacing = (BAR_RX - BAR_LX) / (nFaceBars + 1);
+      for (let fi = 1; fi <= nFaceBars; fi++) {
+        const fbx = BAR_LX + fi * faceSpacing;
+        colFaceBars += `<line x1="${fbx.toFixed(1)}" y1="${STIR_Y1.toFixed(1)}" x2="${fbx.toFixed(1)}" y2="${STIR_Y2.toFixed(1)}" stroke="#c55" stroke-width="${(COL_BAR_R*1.6).toFixed(1)}" stroke-linecap="round"/>`;
+      }
+    }
+    // Dimension: column width label
+    const colWidthLabel = dir === 'A' ? `b=${r.colB}` : `h=${r.colH}`;
+
     return `<defs>
   <marker id="${arID}" markerWidth="5" markerHeight="4" refX="4" refY="2" orient="auto"><path d="M0,0 L5,2 L0,4 Z" fill="#c00"/></marker>
   <marker id="${arlID}" markerWidth="5" markerHeight="4" refX="1" refY="2" orient="auto-start-reverse"><path d="M5,0 L0,2 L5,4 Z" fill="#c00"/></marker>
@@ -774,11 +824,25 @@ export function generateFoundationDrawingHTML(
 <rect x="0" y="${PAD_T.toFixed(1)}" width="${panelW}" height="${GH.toFixed(1)}" fill="url(#soil${id})" opacity="0.55"/>
 <line x1="0" y1="${GL_Y.toFixed(1)}" x2="${panelW}" y2="${GL_Y.toFixed(1)}" stroke="#6a5430" stroke-width="1.2" stroke-dasharray="4,2"/>
 <text x="4" y="${(GL_Y-2).toFixed(1)}" font-size="6.5" fill="#6a5430" font-family="Arial">G.L.</text>
-<rect x="${CX1.toFixed(1)}" y="${COL_TOP.toFixed(1)}" width="${CW.toFixed(1)}" height="${(FY1-COL_TOP+2).toFixed(1)}" fill="url(#conc${id})" fill-opacity="0.45" stroke="#1a3a5c" stroke-width="1.2"/>
-<text x="${FCX.toFixed(1)}" y="${(COL_TOP+10).toFixed(1)}" text-anchor="middle" font-size="6.5" fill="#1a3a5c" font-family="Arial">عمود</text>
+<!-- Column stub concrete -->
+<rect x="${CX1.toFixed(1)}" y="${COL_TOP.toFixed(1)}" width="${CW.toFixed(1)}" height="${(FY1-COL_TOP+2).toFixed(1)}" fill="url(#conc${id})" fill-opacity="0.45" stroke="#1a3a5c" stroke-width="1.4"/>
+<text x="${FCX.toFixed(1)}" y="${(COL_TOP+9).toFixed(1)}" text-anchor="middle" font-size="6" fill="#1a3a5c" font-family="Arial">عمود / Col</text>
+<!-- Column width dim -->
+<line x1="${CX1.toFixed(1)}" y1="${(COL_TOP-5).toFixed(1)}" x2="${(CX1+CW).toFixed(1)}" y2="${(COL_TOP-5).toFixed(1)}" stroke="#555" stroke-width="0.6" marker-start="url(#${arlID})" marker-end="url(#${arID})"/>
+<text x="${FCX.toFixed(1)}" y="${(COL_TOP-7).toFixed(1)}" text-anchor="middle" font-size="6" fill="#555" font-family="Arial">${colWidthLabel} mm</text>
+<!-- Starter bars (vertical lines through column and into footing) -->
+<line x1="${BAR_LX.toFixed(1)}" y1="${STIR_Y1.toFixed(1)}" x2="${BAR_LX.toFixed(1)}" y2="${STIR_Y2.toFixed(1)}" stroke="#c55" stroke-width="${(COL_BAR_R*1.6).toFixed(1)}" stroke-linecap="round"/>
+<line x1="${BAR_RX.toFixed(1)}" y1="${STIR_Y1.toFixed(1)}" x2="${BAR_RX.toFixed(1)}" y2="${STIR_Y2.toFixed(1)}" stroke="#c55" stroke-width="${(COL_BAR_R*1.6).toFixed(1)}" stroke-linecap="round"/>
+${colFaceBars}
+<!-- Stirrup in column stub -->
+<rect x="${STIR_X1.toFixed(1)}" y="${STIR_Y1.toFixed(1)}" width="${STIR_W.toFixed(1)}" height="${(FY1-STIR_Y1+2).toFixed(1)}" fill="none" stroke="#e07000" stroke-width="1.2" rx="1"/>
+<!-- Starter bar label -->
+<text x="${(CX1+CW+3).toFixed(1)}" y="${((STIR_Y1+FY1)/2+3).toFixed(1)}" font-size="6" fill="#c55" font-family="Arial">بادئ</text>
+<!-- Footing body -->
 <rect x="${FX1.toFixed(1)}" y="${FY1.toFixed(1)}" width="${FW.toFixed(1)}" height="${FH.toFixed(1)}" fill="url(#conc${id})" fill-opacity="0.45" stroke="#1a3a5c" stroke-width="1.8"/>
 <rect x="${FX1.toFixed(1)}" y="${FY2.toFixed(1)}" width="${FW.toFixed(1)}" height="${BH.toFixed(1)}" fill="#cdd5de" stroke="#aaa" stroke-width="0.5"/>
 <text x="${FCX.toFixed(1)}" y="${(FY2+BH-1).toFixed(1)}" text-anchor="middle" font-size="5.5" fill="#555" font-family="Arial">نظافة 50mm</text>
+<!-- Bottom rebar in footing -->
 <line x1="${(FX1+3).toFixed(1)}" y1="${REBAR_Y_LINE.toFixed(1)}" x2="${(FX2-3).toFixed(1)}" y2="${REBAR_Y_LINE.toFixed(1)}" stroke="#880000" stroke-width="2.3"/>
 ${dots}
 ${rebarLabels}

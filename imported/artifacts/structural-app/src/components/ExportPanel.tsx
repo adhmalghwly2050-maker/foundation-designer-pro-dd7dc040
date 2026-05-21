@@ -380,40 +380,48 @@ export default function ExportPanel({
 
         {/* Beam elevation — separate HTML print sheet */}
         {beamDesigns.length > 0 && (
-          <Button
-            variant="outline"
-            className="w-full min-h-[44px] gap-2 text-xs"
-            disabled={!analyzed}
-            onClick={() => {
-              const allFilteredBeams = beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId));
-              const allFilteredBeamIds = new Set(allFilteredBeams.map(b => b.id));
-              const filtDesigns = beamDesigns.filter((d: any) => allFilteredBeamIds.has(d.beamId));
-              const storyLabel = selectedFloors.length === 1
-                ? stories.find(s => s.id === selectedFloors[0])?.label || ''
-                : 'All Floors';
-              const idx = selectedFloors.length === 1 ? stories.findIndex(s => s.id === selectedFloors[0]) : 0;
-              const floorCode = selectedFloors.length === 1
-                ? getFloorCode(stories.find(s => s.id === selectedFloors[0])?.label || '', idx)
-                : 'ALL';
-              openBeamElevationForPrint(
-                allFilteredBeams,
-                filtDesigns,
-                titleBlockConfig?.projectName || projectName,
-                {
-                  floorCode,
-                  storyLabel,
-                  titleBlockConfig: titleBlockConfig
-                    ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy }
-                    : { fc: mat.fc, fy: mat.fy },
-                  devLengths,
-                } as any,
-                sheetSize === 'A4' ? 'A4' : 'A3',
-              );
-            }}
-          >
-            <Printer size={14} />
-            طباعة مقاطع الجسور الطولية
-          </Button>
+          <div className="space-y-1">
+            {selectedCount > 0 && (
+              <p className="text-[10px] text-muted-foreground text-center">
+                مقاطع الجسور: {selectedCount === stories.length ? 'جميع الأدوار' : stories.filter(s => selectedFloors.includes(s.id)).map(s => s.label).join('، ')}
+                {' '}({beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId)).length} جسر)
+              </p>
+            )}
+            <Button
+              variant="outline"
+              className="w-full min-h-[44px] gap-2 text-xs"
+              disabled={!analyzed || selectedCount === 0}
+              onClick={() => {
+                const allFilteredBeams = beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId));
+                const allFilteredBeamIds = new Set(allFilteredBeams.map(b => b.id));
+                const filtDesigns = beamDesigns.filter((d: any) => allFilteredBeamIds.has(d.beamId));
+                const storyLabel = selectedFloors.length === 1
+                  ? stories.find(s => s.id === selectedFloors[0])?.label || ''
+                  : stories.filter(s => selectedFloors.includes(s.id)).map(s => s.label).join(', ');
+                const idx = selectedFloors.length === 1 ? stories.findIndex(s => s.id === selectedFloors[0]) : 0;
+                const floorCode = selectedFloors.length === 1
+                  ? getFloorCode(stories.find(s => s.id === selectedFloors[0])?.label || '', idx)
+                  : 'ALL';
+                openBeamElevationForPrint(
+                  allFilteredBeams,
+                  filtDesigns,
+                  titleBlockConfig?.projectName || projectName,
+                  {
+                    floorCode,
+                    storyLabel,
+                    titleBlockConfig: titleBlockConfig
+                      ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy }
+                      : { fc: mat.fc, fy: mat.fy },
+                    devLengths,
+                  } as any,
+                  sheetSize === 'A4' ? 'A4' : 'A3',
+                );
+              }}
+            >
+              <Printer size={14} />
+              طباعة مقاطع الجسور الطولية
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>

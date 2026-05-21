@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Plus, Trash2, Copy, Layers } from 'lucide-react';
@@ -83,6 +83,35 @@ interface StoryManagerProps {
   onCopyElements: (fromId: string, toId: string) => void;
 }
 
+function StoryHeightInput({
+  storyId, height, onUpdateStory,
+}: { storyId: string; height: number; onUpdateStory: (id: string, updates: Partial<Story>) => void }) {
+  const [localVal, setLocalVal] = useState(String(height));
+
+  useEffect(() => {
+    setLocalVal(String(height));
+  }, [height]);
+
+  return (
+    <Input
+      type="number"
+      value={localVal}
+      onChange={e => setLocalVal(e.target.value)}
+      onBlur={() => {
+        const n = parseFloat(localVal);
+        if (!isNaN(n) && n > 0) {
+          onUpdateStory(storyId, { height: n });
+        } else {
+          setLocalVal(String(height));
+        }
+      }}
+      className="h-7 w-20 text-xs font-mono"
+      placeholder="ارتفاع mm"
+      title="ارتفاع الدور (مم)"
+    />
+  );
+}
+
 export function StoryManager({
   stories, selectedStoryId, onSelectStory, onAddStory, onRemoveStory,
   onUpdateStory, onCopyElements,
@@ -106,13 +135,7 @@ export function StoryManager({
               onChange={e => onUpdateStory(s.id, { label: e.target.value })}
               className="h-7 w-28 text-xs"
             />
-            <Input
-              type="number"
-              value={s.height}
-              onChange={e => onUpdateStory(s.id, { height: parseFloat(e.target.value) || 3200 })}
-              className="h-7 w-20 text-xs font-mono"
-              title="ارتفاع الدور (مم)"
-            />
+            <StoryHeightInput storyId={s.id} height={s.height} onUpdateStory={onUpdateStory} />
             <span className="text-[10px] text-muted-foreground">مم</span>
             {i > 0 && (
               <Button size="sm" variant="ghost" className="h-7 text-xs gap-1" onClick={() => onCopyElements(stories[0].id, s.id)} title="نسخ عناصر الدور الأول">
