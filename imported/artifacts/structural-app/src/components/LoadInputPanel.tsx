@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Separator } from '@/components/ui/separator';
-import { Home, Building2, Layers, Zap, Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import { Home, Building2, Layers, Zap, Plus, Trash2, CheckCircle2, XCircle } from 'lucide-react';
 import type { Beam, Slab } from '@/lib/structuralEngine';
 
 interface LoadCombo {
@@ -123,8 +123,38 @@ export default function LoadInputPanel({
     onSetLoadCombos(loadCombos.filter(c => c.id !== id));
   };
 
+  const clearAllWallLoads = () => {
+    classifiedBeams.forEach(b => onSetBeamWallLoad(b.id, 0));
+    setAppliedMsg(`✓ تم مسح أحمال الجدران عن جميع الجسور (${classifiedBeams.length} جسر)`);
+    setTimeout(() => setAppliedMsg(''), 3000);
+  };
+
   return (
     <div className="space-y-4">
+      {/* ── Clear All Overlaps ── */}
+      <Card className="border-red-200 dark:border-red-800 bg-red-500/5">
+        <CardContent className="py-3 px-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold text-foreground">حذف تراكب الأحمال / صفر جميع أحمال الجدران</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                يعيد تعيين حمل الجدار إلى 0 لجميع الجسور (الطرفية والداخلية) دفعة واحدة.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-9 gap-1.5 shrink-0"
+              onClick={clearAllWallLoads}
+            >
+              <XCircle size={14} />
+              صفر جميع الأحمال
+            </Button>
+          </div>
+          {appliedMsg && <p className="text-xs text-green-600 font-medium mt-2">{appliedMsg}</p>}
+        </CardContent>
+      </Card>
+
       {/* ── Exterior Beams ── */}
       <Card className="border-amber-200 dark:border-amber-800">
         <CardHeader className="pb-2">
@@ -150,7 +180,6 @@ export default function LoadInputPanel({
               تطبيق على الطرفية
             </Button>
           </div>
-          {appliedMsg && <p className="text-xs text-green-600 font-medium">{appliedMsg}</p>}
           <div className="overflow-x-auto max-h-48 overflow-y-auto rounded border">
             <Table>
               <TableHeader>

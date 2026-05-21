@@ -562,7 +562,8 @@ function build3DModelWithPatternLoading(
       // ── Geometric slab-edge transfer fallback ─────────────────────────────
       const wDL_service = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
       const wLL_service = slabProps.liveLoad;
-      const slabEdgeLoads = buildSlabEdgeLoads(slabs, wDL_service, wLL_service);
+      // Build a lookup of slabs by ID for fast per-beam filtering
+      const slabById = new Map(slabs.map(s => [s.id, s]));
 
       for (const elem of elements3d) {
         if (elem.type !== 'beam') continue;
@@ -572,7 +573,17 @@ function build3DModelWithPatternLoading(
         const beam = beamsMap.get(baseBeamId);
         if (!beam) continue;
 
-        const slabTransfer = computeBeamLoadProfile(beam, slabEdgeLoads, PROFILE_T);
+        // Filter to slabs explicitly associated with this beam — same approach as
+        // the 2D engine (calculateBeamLoads). Without this filter, multi-story models
+        // accumulate slab loads from ALL stories at the same x,y coordinates,
+        // multiplying loads by the number of stories (the reported ×4 bug).
+        const beamSlabs = beam.slabs
+          .map(id => slabById.get(id))
+          .filter((s): s is typeof slabs[0] => s != null);
+        if (beamSlabs.length === 0) continue;
+
+        const beamSlabEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
+        const slabTransfer = computeBeamLoadProfile(beam, beamSlabEdgeLoads, PROFILE_T);
         const maxLoad = Math.max(
           ...slabTransfer.profileDL.map(pt => pt.wy),
           ...slabTransfer.profileLL.map(pt => pt.wy),

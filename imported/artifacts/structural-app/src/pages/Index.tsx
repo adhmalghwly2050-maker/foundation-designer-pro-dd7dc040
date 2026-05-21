@@ -3743,6 +3743,9 @@ const Index = () => {
                   frameResults={frameResults}
                   etabsAnalysisData={etabsAnalysisData}
                   analyzed={analyzed}
+                  columns={columns}
+                  colDesigns={colDesigns}
+                  etabsColumnResults={etabsColumnResults}
                 />
               )}
 

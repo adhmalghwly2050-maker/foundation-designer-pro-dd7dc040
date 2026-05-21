@@ -1,14 +1,16 @@
 /**
- * DesignComparisonPanel — مقارنة نتائج التصميم بين محركات التطبيق وNETABS
+ * DesignComparisonPanel — مقارنة نتائج التصميم بين محركات التطبيق وETABS
+ * يشمل مقارنة الجسور والأعمدة
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { GitCompareArrows, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import type { Beam, MatProps, SlabProps, Slab, FrameResult, Story } from '@/lib/structuralEngine';
+import { GitCompareArrows, TrendingUp, TrendingDown, Minus, Columns3 } from 'lucide-react';
+import type { Beam, Column, MatProps, SlabProps, Slab, FrameResult, Story } from '@/lib/structuralEngine';
 import { designFlexure, designShear } from '@/lib/structuralEngine';
+import type { ETABSColumnResult } from '@/components/ETABSAnalysisImport';
 
 type ETABSBeamResult = {
   beamId: string;
@@ -28,6 +30,27 @@ interface BeamDesignRow {
   etabs: { topLeft: string; bottom: string; topRight: string; Vu: number } | null;
 }
 
+interface ColCompareRow {
+  colId: string;
+  storyLabel: string;
+  appPu: number | null;
+  appMx: number | null;
+  appMy: number | null;
+  etabsP: number | null;
+  etabsM2: number | null;
+  etabsM3: number | null;
+}
+
+interface ColDesignEntry {
+  id: string;
+  storyId?: string;
+  b: number;
+  h: number;
+  Pu: number;
+  Mx: number;
+  My: number;
+}
+
 interface Props {
   beams: Beam[];
   slabs: Slab[];
@@ -37,6 +60,9 @@ interface Props {
   frameResults: FrameResult[];
   etabsAnalysisData: ETABSBeamResult[];
   analyzed: boolean;
+  columns?: Column[];
+  colDesigns?: ColDesignEntry[];
+  etabsColumnResults?: ETABSColumnResult[];
 }
 
 function formatRebar(bars: number, dia: number): string {
@@ -50,6 +76,27 @@ function diffBadge(appVal: number, etabsVal: number) {
   return <TrendingDown size={12} className="text-green-500" />;
 }
 
+function numDiffBadge(appVal: number, etabsVal: number) {
+  const pct = etabsVal !== 0 ? ((appVal - etabsVal) / Math.abs(etabsVal)) * 100 : 0;
+  const abs = Math.abs(pct);
+  if (abs <= 5) return <Badge className="text-[9px] bg-green-500/15 text-green-700 dark:text-green-400 border-green-400/40 px-1">≈</Badge>;
+  if (abs <= 15) return <Badge className="text-[9px] bg-yellow-500/15 text-yellow-700 dark:text-yellow-400 border-yellow-400/40 px-1">{pct > 0 ? '+' : ''}{pct.toFixed(0)}%</Badge>;
+  return <Badge className="text-[9px] bg-red-500/15 text-red-700 dark:text-red-400 border-red-400/40 px-1">{pct > 0 ? '+' : ''}{pct.toFixed(0)}%</Badge>;
+}
+
+function fmt(v: number | null, dec = 1): string {
+  if (v == null || !isFinite(v)) return '—';
+  return v.toFixed(dec);
+}
+
+/**
+ * For a split beam segment like "B-1_A" or "B-1_B", returns the parent ID "B-1".
+ * If not a split segment, returns the original ID.
+ */
+function parentBeamId(id: string): string {
+  return id.replace(/_[AB]$/, '');
+}
+
 export default function DesignComparisonPanel({
   beams,
   slabs,
@@ -59,12 +106,16 @@ export default function DesignComparisonPanel({
   frameResults,
   etabsAnalysisData,
   analyzed,
+  columns = [],
+  colDesigns = [],
+  etabsColumnResults = [],
 }: Props) {
+  const [activeTab, setActiveTab] = useState<'beams' | 'columns'>('beams');
 
-  const comparisons = useMemo<BeamDesignRow[]>(() => {
+  // ── Beam comparisons ──────────────────────────────────────────────────────
+  const beamComparisons = useMemo<BeamDesignRow[]>(() => {
     const rows: BeamDesignRow[] = [];
 
-    // Build set of beam IDs from both sources
     const allBeamIds = new Set<string>();
     frameResults.forEach(fr => fr.beams.forEach(b => allBeamIds.add(b.beamId)));
     etabsAnalysisData.forEach(ed => allBeamIds.add(ed.beamId));
@@ -105,8 +156,11 @@ export default function DesignComparisonPanel({
       }
 
       // ── ETABS result ──
+      // Direct match, then try parent ID for split segments (B1_A / B1_B → B1)
       let etabsRow: BeamDesignRow['etabs'] = null;
-      const ed = etabsAnalysisData.find(e => e.beamId === beamId);
+      const pid = parentBeamId(beamId);
+      const ed = etabsAnalysisData.find(e => e.beamId === beamId)
+        || (pid !== beamId ? etabsAnalysisData.find(e => e.beamId === pid) : null);
       if (ed && beam) {
         const span = beam.length / 1000 || 1;
         const hasSlabs = beam.slabs.length > 0;
@@ -138,10 +192,43 @@ export default function DesignComparisonPanel({
     return rows.sort((a, b) => a.storyLabel.localeCompare(b.storyLabel) || a.beamId.localeCompare(b.beamId));
   }, [beams, slabs, slabProps, mat, stories, frameResults, etabsAnalysisData]);
 
+  // ── Column comparisons ────────────────────────────────────────────────────
+  const colComparisons = useMemo<ColCompareRow[]>(() => {
+    const rows: ColCompareRow[] = [];
+    const allColIds = new Set<string>();
+    colDesigns.forEach(cd => allColIds.add(cd.id));
+    etabsColumnResults.forEach(ec => allColIds.add(ec.colId));
+
+    for (const colId of allColIds) {
+      const col = columns.find(c => c.id === colId);
+      const storyObj = col ? stories.find(s => s.id === col.storyId) : null;
+      const storyLabel = storyObj?.label || '—';
+
+      const appDesign = colDesigns.find(cd => cd.id === colId);
+      const etabsData = etabsColumnResults.find(ec => ec.colId === colId)
+        || etabsColumnResults.find(ec => ec.colId === colId.replace(/_[AB]$/, ''));
+
+      rows.push({
+        colId,
+        storyLabel,
+        appPu: appDesign?.Pu ?? null,
+        appMx: appDesign?.Mx ?? null,
+        appMy: appDesign?.My ?? null,
+        etabsP: etabsData ? Math.abs(etabsData.P) : null,
+        etabsM2: etabsData?.M2 ?? null,
+        etabsM3: etabsData?.M3 ?? null,
+      });
+    }
+
+    return rows.sort((a, b) => a.storyLabel.localeCompare(b.storyLabel) || a.colId.localeCompare(b.colId));
+  }, [columns, colDesigns, etabsColumnResults, stories]);
+
   const hasApp = analyzed && frameResults.some(fr => fr.beams.length > 0);
   const hasEtabs = etabsAnalysisData.length > 0;
+  const hasAppCols = colDesigns.length > 0;
+  const hasEtabsCols = etabsColumnResults.length > 0;
 
-  if (!hasApp && !hasEtabs) {
+  if (!hasApp && !hasEtabs && !hasAppCols && !hasEtabsCols) {
     return (
       <Card>
         <CardContent className="py-12 text-center text-muted-foreground text-sm">
@@ -153,126 +240,271 @@ export default function DesignComparisonPanel({
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <GitCompareArrows size={15} />
-            مقارنة نتائج التصميم — الجسور
-          </CardTitle>
-          <div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
-            {hasApp && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />نتائج التطبيق</span>}
-            {hasEtabs && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />نتائج ETABS</span>}
-            <span className="flex items-center gap-1"><TrendingUp size={10} className="text-red-500" />أعلى من ETABS</span>
-            <span className="flex items-center gap-1"><TrendingDown size={10} className="text-green-500" />أقل من ETABS</span>
-          </div>
-        </CardHeader>
-        <CardContent className="overflow-x-auto p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-[10px] sticky right-0 bg-background z-10">الدور</TableHead>
-                <TableHead className="text-[10px] sticky right-12 bg-background z-10">الجسر</TableHead>
-                <TableHead className="text-[10px] text-center" colSpan={2}>علوي يسار</TableHead>
-                <TableHead className="text-[10px] text-center" colSpan={2}>سفلي (وسط)</TableHead>
-                <TableHead className="text-[10px] text-center" colSpan={2}>علوي يمين</TableHead>
-              </TableRow>
-              <TableRow className="bg-muted/30">
-                <TableHead className="text-[9px]" />
-                <TableHead className="text-[9px]" />
-                <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
-                <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
-                <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
-                <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
-                <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
-                <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {comparisons.map(row => (
-                <TableRow key={`${row.storyLabel}-${row.beamId}`}>
-                  <TableCell className="text-[10px] text-muted-foreground">{row.storyLabel}</TableCell>
-                  <TableCell className="font-mono text-[10px] font-bold">{row.beamId}</TableCell>
+      {/* Tab selector */}
+      <div className="flex gap-1 border-b border-border pb-1">
+        <button
+          onClick={() => setActiveTab('beams')}
+          className={`px-3 py-1.5 text-xs rounded-t font-medium transition-colors ${
+            activeTab === 'beams'
+              ? 'bg-background border border-b-0 border-border text-foreground'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          الجسور
+          {etabsAnalysisData.length > 0 && (
+            <Badge variant="secondary" className="ml-1 text-[9px]">{etabsAnalysisData.length}</Badge>
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab('columns')}
+          className={`px-3 py-1.5 text-xs rounded-t font-medium transition-colors flex items-center gap-1 ${
+            activeTab === 'columns'
+              ? 'bg-background border border-b-0 border-border text-foreground'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Columns3 size={11} />
+          الأعمدة
+          {etabsColumnResults.length > 0 && (
+            <Badge variant="secondary" className="ml-1 text-[9px]">{etabsColumnResults.length}</Badge>
+          )}
+        </button>
+      </div>
 
-                  {/* Top Left */}
-                  <TableCell className="font-mono text-[10px]">
-                    <div className="flex items-center gap-0.5">
-                      {row.app ? row.app.topLeft : <span className="text-muted-foreground">—</span>}
-                      {row.app && row.etabs && diffBadge(
-                        parseInt(row.app.topLeft) || 0,
-                        parseInt(row.etabs.topLeft) || 0
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-[10px] text-orange-600">
-                    {row.etabs ? row.etabs.topLeft : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-
-                  {/* Bottom */}
-                  <TableCell className="font-mono text-[10px]">
-                    <div className="flex items-center gap-0.5">
-                      {row.app ? row.app.bottom : <span className="text-muted-foreground">—</span>}
-                      {row.app && row.etabs && diffBadge(
-                        parseInt(row.app.bottom) || 0,
-                        parseInt(row.etabs.bottom) || 0
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-[10px] text-orange-600">
-                    {row.etabs ? row.etabs.bottom : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-
-                  {/* Top Right */}
-                  <TableCell className="font-mono text-[10px]">
-                    <div className="flex items-center gap-0.5">
-                      {row.app ? row.app.topRight : <span className="text-muted-foreground">—</span>}
-                      {row.app && row.etabs && diffBadge(
-                        parseInt(row.app.topRight) || 0,
-                        parseInt(row.etabs.topRight) || 0
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-[10px] text-orange-600">
-                    {row.etabs ? row.etabs.topRight : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      {/* Summary stats */}
-      {hasApp && hasEtabs && comparisons.length > 0 && (() => {
-        let higherCount = 0, lowerCount = 0, equalCount = 0;
-        for (const row of comparisons) {
-          if (!row.app || !row.etabs) continue;
-          const appBars = (parseInt(row.app.topLeft) || 0) + (parseInt(row.app.bottom) || 0) + (parseInt(row.app.topRight) || 0);
-          const etabsBars = (parseInt(row.etabs.topLeft) || 0) + (parseInt(row.etabs.bottom) || 0) + (parseInt(row.etabs.topRight) || 0);
-          if (appBars > etabsBars) higherCount++;
-          else if (appBars < etabsBars) lowerCount++;
-          else equalCount++;
-        }
-        return (
-          <Card className="border-muted">
-            <CardContent className="py-3 px-4">
-              <div className="flex flex-wrap gap-4 text-xs">
-                <div className="flex items-center gap-1">
-                  <span className="text-muted-foreground">جسور التطبيق أعلى:</span>
-                  <Badge variant="destructive" className="text-[10px]">{higherCount}</Badge>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-muted-foreground">جسور ETABS أعلى:</span>
-                  <Badge className="text-[10px] bg-green-600">{lowerCount}</Badge>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-muted-foreground">متطابق:</span>
-                  <Badge variant="secondary" className="text-[10px]">{equalCount}</Badge>
-                </div>
+      {/* ── Beams tab ── */}
+      {activeTab === 'beams' && (
+        <>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <GitCompareArrows size={15} />
+                مقارنة نتائج التصميم — الجسور
+              </CardTitle>
+              <div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
+                {hasApp && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />نتائج التطبيق</span>}
+                {hasEtabs && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />نتائج ETABS</span>}
+                <span className="flex items-center gap-1"><TrendingUp size={10} className="text-red-500" />أعلى من ETABS</span>
+                <span className="flex items-center gap-1"><TrendingDown size={10} className="text-green-500" />أقل من ETABS</span>
               </div>
+            </CardHeader>
+            <CardContent className="overflow-x-auto p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-[10px] sticky right-0 bg-background z-10">الدور</TableHead>
+                    <TableHead className="text-[10px] sticky right-12 bg-background z-10">الجسر</TableHead>
+                    <TableHead className="text-[10px] text-center" colSpan={2}>علوي يسار</TableHead>
+                    <TableHead className="text-[10px] text-center" colSpan={2}>سفلي (وسط)</TableHead>
+                    <TableHead className="text-[10px] text-center" colSpan={2}>علوي يمين</TableHead>
+                  </TableRow>
+                  <TableRow className="bg-muted/30">
+                    <TableHead className="text-[9px]" />
+                    <TableHead className="text-[9px]" />
+                    <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
+                    <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
+                    <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
+                    <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
+                    <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
+                    <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {beamComparisons.map(row => (
+                    <TableRow key={`${row.storyLabel}-${row.beamId}`}>
+                      <TableCell className="text-[10px] text-muted-foreground">{row.storyLabel}</TableCell>
+                      <TableCell className="font-mono text-[10px] font-bold">{row.beamId}</TableCell>
+
+                      <TableCell className="font-mono text-[10px]">
+                        <div className="flex items-center gap-0.5">
+                          {row.app ? row.app.topLeft : <span className="text-muted-foreground">—</span>}
+                          {row.app && row.etabs && diffBadge(
+                            parseInt(row.app.topLeft) || 0,
+                            parseInt(row.etabs.topLeft) || 0
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-[10px] text-orange-600">
+                        {row.etabs ? row.etabs.topLeft : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+
+                      <TableCell className="font-mono text-[10px]">
+                        <div className="flex items-center gap-0.5">
+                          {row.app ? row.app.bottom : <span className="text-muted-foreground">—</span>}
+                          {row.app && row.etabs && diffBadge(
+                            parseInt(row.app.bottom) || 0,
+                            parseInt(row.etabs.bottom) || 0
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-[10px] text-orange-600">
+                        {row.etabs ? row.etabs.bottom : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+
+                      <TableCell className="font-mono text-[10px]">
+                        <div className="flex items-center gap-0.5">
+                          {row.app ? row.app.topRight : <span className="text-muted-foreground">—</span>}
+                          {row.app && row.etabs && diffBadge(
+                            parseInt(row.app.topRight) || 0,
+                            parseInt(row.etabs.topRight) || 0
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-[10px] text-orange-600">
+                        {row.etabs ? row.etabs.topRight : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </CardContent>
           </Card>
-        );
-      })()}
+
+          {hasApp && hasEtabs && beamComparisons.length > 0 && (() => {
+            let higherCount = 0, lowerCount = 0, equalCount = 0;
+            for (const row of beamComparisons) {
+              if (!row.app || !row.etabs) continue;
+              const appBars = (parseInt(row.app.topLeft) || 0) + (parseInt(row.app.bottom) || 0) + (parseInt(row.app.topRight) || 0);
+              const etabsBars = (parseInt(row.etabs.topLeft) || 0) + (parseInt(row.etabs.bottom) || 0) + (parseInt(row.etabs.topRight) || 0);
+              if (appBars > etabsBars) higherCount++;
+              else if (appBars < etabsBars) lowerCount++;
+              else equalCount++;
+            }
+            return (
+              <Card className="border-muted">
+                <CardContent className="py-3 px-4">
+                  <div className="flex flex-wrap gap-4 text-xs">
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">جسور التطبيق أعلى:</span>
+                      <Badge variant="destructive" className="text-[10px]">{higherCount}</Badge>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">جسور ETABS أعلى:</span>
+                      <Badge className="text-[10px] bg-green-600">{lowerCount}</Badge>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">متطابق:</span>
+                      <Badge variant="secondary" className="text-[10px]">{equalCount}</Badge>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()}
+        </>
+      )}
+
+      {/* ── Columns tab ── */}
+      {activeTab === 'columns' && (
+        <>
+          {!hasAppCols && !hasEtabsCols ? (
+            <Card>
+              <CardContent className="py-10 text-center text-muted-foreground text-sm">
+                شغّل التحليل أو استورد نتائج أعمدة ETABS لعرض المقارنة
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Columns3 size={15} />
+                  مقارنة نتائج التصميم — الأعمدة
+                </CardTitle>
+                <div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
+                  {hasAppCols && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />نتائج التطبيق</span>}
+                  {hasEtabsCols && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />نتائج ETABS</span>}
+                  <span className="text-[10px]">P = ضغط محوري (kN) · M2/Mx وM3/My = عزوم (kN·m)</span>
+                </div>
+              </CardHeader>
+              <CardContent className="overflow-x-auto p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-[10px] sticky right-0 bg-background z-10">الدور</TableHead>
+                      <TableHead className="text-[10px] sticky right-12 bg-background z-10">العمود</TableHead>
+                      <TableHead className="text-[10px] text-center" colSpan={2}>P (kN)</TableHead>
+                      <TableHead className="text-[10px] text-center" colSpan={2}>Mx / M2 (kN·m)</TableHead>
+                      <TableHead className="text-[10px] text-center" colSpan={2}>My / M3 (kN·m)</TableHead>
+                    </TableRow>
+                    <TableRow className="bg-muted/30">
+                      <TableHead className="text-[9px]" />
+                      <TableHead className="text-[9px]" />
+                      <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
+                      <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
+                      <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
+                      <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
+                      <TableHead className="text-[9px] text-blue-600">تطبيق</TableHead>
+                      <TableHead className="text-[9px] text-orange-600">ETABS</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {colComparisons.map(row => (
+                      <TableRow key={`${row.storyLabel}-${row.colId}`}>
+                        <TableCell className="text-[10px] text-muted-foreground">{row.storyLabel}</TableCell>
+                        <TableCell className="font-mono text-[10px] font-bold">{row.colId}</TableCell>
+
+                        <TableCell className="font-mono text-[10px]">
+                          <div className="flex items-center gap-0.5">
+                            <span>{fmt(row.appPu)}</span>
+                            {row.appPu != null && row.etabsP != null && numDiffBadge(row.appPu, row.etabsP)}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-[10px] text-orange-600">{fmt(row.etabsP)}</TableCell>
+
+                        <TableCell className="font-mono text-[10px]">
+                          <div className="flex items-center gap-0.5">
+                            <span>{fmt(row.appMx)}</span>
+                            {row.appMx != null && row.etabsM2 != null && numDiffBadge(row.appMx, row.etabsM2)}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-[10px] text-orange-600">{fmt(row.etabsM2)}</TableCell>
+
+                        <TableCell className="font-mono text-[10px]">
+                          <div className="flex items-center gap-0.5">
+                            <span>{fmt(row.appMy)}</span>
+                            {row.appMy != null && row.etabsM3 != null && numDiffBadge(row.appMy, row.etabsM3)}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-[10px] text-orange-600">{fmt(row.etabsM3)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+
+          {hasAppCols && hasEtabsCols && colComparisons.length > 0 && (() => {
+            let over = 0, under = 0, match = 0;
+            for (const row of colComparisons) {
+              if (row.appPu == null || row.etabsP == null) continue;
+              const pct = Math.abs((row.appPu - row.etabsP) / Math.max(1, row.etabsP)) * 100;
+              if (pct <= 5) match++;
+              else if (row.appPu > row.etabsP) over++;
+              else under++;
+            }
+            return (
+              <Card className="border-muted">
+                <CardContent className="py-3 px-4">
+                  <div className="flex flex-wrap gap-4 text-xs">
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">P أعمدة التطبيق أعلى (&gt;5%):</span>
+                      <Badge variant="destructive" className="text-[10px]">{over}</Badge>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">P أعمدة ETABS أعلى (&gt;5%):</span>
+                      <Badge className="text-[10px] bg-green-600">{under}</Badge>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">متطابق (±5%):</span>
+                      <Badge variant="secondary" className="text-[10px]">{match}</Badge>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()}
+        </>
+      )}
     </div>
   );
 }

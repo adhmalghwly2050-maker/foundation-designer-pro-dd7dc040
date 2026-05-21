@@ -94,10 +94,11 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
   const rows = useMemo<RowData[]>(() => {
     if (!beams.length) return [];
 
-    // Slab edge load envelopes — same construction used by every engine
+    // Pre-compute service-level load intensities (kN/m²)
     const wDL_service = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
     const wLL_service = slabProps.liveLoad;
-    const slabEdgeLoads = buildSlabEdgeLoads(slabs, wDL_service, wLL_service);
+    // Build a lookup for fast per-beam slab filtering
+    const slabById = new Map(slabs.map(s => [s.id, s]));
 
     return beams.map(beam => {
       const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
@@ -108,7 +109,14 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
       const ll_2d = r2d.liveLoad;
 
       // ─── 3D Legacy engine path (geometric slab-edge transfer) ───
-      const profile = computeBeamLoadProfile(beam, slabEdgeLoads);
+      // Filter to only the slabs associated with this beam — identical to the 2D
+      // engine approach — so multi-story models don't accumulate loads from other
+      // stories (the ×N bug where N = number of stories with the same floor plan).
+      const beamSlabs = beam.slabs
+        .map(id => slabById.get(id))
+        .filter((s): s is typeof slabs[0] => s != null);
+      const beamEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
+      const profile = computeBeamLoadProfile(beam, beamEdgeLoads);
       const dl_3d = profile.equivalentDL;
       const ll_3d = profile.equivalentLL;
 
