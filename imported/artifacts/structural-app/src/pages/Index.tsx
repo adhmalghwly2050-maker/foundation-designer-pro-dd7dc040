@@ -20,7 +20,7 @@ import {
 } from "@/lib/structuralEngine";
 import { getColumnLoads3D, getFrameResults3D } from "@/lib/analyze3DColumns";
 import { adaptFEMResults, ENGINE_LABELS, type EngineType } from '@/lib/analysisController';
-import { getFrameResultsGlobalFrame, getFrameResultsUnifiedCore } from '@/lib/globalFrameBridge';
+import { getFrameResultsGlobalFrame } from '@/lib/globalFrameBridge';
 import { getConnectedSlabResults } from "@/slabFEMEngine";
 import { ModelManager } from "@/structural/model/modelManager";
 import { generateStructureFromSlabs } from "@/structural/generators/slabStructureGenerator";
@@ -1004,15 +1004,9 @@ const Index = () => {
     }
   }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor]);
 
-  // Unified Core results for comparison
-  const frameResultsUC = useMemo(() => {
-    if (!analyzed || frames.length === 0) return [] as FrameResult[];
-    try {
-      return getFrameResultsUnifiedCore(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor);
-    } catch {
-      return [] as FrameResult[];
-    }
-  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor]);
+  // Unified Core = identical algorithm to Global Frame (both are aliases for getFrameResults3D).
+  // Reuse the cached GF result to avoid a redundant full 3D solve.
+  const frameResultsUC = frameResultsGF;
 
   // 2D column loads (kept for comparison/fallback)
   const colLoadsBiaxial = useMemo(() => {
