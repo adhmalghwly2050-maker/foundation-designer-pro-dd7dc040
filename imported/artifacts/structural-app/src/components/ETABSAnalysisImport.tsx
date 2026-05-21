@@ -83,10 +83,17 @@ function parseETABSWorkbook(file: File): Promise<{
 
           const nameLower = sheetName.toLowerCase();
 
-          // ── مساعد: ابحث عن صف الترويسة في أول 6 صفوف ──────────────────
+          // ── مساعد: ابحث عن صف الترويسة في أول 8 صفوف ──────────────────
+          // يتجاهل صفوف العنوان (TABLE: ...) التي تحتوي على خلية واحدة فقط
           const findHeaderRow = (searchTerms: string[]): { hdr: string[]; dataStart: number } => {
-            for (let ri = 0; ri < Math.min(6, rows.length); ri++) {
-              const candidate = (rows[ri] || []).map((h: any) => String(h ?? '').toLowerCase().trim());
+            for (let ri = 0; ri < Math.min(8, rows.length); ri++) {
+              const row = rows[ri] || [];
+              // تخطي الصفوف التي تحتوي على أقل من 3 خلايا غير فارغة (صفوف العنوان TABLE:)
+              const nonEmpty = row.filter((c: any) => c != null && String(c).trim() !== '');
+              if (nonEmpty.length < 3) continue;
+              const candidate = row.map((h: any) => String(h ?? '').toLowerCase().trim());
+              // تخطي الصفوف التي تبدأ بـ "table:"
+              if (candidate[0]?.startsWith('table:')) continue;
               if (searchTerms.some(t => candidate.some(c => c.includes(t)))) {
                 return { hdr: candidate, dataStart: ri + 1 };
               }
@@ -95,9 +102,17 @@ function parseETABSWorkbook(file: File): Promise<{
           };
 
           // ── مساعد: إيجاد فهرس العمود بشكل مرن ──────────────────────────
+          // الأولوية: مطابقة دقيقة → ثم مطابقة بعد حذف المسافات → ثم substring للمصطلحات الطويلة فقط
           const findCol = (hdr: string[], terms: string[], fallback: number): number => {
+            // المرور الأول: مطابقة دقيقة أو دقيقة بعد حذف المسافات
             for (const term of terms) {
-              const idx = hdr.findIndex(h => h === term || h.replace(/\s+/g, '') === term || h.includes(term));
+              const idx = hdr.findIndex(h => h === term || h.replace(/\s+/g, '') === term);
+              if (idx >= 0) return idx;
+            }
+            // المرور الثاني: substring فقط للمصطلحات الأطول من حرفين (لتجنب 'p' تطابق 'output case')
+            for (const term of terms) {
+              if (term.length <= 2) continue;
+              const idx = hdr.findIndex(h => h.includes(term));
               if (idx >= 0) return idx;
             }
             return fallback;

@@ -691,15 +691,137 @@ export function generateFrames(beams: Beam[]): Frame[] {
  * UNITS: w in kN/m², lx/ly in m → W in kN/m (UDL on beam).
  * ────────────────────────────────────────────────────────────────────────────
  */
+/**
+ * Merge adjacent rectangular slabs that share a FULL edge with no active beam between them.
+ * This implements "irregular slab" behavior: adjacent panels without a separating beam
+ * are treated as one larger combined slab for load-distribution purposes.
+ *
+ * @param slabs       - All slabs for a single story
+ * @param activeBeams - Non-removed beams for the same story (used to detect missing beams)
+ * @returns           - Merged slab list (combined geometry where applicable)
+ */
+export function mergeAdjacentSlabsForLoading(slabs: Slab[], activeBeams: Beam[]): Slab[] {
+  const EPS = 0.002;
+
+  /** Check whether any active beam fully covers the shared edge segment */
+  const hasActiveCoverage = (
+    isVertical: boolean,
+    fixedCoord: number,
+    lo: number, hi: number
+  ): boolean => {
+    for (const b of activeBeams) {
+      if (isVertical) {
+        // Vertical shared edge at x = fixedCoord
+        if (b.direction !== 'vertical') continue;
+        if (Math.abs(b.x1 - fixedCoord) > EPS) continue;
+        const bLo = Math.min(b.y1, b.y2);
+        const bHi = Math.max(b.y1, b.y2);
+        if (bLo < lo + EPS && bHi > hi - EPS) return true;
+      } else {
+        // Horizontal shared edge at y = fixedCoord
+        if (b.direction !== 'horizontal') continue;
+        if (Math.abs(b.y1 - fixedCoord) > EPS) continue;
+        const bLo = Math.min(b.x1, b.x2);
+        const bHi = Math.max(b.x1, b.x2);
+        if (bLo < lo + EPS && bHi > hi - EPS) return true;
+      }
+    }
+    return false;
+  };
+
+  // Union-Find for slab groups
+  const parent: Record<string, string> = {};
+  const find = (id: string): string => {
+    if (parent[id] !== id) parent[id] = find(parent[id]);
+    return parent[id];
+  };
+  const union = (a: string, b: string) => { parent[find(a)] = find(b); };
+  for (const s of slabs) parent[s.id] = s.id;
+
+  // Check each pair of slabs for a shared full edge without a beam
+  for (let i = 0; i < slabs.length; i++) {
+    for (let j = i + 1; j < slabs.length; j++) {
+      const A = slabs[i];
+      const B = slabs[j];
+      const aMinX = Math.min(A.x1, A.x2), aMaxX = Math.max(A.x1, A.x2);
+      const aMinY = Math.min(A.y1, A.y2), aMaxY = Math.max(A.y1, A.y2);
+      const bMinX = Math.min(B.x1, B.x2), bMaxX = Math.max(B.x1, B.x2);
+      const bMinY = Math.min(B.y1, B.y2), bMaxY = Math.max(B.y1, B.y2);
+
+      // Shared vertical edge: A's right == B's left, same Y extent
+      if (Math.abs(aMaxX - bMinX) < EPS &&
+          Math.abs(aMinY - bMinY) < EPS && Math.abs(aMaxY - bMaxY) < EPS) {
+        if (!hasActiveCoverage(true, aMaxX, aMinY, aMaxY)) union(A.id, B.id);
+      }
+      // Shared vertical edge: B's right == A's left
+      else if (Math.abs(bMaxX - aMinX) < EPS &&
+               Math.abs(aMinY - bMinY) < EPS && Math.abs(aMaxY - bMaxY) < EPS) {
+        if (!hasActiveCoverage(true, aMinX, aMinY, aMaxY)) union(A.id, B.id);
+      }
+      // Shared horizontal edge: A's top == B's bottom, same X extent
+      else if (Math.abs(aMaxY - bMinY) < EPS &&
+               Math.abs(aMinX - bMinX) < EPS && Math.abs(aMaxX - bMaxX) < EPS) {
+        if (!hasActiveCoverage(false, aMaxY, aMinX, aMaxX)) union(A.id, B.id);
+      }
+      // Shared horizontal edge: B's top == A's bottom
+      else if (Math.abs(bMaxY - aMinY) < EPS &&
+               Math.abs(aMinX - bMinX) < EPS && Math.abs(aMaxX - bMaxX) < EPS) {
+        if (!hasActiveCoverage(false, aMinY, aMinX, aMaxX)) union(A.id, B.id);
+      }
+    }
+  }
+
+  // Build merged slabs from groups
+  const groups = new Map<string, Slab[]>();
+  for (const s of slabs) {
+    const root = find(s.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root)!.push(s);
+  }
+
+  const merged: Slab[] = [];
+  for (const [root, group] of groups) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+    } else {
+      const minX = Math.min(...group.map(s => Math.min(s.x1, s.x2)));
+      const maxX = Math.max(...group.map(s => Math.max(s.x1, s.x2)));
+      const minY = Math.min(...group.map(s => Math.min(s.y1, s.y2)));
+      const maxY = Math.max(...group.map(s => Math.max(s.y1, s.y2)));
+      // Validate: total slab area must equal bounding-box area (ensures a rectangle)
+      const totalArea = group.reduce((acc, s) =>
+        acc + Math.abs(s.x2 - s.x1) * Math.abs(s.y2 - s.y1), 0);
+      const bbArea = (maxX - minX) * (maxY - minY);
+      if (Math.abs(totalArea - bbArea) < EPS * bbArea + EPS) {
+        merged.push({ id: `__merged_${root}`, x1: minX, y1: minY, x2: maxX, y2: maxY, storyId: group[0].storyId });
+      } else {
+        // Non-rectangular union: keep originals as-is
+        for (const s of group) merged.push(s);
+      }
+    }
+  }
+  return merged;
+}
+
 export function calculateBeamLoads(
-  beam: Beam, slabs: Slab[], slabProps: SlabProps, mat: MatProps
+  beam: Beam, slabs: Slab[], slabProps: SlabProps, mat: MatProps,
+  /** Optional: active (non-removed) beams for the same story — used to merge adjacent slabs */
+  activeBeamsForMerge?: Beam[]
 ): { deadLoad: number; liveLoad: number } {
   const ownWeight = (slabProps.thickness / 1000) * mat.gamma;
   const wDL = ownWeight + slabProps.finishLoad;
   const wLL = slabProps.liveLoad;
   const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
 
-  const slabEdgeLoads = buildSlabEdgeLoads(slabs, wDL, wLL);
+  // Merge adjacent slabs without a separating beam (irregular slab support)
+  const storySlabs = beam.storyId
+    ? slabs.filter(s => s.storyId === beam.storyId)
+    : slabs;
+  const effectiveSlabs = activeBeamsForMerge && activeBeamsForMerge.length > 0
+    ? mergeAdjacentSlabsForLoading(storySlabs, activeBeamsForMerge)
+    : storySlabs;
+
+  const slabEdgeLoads = buildSlabEdgeLoads(effectiveSlabs, wDL, wLL);
   const slabTransfer = computeBeamLoadProfile(beam, slabEdgeLoads);
 
   return {

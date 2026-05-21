@@ -516,13 +516,16 @@ const Index = () => {
     setSelectedBeamIds(new Set());
   }, [beams, columns, removedColumnIds, removedBeamIds]);
   const beamsWithLoads = useMemo(() => {
-    return beams
-      .filter(b => !removedBeamIds.includes(b.id))
-      .map(b => {
-        const loads = calculateBeamLoads(b, slabs, slabProps, mat);
-        const wallLoad = beamOverrides[b.id]?.wallLoad || b.wallLoad || 0;
-        return { ...b, deadLoad: loads.deadLoad + wallLoad, liveLoad: loads.liveLoad, wallLoad };
-      });
+    const activeBeams = beams.filter(b => !removedBeamIds.includes(b.id));
+    return activeBeams.map(b => {
+      // Pass the active beams for the same story so adjacent-slab merging works correctly
+      const storyActiveBeams = b.storyId
+        ? activeBeams.filter(ab => ab.storyId === b.storyId)
+        : activeBeams;
+      const loads = calculateBeamLoads(b, slabs, slabProps, mat, storyActiveBeams);
+      const wallLoad = beamOverrides[b.id]?.wallLoad || b.wallLoad || 0;
+      return { ...b, deadLoad: loads.deadLoad + wallLoad, liveLoad: loads.liveLoad, wallLoad };
+    });
   }, [beams, slabs, slabProps, mat, beamOverrides, removedBeamIds]);
 
   const frames = useMemo(() => generateFrames(beamsWithLoads), [beamsWithLoads]);
@@ -1464,21 +1467,45 @@ const Index = () => {
   const modelStats = modelManager.getStats();
 
   // Handle long-press from LevelPlanView (maps string element IDs to frame/area numeric IDs)
+  // Uses coordinate-based matching for beams (handles multi-story where UI beam IDs differ from modelManager frame IDs)
   const handleLevelElementLongPress = useCallback((type: 'beam' | 'column' | 'slab', id: string) => {
     if (type === 'slab') {
       const area = currentAreas.find(a => a.label === id || `A${a.id}` === id);
       if (area) dispatch({ type: 'OPEN_ELEM_PROPS', areaId: area.id });
+    } else if (type === 'beam') {
+      // Find the UI beam by its string ID first
+      const uiBeam = beams.find(b => b.id === id);
+      if (uiBeam) {
+        // Match modelManager frame by coordinate proximity (robust for multi-story structures)
+        const EPS = 0.005;
+        const frame = currentFrames.find(f => {
+          if (f.type !== 'beam') return false;
+          const ni = currentNodes.find(n => n.id === f.nodeI);
+          const nj = currentNodes.find(n => n.id === f.nodeJ);
+          if (!ni || !nj) return false;
+          return (
+            (Math.abs(ni.x - uiBeam.x1) < EPS && Math.abs(ni.y - uiBeam.y1) < EPS &&
+             Math.abs(nj.x - uiBeam.x2) < EPS && Math.abs(nj.y - uiBeam.y2) < EPS) ||
+            (Math.abs(ni.x - uiBeam.x2) < EPS && Math.abs(ni.y - uiBeam.y2) < EPS &&
+             Math.abs(nj.x - uiBeam.x1) < EPS && Math.abs(nj.y - uiBeam.y1) < EPS)
+          );
+        });
+        if (frame) dispatch({ type: 'OPEN_ELEM_PROPS', frameId: frame.id });
+      } else {
+        // Fallback: label/id matching for extra beams
+        const frame = currentFrames.find(f =>
+          f.type === 'beam' && (f.label === id || `B${f.id}` === id || f.id.toString() === id)
+        );
+        if (frame) dispatch({ type: 'OPEN_ELEM_PROPS', frameId: frame.id });
+      }
     } else {
-      const frame = currentFrames.find(f => {
-        if (f.type === type) {
-          const label = type === 'beam' ? `B${f.id}` : `C${f.id}`;
-          return f.label === id || label === id || f.id.toString() === id;
-        }
-        return false;
-      });
+      // column - match by label or coordinate
+      const frame = currentFrames.find(f =>
+        f.type === 'column' && (f.label === id || `C${f.id}` === id || f.id.toString() === id)
+      );
       if (frame) dispatch({ type: 'OPEN_ELEM_PROPS', frameId: frame.id });
     }
-  }, [currentFrames, currentAreas]);
+  }, [currentFrames, currentAreas, currentNodes, beams]);
 
   // Build mapping from ModelManager column frame IDs to column labels (C1, C2...)
   // Filter by selected story so labels update when switching stories
