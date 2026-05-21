@@ -35,7 +35,8 @@ import AnalysisDiagramDialog from "@/components/AnalysisDiagramDialog";
 import {
   Building2, Layers, Calculator, BarChart3, Ruler, Eye,
   Grid3X3, Settings2, Download, Bot, Building, Zap, Plus, Trash2,
-  Undo2, Save, Check, Wand2, Search, Compass, Merge, Crosshair, CheckSquare, Upload, Activity
+  Undo2, Save, Check, Wand2, Search, Compass, Merge, Crosshair, CheckSquare, Upload, Activity,
+  Loader2
 } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav, { type MainTab } from "@/components/BottomNav";
@@ -147,6 +148,12 @@ const Index = () => {
 
   // FEM analysis error state
   const [femError, setFemError] = React.useState<string | null>(null);
+
+  // Analysis progress overlay
+  const [isAnalyzing, setIsAnalyzing] = React.useState(false);
+  const [analysisProgress, setAnalysisProgress] = React.useState(0);
+  const [analysisStep, setAnalysisStep] = React.useState('');
+  const progressTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Pre-analysis validation state
   const [validationReport, setValidationReport] = React.useState<import('@/core/validation/preAnalysisValidator').ValidationReport | null>(null);
@@ -515,6 +522,42 @@ const Index = () => {
   const runAnalysis = () => {
     setFemError(null);
 
+    // ── إعداد شريط التقدم ──────────────────────────────────────────
+    setIsAnalyzing(true);
+    setAnalysisProgress(2);
+    setAnalysisStep('تجهيز النموذج...');
+
+    const ANALYSIS_STAGES = [
+      { upTo: 18, label: 'تجهيز الإطارات والعقد الإنشائية...' },
+      { upTo: 38, label: 'توزيع أحمال البلاطات على الجسور...' },
+      { upTo: 58, label: 'تجميع مصفوفة الصلابة الكلية...' },
+      { upTo: 76, label: 'حل منظومة المعادلات KU=F...' },
+      { upTo: 89, label: 'استخراج العزوم والقوى والانحرافات...' },
+      { upTo: 96, label: 'التحقق من نتائج التصميم...' },
+    ];
+    let _stageIdx = 0;
+    let _prog = 2;
+    if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+    progressTimerRef.current = setInterval(() => {
+      if (_stageIdx >= ANALYSIS_STAGES.length) return;
+      const _target = ANALYSIS_STAGES[_stageIdx].upTo;
+      _prog = Math.min(_prog + 0.9, _target);
+      setAnalysisProgress(_prog);
+      setAnalysisStep(ANALYSIS_STAGES[_stageIdx].label);
+      if (_prog >= _target) _stageIdx++;
+    }, 30);
+
+    const _finishAnalysis = () => {
+      if (progressTimerRef.current) { clearInterval(progressTimerRef.current); progressTimerRef.current = null; }
+      setAnalysisProgress(100);
+      setAnalysisStep('اكتمل التحليل بنجاح ✓');
+      setTimeout(() => { setIsAnalyzing(false); setAnalysisProgress(0); setAnalysisStep(''); }, 800);
+    };
+
+    // تأخير صغير لمنح المتصفح وقتاً لرسم شاشة التحميل قبل التنفيذ المتزامن
+    setTimeout(() => {
+      try {
+
     const buildAnalyzedConnections = (
       results: FrameResult[],
       connections: BeamOnBeamConnection[] = detectedConnections,
@@ -675,7 +718,11 @@ const Index = () => {
       dispatch({ type: 'SET_FRAME_RESULTS', results: results2D });
       dispatch({ type: 'SET_BOB_CONNECTIONS', connections: [] });
     }
-    dispatch({ type: 'SET_ANALYZED', value: true });
+      dispatch({ type: 'SET_ANALYZED', value: true });
+      } finally {
+        _finishAnalysis();
+      }
+    }, 60); // تأخير 60ms لرسم شاشة التحميل أولاً
   };
 
   const getBeamReleaseKey = useCallback((beam: Beam) => (
@@ -1617,6 +1664,55 @@ const Index = () => {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
+
+      {/* ── شاشة تقدم التحليل الإنشائي ── */}
+      {isAnalyzing && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-background/80 backdrop-blur-sm" dir="rtl">
+          <div className="bg-card border border-border rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 space-y-5">
+            {/* أيقونة متحركة */}
+            <div className="flex justify-center">
+              <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+                <Loader2 size={34} className="text-primary animate-spin" />
+              </div>
+            </div>
+
+            {/* العنوان */}
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-foreground">جارٍ التحليل الإنشائي</h3>
+              <p className="text-xs text-muted-foreground">
+                {stories.length} {stories.length === 1 ? 'دور' : 'أدوار'} &nbsp;•&nbsp; {beams.length} جسر &nbsp;•&nbsp; {columns.filter(c => !c.isRemoved).length} عمود
+              </p>
+            </div>
+
+            {/* شريط التقدم */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground truncate ml-2">{analysisStep}</span>
+                <span className="font-mono font-bold text-primary shrink-0">{Math.round(analysisProgress)}%</span>
+              </div>
+              <div className="h-2.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-200"
+                  style={{
+                    width: `${analysisProgress}%`,
+                    background: analysisProgress === 100
+                      ? 'hsl(var(--primary))'
+                      : 'linear-gradient(90deg, hsl(var(--primary)/0.7), hsl(var(--primary)))',
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* رسالة الانتظار */}
+            <p className="text-[10px] text-center text-muted-foreground leading-relaxed">
+              يُعالج التطبيق النموذج — يرجى الانتظار
+              <br />
+              قد يستغرق ذلك بضع ثوانٍ للمشاريع الكبيرة متعددة الأدوار
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Header - position:fixed, needs a spacer below */}
       <AppHeader 
         title="Structural Master"
