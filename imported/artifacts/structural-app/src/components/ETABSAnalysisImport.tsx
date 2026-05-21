@@ -83,24 +83,46 @@ function parseETABSWorkbook(file: File): Promise<{
 
           const nameLower = sheetName.toLowerCase();
 
+          // ── مساعد: ابحث عن صف الترويسة في أول 6 صفوف ──────────────────
+          const findHeaderRow = (searchTerms: string[]): { hdr: string[]; dataStart: number } => {
+            for (let ri = 0; ri < Math.min(6, rows.length); ri++) {
+              const candidate = (rows[ri] || []).map((h: any) => String(h ?? '').toLowerCase().trim());
+              if (searchTerms.some(t => candidate.some(c => c.includes(t)))) {
+                return { hdr: candidate, dataStart: ri + 1 };
+              }
+            }
+            return { hdr: (rows[0] || []).map((h: any) => String(h ?? '').toLowerCase().trim()), dataStart: 1 };
+          };
+
+          // ── مساعد: إيجاد فهرس العمود بشكل مرن ──────────────────────────
+          const findCol = (hdr: string[], terms: string[], fallback: number): number => {
+            for (const term of terms) {
+              const idx = hdr.findIndex(h => h === term || h.replace(/\s+/g, '') === term || h.includes(term));
+              if (idx >= 0) return idx;
+            }
+            return fallback;
+          };
+
           // ── BEAMS ─────────────────────────────────────────────────────────
           if (nameLower.includes('beam') || nameLower.includes('frame')) {
-            const hdr = (rows[0] || []).map((h: any) => String(h ?? '').toLowerCase().trim());
-            const COL_STORY   = Math.max(hdr.findIndex((h: string) => h === 'story'), 0);
-            const COL_BEAM    = Math.max(hdr.findIndex((h: string) => h === 'beam' || h === 'frame'), 1);
-            const COL_CASE    = Math.max(hdr.findIndex((h: string) => h.includes('output case') || h === 'case'), 3);
-            const COL_STATION = Math.max(hdr.findIndex((h: string) => h === 'station'), 5);
-            const COL_V2      = Math.max(hdr.findIndex((h: string) => h === 'v2'), 7);
-            const COL_M3      = Math.max(hdr.findIndex((h: string) => h === 'm3'), 11);
+            const { hdr, dataStart } = findHeaderRow(['beam', 'frame', 'story']);
+            const COL_STORY   = findCol(hdr, ['story'], 0);
+            const COL_BEAM    = findCol(hdr, ['beam', 'frame', 'framename', 'element'], 1);
+            const COL_CASE    = findCol(hdr, ['outputcase', 'output case', 'loadcase', 'load case', 'case'], 3);
+            const COL_STATION = findCol(hdr, ['station', 'distancefromei', 'distancefromendi', 'station(m)'], 5);
+            const COL_V2      = findCol(hdr, ['v2', 'v2(kn)', 'shear v2', 'sheary'], 7);
+            const COL_M3      = findCol(hdr, ['m3', 'm3(kn-m)', 'moment m3', 'momentz', 'mz'], 11);
 
             type Pt = { station: number; m3: number; v2: number };
             const beamMap = new Map<string, { story: string; beamName: string; pts: Pt[]; cases: Set<string> }>();
 
-            for (let i = 2; i < rows.length; i++) {
+            for (let i = dataStart; i < rows.length; i++) {
               const row = rows[i];
-              if (!row || row.length < Math.max(COL_M3, COL_V2, COL_STATION) + 1) continue;
+              if (!row || row.length < 3) continue;
               const beamName = String(row[COL_BEAM] ?? '').trim();
-              if (!beamName || beamName.toLowerCase() === 'beam') continue;
+              if (!beamName || beamName.toLowerCase() === 'beam' || beamName.toLowerCase() === 'frame') continue;
+              // تخطي الصفوف الأرقام التي تبدو وكأنها ترويسات متكررة
+              if (isNaN(Number(row[COL_STATION])) && String(row[COL_STATION] ?? '').toLowerCase().includes('station')) continue;
               const story = String(row[COL_STORY] ?? '').trim();
               const caseStr = String(row[COL_CASE] ?? '').trim();
               const station = Number(row[COL_STATION]) || 0;
@@ -134,24 +156,24 @@ function parseETABSWorkbook(file: File): Promise<{
 
           // ── COLUMNS ───────────────────────────────────────────────────────
           else if (nameLower.includes('column') || nameLower.includes('col')) {
-            const hdr = (rows[0] || []).map((h: any) => String(h ?? '').toLowerCase().trim());
-            const COL_STORY = Math.max(hdr.findIndex((h: string) => h === 'story'), 0);
-            const COL_COL   = Math.max(hdr.findIndex((h: string) => h === 'column' || h === 'col' || h === 'frame'), 1);
-            const COL_CASE  = Math.max(hdr.findIndex((h: string) => h.includes('output case') || h === 'case'), 3);
-            const COL_P     = Math.max(hdr.findIndex((h: string) => h === 'p'), 6);
-            const COL_V2    = Math.max(hdr.findIndex((h: string) => h === 'v2'), 7);
-            const COL_V3    = Math.max(hdr.findIndex((h: string) => h === 'v3'), 8);
-            const COL_M2    = Math.max(hdr.findIndex((h: string) => h === 'm2'), 10);
-            const COL_M3    = Math.max(hdr.findIndex((h: string) => h === 'm3'), 11);
+            const { hdr: hdrC, dataStart: dsC } = findHeaderRow(['column', 'col', 'story']);
+            const COL_STORY = findCol(hdrC, ['story'], 0);
+            const COL_COL   = findCol(hdrC, ['column', 'col', 'frame', 'element'], 1);
+            const COL_CASE  = findCol(hdrC, ['outputcase', 'output case', 'loadcase', 'case'], 3);
+            const COL_P     = findCol(hdrC, ['p', 'axial', 'p(kn)', 'axialforce'], 6);
+            const COL_V2    = findCol(hdrC, ['v2', 'v2(kn)', 'sheary'], 7);
+            const COL_V3    = findCol(hdrC, ['v3', 'v3(kn)', 'shearz'], 8);
+            const COL_M2    = findCol(hdrC, ['m2', 'm2(kn-m)', 'momenty'], 10);
+            const COL_M3    = findCol(hdrC, ['m3', 'm3(kn-m)', 'momentz'], 11);
 
             type CPt = { P: number; M2: number; M3: number; V2: number; V3: number };
             const colMap = new Map<string, { story: string; colName: string; pts: CPt[]; cases: Set<string> }>();
 
-            for (let i = 2; i < rows.length; i++) {
+            for (let i = dsC; i < rows.length; i++) {
               const row = rows[i];
-              if (!row || row.length < Math.max(COL_P, COL_M3) + 1) continue;
+              if (!row || row.length < 3) continue;
               const colName = String(row[COL_COL] ?? '').trim();
-              if (!colName || colName.toLowerCase() === 'column') continue;
+              if (!colName || colName.toLowerCase() === 'column' || colName.toLowerCase() === 'col') continue;
               const story = String(row[COL_STORY] ?? '').trim();
               const caseStr = String(row[COL_CASE] ?? '').trim();
               const P  = -Math.abs(Number(row[COL_P])  || 0);  // compression = negative in ETABS
@@ -183,18 +205,18 @@ function parseETABSWorkbook(file: File): Promise<{
 
           // ── REACTIONS ─────────────────────────────────────────────────────
           else if (nameLower.includes('reaction') || nameLower.includes('support') || nameLower.includes('joint')) {
-            const hdr = (rows[0] || []).map((h: any) => String(h ?? '').toLowerCase().trim());
-            const COL_STORY = hdr.findIndex((h: string) => h === 'story');
-            const COL_PT    = Math.max(hdr.findIndex((h: string) => h === 'point' || h === 'joint' || h === 'unique name'), 1);
-            const COL_CASE  = Math.max(hdr.findIndex((h: string) => h.includes('output case') || h === 'case'), 2);
-            const COL_FX    = hdr.findIndex((h: string) => h === 'fx' || h === 'f1');
-            const COL_FY    = hdr.findIndex((h: string) => h === 'fy' || h === 'f2');
-            const COL_FZ    = hdr.findIndex((h: string) => h === 'fz' || h === 'f3');
-            const COL_MZ    = hdr.findIndex((h: string) => h === 'mz' || h === 'm3');
+            const { hdr: hdrR, dataStart: dsR } = findHeaderRow(['point', 'joint', 'reaction', 'story']);
+            const COL_STORY = findCol(hdrR, ['story'], -1);
+            const COL_PT    = findCol(hdrR, ['point', 'joint', 'uniquename', 'unique name'], 1);
+            const COL_CASE  = findCol(hdrR, ['outputcase', 'output case', 'loadcase', 'case'], 2);
+            const COL_FX    = findCol(hdrR, ['fx', 'f1', 'fx(kn)'], -1);
+            const COL_FY    = findCol(hdrR, ['fy', 'f2', 'fy(kn)'], -1);
+            const COL_FZ    = findCol(hdrR, ['fz', 'f3', 'fz(kn)'], -1);
+            const COL_MZ    = findCol(hdrR, ['mz', 'm3', 'mz(kn-m)'], -1);
 
             const ptMap = new Map<string, { story: string; Fzs: number[]; Fxs: number[]; Fys: number[]; Mzs: number[]; cases: Set<string> }>();
 
-            for (let i = 2; i < rows.length; i++) {
+            for (let i = dsR; i < rows.length; i++) {
               const row = rows[i];
               if (!row || row.length < 4) continue;
               const ptName = String(row[COL_PT] ?? '').trim();

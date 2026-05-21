@@ -125,15 +125,15 @@ export default function ElementPropertiesDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="max-w-md flex flex-col gap-0 p-0 overflow-hidden" style={{ maxHeight: '92dvh' }}>
+        <DialogHeader className="px-5 pt-5 pb-3 shrink-0">
           <DialogTitle className="text-base">{title}</DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
             تعديل خصائص وأبعاد العنصر وحرية الأطراف
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="overflow-y-auto flex-1 px-5 pb-3 space-y-4">
           {/* Dimensions */}
           {(isBeam || isColumn) && (
             <div className="space-y-3">
@@ -290,7 +290,7 @@ export default function ElementPropertiesDialog({
           )}
         </div>
 
-        <DialogFooter className="flex-col gap-2 sm:flex-row sm:gap-0">
+        <DialogFooter className="flex-col gap-2 sm:flex-row sm:gap-0 px-5 py-4 border-t shrink-0 bg-background">
           {/* Delete button - shown when onDelete is provided */}
           {onDelete && (
             <Button

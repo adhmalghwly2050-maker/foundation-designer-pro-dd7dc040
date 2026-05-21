@@ -80,6 +80,8 @@ import type { EdbImportedData } from "@/components/ETABSEdbImportPanel";
 import ETABSAnalysisImport from "@/components/ETABSAnalysisImport";
 import type { ETABSBeamResult, ETABSColumnResult, ETABSReaction } from "@/components/ETABSAnalysisImport";
 import FoundationDesignPanel from "@/components/FoundationDesignPanel";
+import LoadInputPanel from "@/components/LoadInputPanel";
+import DesignComparisonPanel from "@/components/DesignComparisonPanel";
 import type { FootingDesignResult, FootingMaterials } from "@/lib/foundationDesign";
 import { useAnalysisWorker, type AnalysisInput as WorkerAnalysisInput } from '@/core/workers/useAnalysisWorker';
 import type { WorkerDiagnostics } from '@/core/workers/workerTypes';
@@ -184,7 +186,14 @@ const Index = () => {
   const [designExecuted, setDesignExecuted] = React.useState(false);
 
   // Design tab: sub-tab state
-  const [designSubTab, setDesignSubTab] = React.useState<'beams_cols' | 'foundations'>('beams_cols');
+  const [designSubTab, setDesignSubTab] = React.useState<'beams_cols' | 'foundations' | 'comparison'>('beams_cols');
+
+  // Custom load combinations
+  const [loadCombos, setLoadCombos] = React.useState([
+    { id: 'combo_1_4dl',    label: '1.4DL',                   factorDL: 1.4, factorLL: 0.0, isDefault: true },
+    { id: 'combo_12dl_16ll',label: '1.2DL + 1.6LL',           factorDL: 1.2, factorLL: 1.6, isDefault: true },
+    { id: 'combo_1dl_1ll',  label: '1.0DL + 1.0LL (أساسات)', factorDL: 1.0, factorLL: 1.0, isDefault: true },
+  ]);
 
   // Foundation design results (hoisted so ExportPanel can access them)
   const [foundationResults, setFoundationResults] = React.useState<FootingDesignResult[]>([]);
@@ -193,6 +202,9 @@ const Index = () => {
   // ETABS column results and reactions
   const [etabsColumnResults, setEtabsColumnResults] = React.useState<ETABSColumnResult[]>([]);
   const [etabsReactions, setEtabsReactions] = React.useState<ETABSReaction[]>([]);
+
+  // Computed: هل توجد نتائج تصميم (من التطبيق أو من ETABS)
+  const hasDesignResults = analyzed || (designSource === 'etabs' && designExecuted && etabsAnalysisData.length > 0);
 
   // Available elevations from stories
   const availableElevations = useMemo(() => {
@@ -696,33 +708,63 @@ const Index = () => {
       }[] = [];
 
       for (const ed of etabsAnalysisData) {
+        // تطابق الدور: تسمية مطابقة أو رقمية (Story1=الدور 1، وما إلى ذلك)
         const storyForED = stories.find(s =>
-          s.label === ed.story || s.label.toLowerCase() === ed.story.toLowerCase()
-        );
-        const beam = beamsWithLoads.find(b =>
+          s.label === ed.story ||
+          s.label.toLowerCase() === ed.story.toLowerCase() ||
+          s.label.replace(/\s+/g, '').toLowerCase() === ed.story.replace(/\s+/g, '').toLowerCase()
+        ) || (() => {
+          // تطابق رقمي: "Story3" → الدور الثالث
+          const m = ed.story.match(/(\d+)$/);
+          if (!m) return undefined;
+          const idx = parseInt(m[1]) - 1;
+          return idx >= 0 && idx < stories.length ? stories[idx] : undefined;
+        })();
+
+        // تطابق الجسر: دقيق أولاً، ثم تطابق بادئة (جسر مقسّم)، ثم تطابق جزئي
+        let beam = beamsWithLoads.find(b =>
           b.id === ed.beamId && (storyForED ? b.storyId === storyForED.id : true)
         ) || beamsWithLoads.find(b => b.id === ed.beamId);
-        if (!beam) continue;
-        const span = beam.length > 0 ? beam.length / 1000 : 1;
 
-        const hasSlabs = beam.slabs.length > 0;
+        // تطابق الجسور المقسّمة: ETABS "B1" ↔ التطبيق "B1-1" أو "B1-L" إلخ
+        if (!beam) {
+          beam = beamsWithLoads.find(b =>
+            (b.id.startsWith(ed.beamId + '-') || b.id.startsWith(ed.beamId + '_')) &&
+            (storyForED ? b.storyId === storyForED.id : true)
+          ) || beamsWithLoads.find(b =>
+            b.id.startsWith(ed.beamId + '-') || b.id.startsWith(ed.beamId + '_')
+          );
+        }
+
+        // إذا لم يُوجد تطابق: استخدام أبعاد الجسر الافتراضية
+        const effectiveBeam = beam || {
+          id: ed.beamId,
+          b: beamB, h: beamH,
+          length: 5000,
+          slabs: [] as string[],
+          direction: 'horizontal' as const,
+          deadLoad: 0, liveLoad: 0,
+        };
+        const span = effectiveBeam.length > 0 ? effectiveBeam.length / 1000 : 1;
+
+        const hasSlabs = effectiveBeam.slabs.length > 0;
         let effectiveFlangeWidth = 0;
         if (hasSlabs) {
           const widths: number[] = [];
-          for (const slabId of beam.slabs) {
+          for (const slabId of effectiveBeam.slabs) {
             const slab = slabs.find(s => s.id === slabId);
-            if (slab) widths.push(beam.direction === 'horizontal' ? Math.abs(slab.y2 - slab.y1) : Math.abs(slab.x2 - slab.x1));
+            if (slab) widths.push(effectiveBeam.direction === 'horizontal' ? Math.abs(slab.y2 - slab.y1) : Math.abs(slab.x2 - slab.x1));
           }
-          effectiveFlangeWidth = Math.min(span * 1000 / 4, beam.b + 16 * slabProps.thickness, widths.reduce((a, b) => a + b, 0) * 1000);
+          effectiveFlangeWidth = Math.min(span * 1000 / 4, effectiveBeam.b + 16 * slabProps.thickness, widths.reduce((a, b) => a + b, 0) * 1000);
         }
 
-        const flexLeft  = designFlexure(ed.Mleft,  beam.b, beam.h, mat.fc, mat.fy);
-        const flexMid   = designFlexure(ed.Mmid,   beam.b, beam.h, mat.fc, mat.fy, 40, hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
-        const flexRight = designFlexure(ed.Mright, beam.b, beam.h, mat.fc, mat.fy);
-        const wuBeam = 1.2 * beam.deadLoad + 1.6 * beam.liveLoad;
+        const flexLeft  = designFlexure(ed.Mleft,  effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy);
+        const flexMid   = designFlexure(ed.Mmid,   effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy, 40, hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
+        const flexRight = designFlexure(ed.Mright, effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy);
+        const wuBeam = 1.2 * (effectiveBeam.deadLoad || 0) + 1.6 * (effectiveBeam.liveLoad || 0);
         const AsForShear = Math.max(flexLeft.As, flexMid.As, flexRight.As);
-        const shear = designShear(ed.Vu, beam.b, beam.h, mat.fc, mat.fyt, 40, mat.stirrupDia || 10, wuBeam, 300, AsForShear);
-        const deflection = calculateDeflection(span, beam.b, beam.h, mat.fc, beam.deadLoad, beam.liveLoad, flexMid.As, 'both-ends', 'B', flexMid.As * 0.3, 1.0, 60);
+        const shear = designShear(ed.Vu, effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fyt, 40, mat.stirrupDia || 10, wuBeam, 300, AsForShear);
+        const deflection = calculateDeflection(span, effectiveBeam.b, effectiveBeam.h, mat.fc, effectiveBeam.deadLoad || 0, effectiveBeam.liveLoad || 0, flexMid.As, 'both-ends', 'B', flexMid.As * 0.3, 1.0, 60);
 
         designs.push({
           beamId: ed.beamId, frameId: '', span,
@@ -1173,7 +1215,8 @@ const Index = () => {
           if (nodeI && nodeJ) {
             const posKey = `${nodeI.x.toFixed(3)}_${nodeI.y.toFixed(3)}_${nodeJ.x.toFixed(3)}_${nodeJ.y.toFixed(3)}`;
             // التحرير من ElementPropertiesDialog (long-press في تبويبات النمذجة/العرض/التحليل)
-            // يُحفظ كـ "مؤقت" — يؤثر على التحليل لكنه لا يظهر في جدول جسور تبويب الإدخال.
+            // يُحفظ دائماً في frameEndReleases ليظهر في جدول جسور تبويب الإدخال.
+            dispatch({ type: 'SET_FRAME_END_RELEASES', posKey, nodeIRestraints: data.nodeIRestraints, nodeJRestraints: data.nodeJRestraints });
             dispatch({ type: 'SET_TRANSIENT_FRAME_END_RELEASES', posKey, nodeIRestraints: data.nodeIRestraints, nodeJRestraints: data.nodeJRestraints });
           }
         }
@@ -1647,6 +1690,7 @@ const Index = () => {
             <TabsList className="w-full justify-start rounded-none border-b border-border bg-card px-2 overflow-x-auto shrink-0 h-auto">
               <TabsTrigger value="input" className="text-xs gap-1 min-h-[40px]"><Settings2 size={14} />المدخلات</TabsTrigger>
               <TabsTrigger value="slabs" className="text-xs gap-1 min-h-[40px]"><Layers size={14} />الإدخال</TabsTrigger>
+              <TabsTrigger value="loads-input" className="text-xs gap-1 min-h-[40px]"><Zap size={14} />الأحمال</TabsTrigger>
               <TabsTrigger value="building" className="text-xs gap-1 min-h-[40px]"><Building size={14} />مبنى متعدد</TabsTrigger>
             </TabsList>
           )}
@@ -3649,7 +3693,31 @@ const Index = () => {
                 >
                   تصميم الأساسات (WSM)
                 </button>
+                <button
+                  className={`flex-1 text-xs font-medium py-2 px-3 rounded-md transition-all ${
+                    designSubTab === 'comparison'
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  onClick={() => setDesignSubTab('comparison')}
+                >
+                  مقارنة النتائج
+                </button>
               </div>
+
+              {/* ── Comparison Sub-Tab ── */}
+              {designSubTab === 'comparison' && (
+                <DesignComparisonPanel
+                  beams={beamsWithLoads}
+                  slabs={slabs}
+                  slabProps={slabProps}
+                  mat={mat}
+                  stories={stories}
+                  frameResults={frameResults}
+                  etabsAnalysisData={etabsAnalysisData}
+                  analyzed={analyzed}
+                />
+              )}
 
               {/* ── Foundation Design Sub-Tab ── */}
               {designSubTab === 'foundations' && (
@@ -4146,7 +4214,7 @@ const Index = () => {
                 colDesigns={colDesigns}
                 slabDesigns={slabs.map(s => ({ ...s, design: designSlab(s, slabProps, mat, slabs, columns) })) as any}
                 slabProps={slabProps}
-                analyzed={analyzed}
+                analyzed={hasDesignResults}
                 foundationResults={foundationResults.length > 0 ? foundationResults : undefined}
                 foundationMat={foundationMat}
               />
@@ -4163,7 +4231,7 @@ const Index = () => {
                 slabProps={slabProps}
                 projectName={titleBlockConfig.projectName || 'Structural Design Studio'}
                 titleBlockConfig={titleBlockConfig}
-                analyzed={analyzed}
+                analyzed={hasDesignResults}
                 foundationResults={foundationResults}
                 foundationMat={foundationMat}
               />
@@ -4173,7 +4241,7 @@ const Index = () => {
                 <Card>
                   <CardHeader><CardTitle className="text-sm">تقرير PDF</CardTitle></CardHeader>
                   <CardContent className="space-y-2">
-                    <Button className="w-full min-h-[44px]" disabled={!analyzed} onClick={() => {
+                    <Button className="w-full min-h-[44px]" disabled={!hasDesignResults} onClick={() => {
                       const slabDesignsData = slabs.map(s => ({ ...s, design: designSlab(s, slabProps, mat, slabs, columns) }));
                       generateStructuralReport(slabs, beamsWithLoads, columns, frames, frameResults, beamDesigns as any, colDesigns, slabDesignsData, mat, slabProps, 'Structural Design Studio', stories);
                     }}>تقرير التصميم الإنشائي</Button>
@@ -4186,7 +4254,7 @@ const Index = () => {
                     <Button className="w-full min-h-[44px]" variant="outline" onClick={() => downloadDXF(generateStructuralDXF(slabs, beamsWithLoads, columns), 'structural_plan.dxf')}>مخطط إنشائي</Button>
                     <Button className="w-full min-h-[44px]" variant="outline" onClick={() => downloadDXF(generateBeamLayoutDXF(beamsWithLoads, columns, slabs), 'beam_layout.dxf')}>مخطط الجسور</Button>
                     <Button className="w-full min-h-[44px]" variant="outline" onClick={() => downloadDXF(generateColumnLayoutDXF(columns, slabs), 'column_layout.dxf')}>مخطط الأعمدة</Button>
-                    <Button className="w-full min-h-[44px]" variant="outline" disabled={!analyzed} onClick={() => {
+                    <Button className="w-full min-h-[44px]" variant="outline" disabled={!hasDesignResults} onClick={() => {
                       const rebarData = beamDesigns.map(d => {
                         const beam = beamsWithLoads.find(b => b.id === d.beamId);
                         return beam ? { beamId: d.beamId, b: beam.b, h: beam.h, x1: beam.x1, y1: beam.y1, x2: beam.x2, y2: beam.y2, topBars: Math.max(d.flexLeft.bars, d.flexRight.bars), topDia: d.flexLeft.dia, botBars: d.flexMid.bars, botDia: d.flexMid.dia, stirrups: d.shear.stirrups } : null;
@@ -4198,7 +4266,7 @@ const Index = () => {
               </div>
 
               {/* Beam Rebar Detail Views */}
-              {analyzed && beamDesigns.length > 0 && (
+              {hasDesignResults && beamDesigns.length > 0 && (
                 <div className="mt-6 space-y-4">
                   <h3 className="text-sm font-semibold text-foreground">تفاصيل تسليح الجسور</h3>
                   {beamDesigns.map(d => {
@@ -4227,7 +4295,24 @@ const Index = () => {
             </div>
           </TabsContent>
 
-          {/* MULTI-STORY BUILDING TAB */}
+          {/* LOADS INPUT TAB */}
+          <TabsContent value="loads-input" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
+            <LoadInputPanel
+              beams={beams.filter(b => !removedBeamIds.includes(b.id))}
+              slabs={slabs}
+              beamOverrides={beamOverrides}
+              onSetBeamWallLoad={(beamId, wallLoad) => {
+                const isExtra = extraBeams.some(b => b.id === beamId);
+                if (isExtra) dispatch({ type: 'UPDATE_EXTRA_BEAM', id: beamId, updates: { wallLoad } });
+                else dispatch({ type: 'SET_BEAM_OVERRIDE', beamId, override: { wallLoad } });
+              }}
+              loadCombos={loadCombos}
+              onSetLoadCombos={(combos) => setLoadCombos(combos as typeof loadCombos)}
+              defaultDL={slabProps.finishLoad}
+              defaultLL={slabProps.liveLoad}
+            />
+          </TabsContent>
+
           <TabsContent value="building" className="flex-1 overflow-hidden mt-0">
             <MultiStoryDesigner
               initialSlabs={slabs}
