@@ -1987,7 +1987,7 @@ const Index = () => {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            {['✓','الجسر','عقدة البداية','عقدة النهاية','X1','Y1','X2','Y2','المنسوب Z','الطول','العرض','الارتفاع','حمل جدار (kN/m)','تحرير الأطراف','حذف'].map(h => (
+                            {['✓','الجسر','عقدة البداية','عقدة النهاية','X1','Y1','X2','Y2','المنسوب Z','الدور','الطول','العرض','الارتفاع','حمل جدار (kN/m)','تحرير الأطراف','حذف'].map(h => (
                               <TableHead key={h} className="text-xs">{h}</TableHead>
                             ))}
                           </TableRow>
@@ -2050,6 +2050,7 @@ const Index = () => {
                                     else dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: b.id, override: { z: val } });
                                   }} />
                               </TableCell>
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{getStoryLabel(b.storyId)}</TableCell>
                               <TableCell className="font-mono text-xs">{b.length.toFixed(2)}</TableCell>
                               <TableCell>
                                 <Input type="number" value={b.b} className="h-8 w-16 font-mono text-xs"
@@ -2199,7 +2200,7 @@ const Index = () => {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                             {['العمود','X','Y','Z أسفل','Z أعلى','العرض','العمق','الارتفاع','زاوية (°)','الحالة','إزالة/استعادة','حذف'].map(h => (
+                             {['العمود','X','Y','Z أسفل','Z أعلى','الدور','العرض','العمق','الارتفاع','زاوية (°)','الحالة','إزالة/استعادة','حذف'].map(h => (
                                <TableHead key={h} className="text-xs">{h}</TableHead>
                              ))}
                           </TableRow>
@@ -2232,6 +2233,7 @@ const Index = () => {
                               <TableCell className="font-mono text-xs">
                                 {(c.zTop ?? 0).toFixed(0)}
                               </TableCell>
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{getStoryLabel(c.storyId)}</TableCell>
                               <TableCell>
                                 <Input type="number" value={c.b} className="h-8 w-16 font-mono text-xs"
                                   onChange={e => {
@@ -2329,27 +2331,42 @@ const Index = () => {
                 />
               </TabsContent>
               <TabsContent value="slabs-etabs-import" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
-                <ETABSFullImportPanel onApply={(data) => {
+                <ETABSFullImportPanel stories={stories} onApply={(data) => {
                   const nodeMap = new Map(data.nodes.map(n => [n.id, n]));
-                  const storyId = stories[0]?.id ?? 'ST1';
 
-                  // ── 1. تحويل البلاطات مع أسمائها الأصلية ──
+                  // ── دالة اكتشاف الدور بحسب المنسوب (بالمتر) ──
+                  const detectStoryId = (zMeters: number): string => {
+                    if (!stories.length) return 'ST1';
+                    const zMm = zMeters * 1000;
+                    let bestId = stories[0].id;
+                    let bestDiff = Infinity;
+                    for (const s of stories) {
+                      const topElev = (s.elevation ?? 0) + s.height;
+                      const diff = Math.abs(topElev - zMm);
+                      if (diff < bestDiff) { bestDiff = diff; bestId = s.id; }
+                    }
+                    return bestId;
+                  };
+
+                  // ── 1. تحويل البلاطات — الدور يُحدَّد من متوسط منسوب نقاطها ──
                   const newSlabs: Slab[] = [];
                   for (const s of data.slabs) {
                     const coords = s.nodes.map(nId => nodeMap.get(nId)).filter(Boolean);
                     if (coords.length >= 3) {
                       const xs = coords.map(c => c!.x);
                       const ys = coords.map(c => c!.y);
+                      const avgZ = coords.reduce((sum, c) => sum + c!.z, 0) / coords.length;
+                      const detectedStoryId = detectStoryId(avgZ);
                       newSlabs.push({
-                        id: s.id,                       // الاسم الأصلي من الملف
+                        id: s.id,
                         x1: Math.min(...xs), y1: Math.min(...ys),
                         x2: Math.max(...xs), y2: Math.max(...ys),
-                        storyId,
+                        storyId: detectedStoryId,
                       });
                     }
                   }
 
-                  // ── 2. تحويل الجسور مع أسمائها الأصلية ──
+                  // ── 2. تحويل الجسور — الدور يُحدَّد من متوسط منسوب نقطتَي الجسر ──
                   const newBeams: Beam[] = [];
                   for (const b of data.beams) {
                     const ni = nodeMap.get(b.nodeI);
@@ -2359,13 +2376,15 @@ const Index = () => {
                     const dy = nj.y - ni.y;
                     const len = Math.sqrt(dx * dx + dy * dy);
                     const direction: 'horizontal' | 'vertical' = Math.abs(dy) > Math.abs(dx) ? 'vertical' : 'horizontal';
+                    const avgZ = (ni.z + nj.z) / 2;
+                    const detectedStoryId = detectStoryId(avgZ);
                     newBeams.push({
-                      id: b.id,                         // الاسم الأصلي من الملف
+                      id: b.id,
                       fromCol: b.nodeI,
                       toCol: b.nodeJ,
                       x1: ni.x, y1: ni.y,
                       x2: nj.x, y2: nj.y,
-                      z: (ni.z + nj.z) / 2 * 1000,     // تحويل م → مم
+                      z: avgZ * 1000,                   // تحويل م → مم
                       length: len,
                       direction,
                       b: beamB,
@@ -2373,11 +2392,11 @@ const Index = () => {
                       deadLoad: 0,
                       liveLoad: 0,
                       slabs: [],
-                      storyId,
+                      storyId: detectedStoryId,
                     });
                   }
 
-                  // ── 3. تحويل الأعمدة مع أسمائها الأصلية ──
+                  // ── 3. تحويل الأعمدة — الدور يُحدَّد من منسوب النقطة العلوية (nodeJ) ──
                   const newColumns: Column[] = [];
                   for (const c of data.columns) {
                     const ni = nodeMap.get(c.nodeI);
@@ -2386,8 +2405,11 @@ const Index = () => {
                     const zBot = (ni.z ?? 0) * 1000;    // م → مم
                     const zTop = nj ? (nj.z ?? 0) * 1000 : zBot + colL;
                     const L = Math.max(zTop - zBot, colL);
+                    // الدور يُحدَّد من النقطة العلوية للعمود
+                    const topZ = nj ? nj.z : (zTop / 1000);
+                    const detectedStoryId = detectStoryId(topZ);
                     newColumns.push({
-                      id: c.id,                         // الاسم الأصلي من الملف
+                      id: c.id,
                       x: ni.x,
                       y: ni.y,
                       b: colB,
@@ -2395,7 +2417,7 @@ const Index = () => {
                       L,
                       zBottom: zBot,
                       zTop: zTop,
-                      storyId,
+                      storyId: detectedStoryId,
                     });
                   }
 

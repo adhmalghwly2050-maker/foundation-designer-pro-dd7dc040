@@ -2,15 +2,17 @@
  * ETABS Full Import Panel
  * Import nodes, beams, columns, slabs from simple Excel files.
  * Each file type has a specific simplified column format using point numbers.
+ * Story detection: each element is automatically assigned to a story based on its Z elevation.
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Upload, Eye, Check, MapPin, Columns, LayoutGrid, Maximize, Info, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, Eye, Check, MapPin, Columns, LayoutGrid, Maximize, Info, ChevronDown, ChevronUp, Layers } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import type { Story } from '@/lib/structuralEngine';
 
 export interface ImportedNode {
   id: string;
@@ -50,7 +52,29 @@ export interface ETABSImportedData {
 }
 
 interface ETABSFullImportPanelProps {
+  stories: Story[];
   onApply: (data: ETABSImportedData) => void;
+}
+
+/**
+ * Detect which story an element belongs to based on its Z elevation (in meters).
+ * Compares element Z*1000 (mm) to each story's top elevation (elevation+height in mm).
+ * Returns the story with the closest top elevation.
+ */
+function detectStoryFromZ(zMeters: number, stories: Story[]): { id: string; label: string } {
+  if (!stories.length) return { id: '', label: '—' };
+  const zMm = zMeters * 1000;
+  let bestStory = stories[0];
+  let bestDiff = Infinity;
+  for (const s of stories) {
+    const topElev = (s.elevation ?? 0) + s.height;
+    const diff = Math.abs(topElev - zMm);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestStory = s;
+    }
+  }
+  return { id: bestStory.id, label: bestStory.label };
 }
 
 function parseExcel(file: File): Promise<any[][]> {
@@ -109,7 +133,7 @@ const FORMAT_GUIDE = [
     columns: [
       { col: 'A', name: 'اسم العمود', example: 'C1', note: 'اسم أو رقم العمود' },
       { col: 'B', name: 'رقم نقطة البداية', example: '1', note: 'النقطة السفلية للعمود' },
-      { col: 'C', name: 'رقم نقطة النهاية', example: '5', note: 'النقطة العلوية للعمود' },
+      { col: 'C', name: 'رقم نقطة النهاية', example: '5', note: 'النقطة العلوية للعمود (تحدد الدور)' },
     ],
     example: [['اسم العمود','نقطة البداية','نقطة النهاية'],['C1','1','5'],['C2','2','6'],['C3','3','7']],
   },
@@ -130,7 +154,7 @@ const FORMAT_GUIDE = [
   },
 ];
 
-export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelProps) {
+export default function ETABSFullImportPanel({ stories, onApply }: ETABSFullImportPanelProps) {
   const [nodes, setNodes] = useState<ImportedNode[]>([]);
   const [beams, setBeams] = useState<ImportedBeam[]>([]);
   const [columns, setColumns] = useState<ImportedColumn[]>([]);
@@ -142,6 +166,71 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingImportType, setPendingImportType] = useState<string>('');
+
+  // Build a node lookup map for story detection
+  const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
+
+  // Compute detected story for each element type
+  const beamStories = useMemo(() => {
+    if (!stories.length || !nodes.length) return new Map<string, { id: string; label: string }>();
+    const map = new Map<string, { id: string; label: string }>();
+    for (const b of beams) {
+      const ni = nodeMap.get(b.nodeI);
+      const nj = nodeMap.get(b.nodeJ);
+      if (ni && nj) {
+        const avgZ = (ni.z + nj.z) / 2;
+        map.set(b.id, detectStoryFromZ(avgZ, stories));
+      } else if (ni) {
+        map.set(b.id, detectStoryFromZ(ni.z, stories));
+      } else if (nj) {
+        map.set(b.id, detectStoryFromZ(nj.z, stories));
+      } else {
+        map.set(b.id, { id: stories[0]?.id ?? '', label: stories[0]?.label ?? '—' });
+      }
+    }
+    return map;
+  }, [beams, nodeMap, stories, nodes]);
+
+  const columnStories = useMemo(() => {
+    if (!stories.length || !nodes.length) return new Map<string, { id: string; label: string }>();
+    const map = new Map<string, { id: string; label: string }>();
+    for (const c of columns) {
+      // Use top node (nodeJ) to determine story for columns
+      const nj = nodeMap.get(c.nodeJ);
+      const ni = nodeMap.get(c.nodeI);
+      const topNode = nj || ni;
+      if (topNode) {
+        map.set(c.id, detectStoryFromZ(topNode.z, stories));
+      } else {
+        map.set(c.id, { id: stories[0]?.id ?? '', label: stories[0]?.label ?? '—' });
+      }
+    }
+    return map;
+  }, [columns, nodeMap, stories, nodes]);
+
+  const slabStories = useMemo(() => {
+    if (!stories.length || !nodes.length) return new Map<string, { id: string; label: string }>();
+    const map = new Map<string, { id: string; label: string }>();
+    for (const s of slabs) {
+      const slabNodes = s.nodes.map(nId => nodeMap.get(nId)).filter(Boolean) as ImportedNode[];
+      if (slabNodes.length > 0) {
+        const avgZ = slabNodes.reduce((sum, n) => sum + n.z, 0) / slabNodes.length;
+        map.set(s.id, detectStoryFromZ(avgZ, stories));
+      } else {
+        map.set(s.id, { id: stories[0]?.id ?? '', label: stories[0]?.label ?? '—' });
+      }
+    }
+    return map;
+  }, [slabs, nodeMap, stories, nodes]);
+
+  const nodeStories = useMemo(() => {
+    if (!stories.length) return new Map<string, { id: string; label: string }>();
+    const map = new Map<string, { id: string; label: string }>();
+    for (const n of nodes) {
+      map.set(n.id, detectStoryFromZ(n.z, stories));
+    }
+    return map;
+  }, [nodes, stories]);
 
   const handleFileSelect = useCallback(async (type: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -155,7 +244,6 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
       }
 
       if (type === 'nodes') {
-        // Format: رقم النقطة | X | Y | Z
         const imported: ImportedNode[] = [];
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
@@ -173,7 +261,6 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
         setImportStatus(prev => ({ ...prev, nodes: `✓ تم استيراد ${imported.length} نقطة` }));
 
       } else if (type === 'beams') {
-        // Format: اسم الجسر | نقطة البداية | نقطة النهاية
         const imported: ImportedBeam[] = [];
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
@@ -188,7 +275,6 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
         setImportStatus(prev => ({ ...prev, beams: `✓ تم استيراد ${imported.length} جسر` }));
 
       } else if (type === 'columns') {
-        // Format: اسم العمود | نقطة البداية | نقطة النهاية
         const imported: ImportedColumn[] = [];
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
@@ -203,7 +289,6 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
         setImportStatus(prev => ({ ...prev, columns: `✓ تم استيراد ${imported.length} عمود` }));
 
       } else if (type === 'slabs') {
-        // Format: اسم البلاطة | نقطة1 | نقطة2 | نقطة3 | نقطة4
         const imported: ImportedSlab[] = [];
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
@@ -236,6 +321,8 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
   const totalImported = nodes.length + beams.length + columns.length + slabs.length;
   const canApply = nodes.length > 0 && (beams.length > 0 || columns.length > 0 || slabs.length > 0);
 
+  const hasStories = stories.length > 1;
+
   const handleApply = () => {
     onApply({ nodes, beams, columns, slabs });
   };
@@ -249,6 +336,31 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
         className="hidden"
         onChange={(e) => handleFileSelect(pendingImportType, e)}
       />
+
+      {/* Story detection info */}
+      {hasStories && (
+        <Card className="border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-start gap-2">
+              <Layers size={14} className="text-blue-600 mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">اكتشاف الأدوار تلقائياً ({stories.length} أدوار)</p>
+                <div className="flex flex-wrap gap-2">
+                  {stories.map(s => (
+                    <Badge key={s.id} variant="outline" className="text-[10px] border-blue-300 text-blue-700 dark:text-blue-300">
+                      {s.label}: منسوب {((s.elevation ?? 0) / 1000).toFixed(1)}م — {(((s.elevation ?? 0) + s.height) / 1000).toFixed(1)}م
+                    </Badge>
+                  ))}
+                </div>
+                <p className="text-[10px] text-blue-600 dark:text-blue-400">
+                  • <strong>الجسور والبلاطات:</strong> يُحدَّد الدور من متوسط منسوب نقاطها
+                  &nbsp;•&nbsp; <strong>الأعمدة:</strong> يُحدَّد الدور من منسوب النقطة العلوية (nodeJ)
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Format Guide */}
       <Card>
@@ -290,7 +402,6 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
 
                   {expandedGuide === guide.type && (
                     <div className="px-3 pb-3 space-y-2">
-                      {/* Column description */}
                       <div className="grid gap-1">
                         {guide.columns.map(col => (
                           <div key={col.col} className="flex items-start gap-2 text-xs">
@@ -300,7 +411,6 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
                           </div>
                         ))}
                       </div>
-                      {/* Example table */}
                       <div className="overflow-x-auto rounded border border-border bg-background">
                         <table className="text-[10px] w-full">
                           <thead>
@@ -435,7 +545,7 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
             <Table>
               <TableHeader>
                 <TableRow>
-                  {['رقم النقطة', 'X (م)', 'Y (م)', 'Z (م)'].map(h => (
+                  {['رقم النقطة', 'X (م)', 'Y (م)', 'Z (م)', ...(hasStories ? ['الدور'] : [])].map(h => (
                     <TableHead key={h} className="text-xs">{h}</TableHead>
                   ))}
                 </TableRow>
@@ -447,6 +557,13 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
                     <TableCell className="font-mono text-xs">{n.x.toFixed(3)}</TableCell>
                     <TableCell className="font-mono text-xs">{n.y.toFixed(3)}</TableCell>
                     <TableCell className="font-mono text-xs">{n.z.toFixed(3)}</TableCell>
+                    {hasStories && (
+                      <TableCell>
+                        <Badge variant="outline" className="text-[10px]">
+                          {nodeStories.get(n.id)?.label ?? '—'}
+                        </Badge>
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))}
               </TableBody>
@@ -464,19 +581,33 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
             <Table>
               <TableHeader>
                 <TableRow>
-                  {['اسم الجسر', 'نقطة البداية (I)', 'نقطة النهاية (J)'].map(h => (
+                  {['اسم الجسر', 'نقطة البداية (I)', 'نقطة النهاية (J)', ...(hasStories ? ['الدور'] : [])].map(h => (
                     <TableHead key={h} className="text-xs">{h}</TableHead>
                   ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {beams.slice(0, 200).map(b => (
-                  <TableRow key={b.id}>
-                    <TableCell className="font-mono text-xs font-bold">{b.id}</TableCell>
-                    <TableCell className="font-mono text-xs">{b.nodeI}</TableCell>
-                    <TableCell className="font-mono text-xs">{b.nodeJ}</TableCell>
-                  </TableRow>
-                ))}
+                {beams.slice(0, 200).map(b => {
+                  const storyInfo = beamStories.get(b.id);
+                  const ni = nodeMap.get(b.nodeI);
+                  const nj = nodeMap.get(b.nodeJ);
+                  const avgZ = ni && nj ? ((ni.z + nj.z) / 2).toFixed(2) : '—';
+                  return (
+                    <TableRow key={b.id}>
+                      <TableCell className="font-mono text-xs font-bold">{b.id}</TableCell>
+                      <TableCell className="font-mono text-xs">{b.nodeI}</TableCell>
+                      <TableCell className="font-mono text-xs">{b.nodeJ}</TableCell>
+                      {hasStories && (
+                        <TableCell>
+                          <Badge variant="outline" className="text-[10px]">
+                            {storyInfo ? storyInfo.label : nodes.length === 0 ? 'استورد النقاط أولاً' : '—'}
+                          </Badge>
+                          {ni && nj && <span className="text-[9px] text-muted-foreground mr-1">(Z={avgZ}م)</span>}
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
             {beams.length > 200 && <p className="text-xs text-muted-foreground p-2">... و {beams.length - 200} جسر آخر</p>}
@@ -492,19 +623,31 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
             <Table>
               <TableHeader>
                 <TableRow>
-                  {['اسم العمود', 'نقطة البداية (I)', 'نقطة النهاية (J)'].map(h => (
+                  {['اسم العمود', 'نقطة السفلى (I)', 'نقطة العلوية (J)', ...(hasStories ? ['الدور (من النقطة العلوية)'] : [])].map(h => (
                     <TableHead key={h} className="text-xs">{h}</TableHead>
                   ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {columns.slice(0, 200).map(c => (
-                  <TableRow key={c.id}>
-                    <TableCell className="font-mono text-xs font-bold">{c.id}</TableCell>
-                    <TableCell className="font-mono text-xs">{c.nodeI}</TableCell>
-                    <TableCell className="font-mono text-xs">{c.nodeJ}</TableCell>
-                  </TableRow>
-                ))}
+                {columns.slice(0, 200).map(c => {
+                  const storyInfo = columnStories.get(c.id);
+                  const nj = nodeMap.get(c.nodeJ);
+                  return (
+                    <TableRow key={c.id}>
+                      <TableCell className="font-mono text-xs font-bold">{c.id}</TableCell>
+                      <TableCell className="font-mono text-xs">{c.nodeI}</TableCell>
+                      <TableCell className="font-mono text-xs">{c.nodeJ}</TableCell>
+                      {hasStories && (
+                        <TableCell>
+                          <Badge variant="outline" className="text-[10px]">
+                            {storyInfo ? storyInfo.label : nodes.length === 0 ? 'استورد النقاط أولاً' : '—'}
+                          </Badge>
+                          {nj && <span className="text-[9px] text-muted-foreground mr-1">(Z={nj.z.toFixed(2)}م)</span>}
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
             {columns.length > 200 && <p className="text-xs text-muted-foreground p-2">... و {columns.length - 200} عمود آخر</p>}
@@ -520,21 +663,36 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
             <Table>
               <TableHeader>
                 <TableRow>
-                  {['اسم البلاطة', 'نقطة 1', 'نقطة 2', 'نقطة 3', 'نقطة 4'].map(h => (
+                  {['اسم البلاطة', 'نقطة 1', 'نقطة 2', 'نقطة 3', 'نقطة 4', ...(hasStories ? ['الدور'] : [])].map(h => (
                     <TableHead key={h} className="text-xs">{h}</TableHead>
                   ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {slabs.slice(0, 200).map(s => (
-                  <TableRow key={s.id}>
-                    <TableCell className="font-mono text-xs font-bold">{s.id}</TableCell>
-                    <TableCell className="font-mono text-xs">{s.nodes[0] || '-'}</TableCell>
-                    <TableCell className="font-mono text-xs">{s.nodes[1] || '-'}</TableCell>
-                    <TableCell className="font-mono text-xs">{s.nodes[2] || '-'}</TableCell>
-                    <TableCell className="font-mono text-xs">{s.nodes[3] || '-'}</TableCell>
-                  </TableRow>
-                ))}
+                {slabs.slice(0, 200).map(s => {
+                  const storyInfo = slabStories.get(s.id);
+                  const slabNodes = s.nodes.map(nId => nodeMap.get(nId)).filter(Boolean) as ImportedNode[];
+                  const avgZ = slabNodes.length > 0
+                    ? (slabNodes.reduce((sum, n) => sum + n.z, 0) / slabNodes.length).toFixed(2)
+                    : null;
+                  return (
+                    <TableRow key={s.id}>
+                      <TableCell className="font-mono text-xs font-bold">{s.id}</TableCell>
+                      <TableCell className="font-mono text-xs">{s.nodes[0] ?? '—'}</TableCell>
+                      <TableCell className="font-mono text-xs">{s.nodes[1] ?? '—'}</TableCell>
+                      <TableCell className="font-mono text-xs">{s.nodes[2] ?? '—'}</TableCell>
+                      <TableCell className="font-mono text-xs">{s.nodes[3] ?? '—'}</TableCell>
+                      {hasStories && (
+                        <TableCell>
+                          <Badge variant="outline" className="text-[10px]">
+                            {storyInfo ? storyInfo.label : nodes.length === 0 ? 'استورد النقاط أولاً' : '—'}
+                          </Badge>
+                          {avgZ && <span className="text-[9px] text-muted-foreground mr-1">(Z={avgZ}م)</span>}
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
             {slabs.length > 200 && <p className="text-xs text-muted-foreground p-2">... و {slabs.length - 200} بلاطة أخرى</p>}
@@ -542,65 +700,28 @@ export default function ETABSFullImportPanel({ onApply }: ETABSFullImportPanelPr
         </Card>
       )}
 
-      {/* Model preview SVG */}
-      {totalImported > 0 && nodes.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">معاينة النموذج (مسقط أفقي)</CardTitle>
-          </CardHeader>
-          <CardContent className="p-2">
-            <div className="relative w-full h-52 border border-border rounded bg-background overflow-hidden">
-              {(() => {
-                const xs = nodes.map(n => n.x);
-                const ys = nodes.map(n => n.y);
-                const minX = Math.min(...xs) - 1;
-                const minY = Math.min(...ys) - 1;
-                const w = Math.max(...xs) - Math.min(...xs) + 2;
-                const h = Math.max(...ys) - Math.min(...ys) + 2;
-                return (
-                  <svg viewBox={`${minX} ${minY} ${w} ${h}`} className="w-full h-full">
-                    {beams.map(b => {
-                      const ni = nodes.find(n => n.id === b.nodeI);
-                      const nj = nodes.find(n => n.id === b.nodeJ);
-                      if (!ni || !nj) return null;
-                      return <line key={b.id} x1={ni.x} y1={ni.y} x2={nj.x} y2={nj.y} stroke="hsl(var(--primary))" strokeWidth={w * 0.008} />;
-                    })}
-                    {columns.map(c => {
-                      const ni = nodes.find(n => n.id === c.nodeI);
-                      if (!ni) return null;
-                      const sz = w * 0.03;
-                      return <rect key={c.id} x={ni.x - sz / 2} y={ni.y - sz / 2} width={sz} height={sz} fill="hsl(var(--destructive))" opacity="0.8" />;
-                    })}
-                    {nodes.map(n => (
-                      <g key={n.id}>
-                        <circle cx={n.x} cy={n.y} r={w * 0.015} fill="hsl(var(--foreground))" />
-                        <text x={n.x + w * 0.018} y={n.y + w * 0.015} fontSize={w * 0.06} fill="hsl(var(--muted-foreground))">{n.id}</text>
-                      </g>
-                    ))}
-                  </svg>
-                );
-              })()}
+      {/* Apply Button */}
+      {canApply && (
+        <Card className="border-green-200 dark:border-green-800 bg-green-50/50 dark:bg-green-950/20">
+          <CardContent className="py-3 px-4 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+              <Check size={14} className="text-green-600" />
+              <span className="font-medium text-foreground">جاهز للتطبيق:</span>
+              {nodes.length > 0 && <Badge variant="secondary" className="text-[10px]">{nodes.length} نقطة</Badge>}
+              {beams.length > 0 && <Badge variant="secondary" className="text-[10px]">{beams.length} جسر</Badge>}
+              {columns.length > 0 && <Badge variant="secondary" className="text-[10px]">{columns.length} عمود</Badge>}
+              {slabs.length > 0 && <Badge variant="secondary" className="text-[10px]">{slabs.length} بلاطة</Badge>}
+              {hasStories && (
+                <Badge variant="outline" className="text-[10px] border-blue-300 text-blue-700 dark:text-blue-300">
+                  <Layers size={9} className="mr-1" />سيتم توزيعها تلقائياً على {stories.length} أدوار
+                </Badge>
+              )}
             </div>
-            <div className="flex gap-4 mt-2 text-[10px] text-muted-foreground">
-              <span className="flex items-center gap-1"><span className="w-4 h-0.5 bg-primary inline-block" /> جسور ({beams.length})</span>
-              <span className="flex items-center gap-1"><span className="w-3 h-3 bg-destructive inline-block rounded-sm opacity-80" /> أعمدة ({columns.length})</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 bg-foreground inline-block rounded-full" /> نقاط ({nodes.length})</span>
-            </div>
+            <Button className="w-full min-h-[44px] gap-2" onClick={handleApply}>
+              <Check size={16} />تطبيق على النموذج
+            </Button>
           </CardContent>
         </Card>
-      )}
-
-      {/* Apply button */}
-      {canApply && (
-        <Button className="w-full min-h-[48px] gap-2 text-sm font-bold" onClick={handleApply}>
-          <Check size={18} /> تطبيق على النموذج الرئيسي وبدء التحليل
-        </Button>
-      )}
-
-      {!canApply && nodes.length === 0 && (
-        <p className="text-xs text-center text-muted-foreground py-2">
-          ابدأ باستيراد ملف النقاط أولاً، ثم استورد الجسور أو الأعمدة أو البلاطات
-        </p>
       )}
     </div>
   );
