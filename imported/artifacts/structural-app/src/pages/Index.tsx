@@ -75,6 +75,8 @@ import SlabAnalysisPanel from "@/components/SlabAnalysisPanel";
 import SlabLoadDiagnosticPanel from "@/components/SlabLoadDiagnosticPanel";
 import ETABSFullImportPanel from "@/components/ETABSFullImportPanel";
 import type { ETABSImportedData } from "@/components/ETABSFullImportPanel";
+import ETABSEdbImportPanel from "@/components/ETABSEdbImportPanel";
+import type { EdbImportedData } from "@/components/ETABSEdbImportPanel";
 import ETABSAnalysisImport from "@/components/ETABSAnalysisImport";
 import type { ETABSBeamResult, ETABSColumnResult, ETABSReaction } from "@/components/ETABSAnalysisImport";
 import FoundationDesignPanel from "@/components/FoundationDesignPanel";
@@ -1851,7 +1853,8 @@ const Index = () => {
                 <TabsTrigger value="slabs-main" className="text-[11px] gap-1 min-h-[36px]"><Layers size={12} />الإدخال</TabsTrigger>
                 <TabsTrigger value="slabs-generative" className="text-[11px] gap-1 min-h-[36px] text-accent"><Zap size={12} />تصميم توليدي</TabsTrigger>
                 <TabsTrigger value="slabs-ai" className="text-[11px] gap-1 min-h-[36px] text-accent"><Bot size={12} />المساعد الذكي</TabsTrigger>
-                <TabsTrigger value="slabs-etabs-import" className="text-[11px] gap-1 min-h-[36px] text-accent"><Upload size={12} />استيراد من ETABS</TabsTrigger>
+                <TabsTrigger value="slabs-etabs-import" className="text-[11px] gap-1 min-h-[36px] text-orange-600 dark:text-orange-400"><Upload size={12} />ETABS (جداول Excel)</TabsTrigger>
+                <TabsTrigger value="slabs-edb-import" className="text-[11px] gap-1 min-h-[36px] text-blue-600 dark:text-blue-400"><Upload size={12} />ETABS (ملف .e2k)</TabsTrigger>
               </TabsList>
               <TabsContent value="slabs-main" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
                 <div className="space-y-4 max-w-5xl">
@@ -2426,6 +2429,158 @@ const Index = () => {
                     dispatch({ type: 'SAVE_SNAPSHOT', message: `✓ ETABS: ${newColumns.length} عمود | ${newBeams.length} جسر | ${newSlabs.length} بلاطة` });
                   }
                 }} />
+              </TabsContent>
+
+              {/* ── EDB / E2K File Import ── */}
+              <TabsContent value="slabs-edb-import" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
+                <ETABSEdbImportPanel
+                  onApply={(edbData: EdbImportedData) => {
+                    const jointMap = new Map(edbData.joints.map(j => [j.id, j]));
+
+                    // ── تحديد الدور بناءً على المنسوب Z (بالمتر) ──
+                    const detectStoryId = (zMeters: number): string => {
+                      if (!stories.length) return 'ST1';
+                      const zMm = zMeters * 1000;
+                      let bestId = stories[0].id;
+                      let bestDiff = Infinity;
+                      for (const s of stories) {
+                        const topElev = (s.elevation ?? 0) + s.height;
+                        const diff = Math.abs(topElev - zMm);
+                        if (diff < bestDiff) { bestDiff = diff; bestId = s.id; }
+                      }
+                      return bestId;
+                    };
+
+                    // ── استخراج fc وfy من المواد ──
+                    const concMat = edbData.materials.find(m =>
+                      m.type === 'CONCRETE' || m.type === 'CONC' || m.type.includes('CONC')
+                    );
+                    if (concMat?.fc && concMat.fc > 1) {
+                      dispatch({ type: 'SET_MAT', mat: { ...mat, fc: concMat.fc } });
+                    }
+                    if (concMat?.fy && concMat.fy > 10) {
+                      dispatch({ type: 'SET_MAT', mat: { ...mat, fy: concMat.fy } });
+                    }
+
+                    // ── خريطة المقاطع ──
+                    const sectionMap = new Map(edbData.sections.map(s => [s.id, s]));
+                    const areaSectionMap = new Map(edbData.areaSections.map(s => [s.id, s]));
+
+                    // ── 1. تحويل الجسور ──
+                    const newBeams: Beam[] = [];
+                    for (const f of edbData.frames.filter(f => f.elementType === 'beam')) {
+                      const ji = jointMap.get(f.jointI);
+                      const jj = jointMap.get(f.jointJ);
+                      if (!ji || !jj) continue;
+                      const dx = jj.x - ji.x;
+                      const dy = jj.y - ji.y;
+                      const len = Math.sqrt(dx * dx + dy * dy);
+                      if (len < 0.01) continue;
+                      const direction: 'horizontal' | 'vertical' =
+                        Math.abs(dy) > Math.abs(dx) ? 'vertical' : 'horizontal';
+                      const avgZ = (ji.z + jj.z) / 2;
+                      const sec = sectionMap.get(f.section);
+                      newBeams.push({
+                        id: f.id,
+                        fromCol: f.jointI,
+                        toCol: f.jointJ,
+                        x1: ji.x, y1: ji.y,
+                        x2: jj.x, y2: jj.y,
+                        z: avgZ * 1000,
+                        length: len,
+                        direction,
+                        b: sec ? Math.round(sec.b) : beamB,
+                        h: sec ? Math.round(sec.h) : beamH,
+                        deadLoad: 0,
+                        liveLoad: 0,
+                        slabs: [],
+                        storyId: detectStoryId(avgZ),
+                      });
+                    }
+
+                    // ── 2. تحويل الأعمدة ──
+                    const newColumns: Column[] = [];
+                    for (const f of edbData.frames.filter(f => f.elementType === 'column')) {
+                      const ji = jointMap.get(f.jointI);
+                      const jj = jointMap.get(f.jointJ);
+                      if (!ji || !jj) continue;
+                      const zBot = Math.min(ji.z, jj.z);
+                      const zTop = Math.max(ji.z, jj.z);
+                      const height = (zTop - zBot) * 1000; // mm
+                      if (height < 10) continue;
+                      const sec = sectionMap.get(f.section);
+                      const topJoint = zTop === jj.z ? jj : ji;
+                      newColumns.push({
+                        id: f.id,
+                        x: topJoint.x,
+                        y: topJoint.y,
+                        b: sec ? Math.round(sec.b) : colB,
+                        h: sec ? Math.round(sec.h) : colH,
+                        L: Math.round(height),
+                        zBottom: zBot * 1000,
+                        zTop: zTop * 1000,
+                        storyId: detectStoryId(zTop),
+                      });
+                    }
+
+                    // ── 3. تحويل البلاطات ──
+                    const newSlabs: Slab[] = [];
+                    for (const a of edbData.areas) {
+                      const coords = a.joints.map(jId => jointMap.get(jId)).filter(Boolean);
+                      if (coords.length < 3) continue;
+                      const xs = coords.map(c => c!.x);
+                      const ys = coords.map(c => c!.y);
+                      const avgZ = coords.reduce((sum, c) => sum + c!.z, 0) / coords.length;
+                      const areaSec = areaSectionMap.get(a.section);
+                      if (areaSec?.thickness && areaSec.thickness > 0) {
+                        dispatch({ type: 'SET_SLAB_PROPS', props: { ...slabProps, thickness: Math.round(areaSec.thickness) } });
+                      }
+                      newSlabs.push({
+                        id: a.id,
+                        x1: Math.min(...xs), y1: Math.min(...ys),
+                        x2: Math.max(...xs), y2: Math.max(...ys),
+                        storyId: detectStoryId(avgZ),
+                      });
+                    }
+
+                    // ── 4. تحويل ردود الأفعال لتصميم الأساسات ──
+                    if (edbData.hasAnalysisResults && edbData.reactions.length > 0) {
+                      // تجميع ردود الأفعال لكل عقدة (مجموع الحالات)
+                      const reactionMap = new Map<string, { Fz: number; count: number }>();
+                      for (const r of edbData.reactions) {
+                        const lc = r.loadCase.toUpperCase();
+                        if (lc.includes('DEAD') || lc.includes('LIVE') || lc.includes('DL') || lc.includes('LL')) {
+                          const existing = reactionMap.get(r.joint) ?? { Fz: 0, count: 0 };
+                          reactionMap.set(r.joint, {
+                            Fz: existing.Fz + Math.abs(r.Fz),
+                            count: existing.count + 1,
+                          });
+                        }
+                      }
+                      // تحويل إلى ETABSReaction format for FoundationDesignPanel
+                      const etabsReacts = Array.from(reactionMap.entries())
+                        .filter(([, v]) => v.Fz > 0.01)
+                        .map(([joint, v]) => ({
+                          joint,
+                          P_DL: v.Fz * 0.6, // تقدير: 60% DL
+                          P_LL: v.Fz * 0.4, // تقدير: 40% LL
+                        }));
+                      if (etabsReacts.length > 0) {
+                        setEtabsReactions(etabsReacts as any);
+                      }
+                    }
+
+                    // ── 5. تطبيق البيانات ──
+                    if (newSlabs.length > 0) dispatch({ type: 'SET_SLABS', slabs: newSlabs });
+                    if (newBeams.length > 0) dispatch({ type: 'SET_EXTRA_BEAMS', beams: newBeams });
+                    if (newColumns.length > 0) dispatch({ type: 'SET_EXTRA_COLUMNS', columns: newColumns });
+                    dispatch({ type: 'SET_ETABS_IMPORT_MODE', value: true });
+                    dispatch({
+                      type: 'SAVE_SNAPSHOT',
+                      message: `✓ ETABS E2K: ${newColumns.length} عمود | ${newBeams.length} جسر | ${newSlabs.length} بلاطة`,
+                    });
+                  }}
+                />
               </TabsContent>
             </Tabs>
           </TabsContent>
@@ -3998,6 +4153,8 @@ const Index = () => {
                 slabDesigns={slabs.map(s => ({ ...s, design: designSlab(s, slabProps, mat, slabs, columns) })) as any}
                 slabProps={slabProps}
                 analyzed={analyzed}
+                foundationResults={foundationResults.length > 0 ? foundationResults : undefined}
+                foundationMat={foundationMat}
               />
               {/* Main Export Panel with Floor Selector */}
               <ExportPanel

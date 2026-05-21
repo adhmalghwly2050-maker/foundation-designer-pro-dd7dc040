@@ -2,7 +2,7 @@
  * Bill of Quantities (BOQ) Panel
  * Part 1: Concrete volumes (m³) per element type
  * Part 2: Steel weights (ton) per diameter per element type
- * Supports per-story filtering and Foundations section.
+ * Supports per-story filtering and Foundations section (including actual footing volumes & rebar).
  */
 
 import React, { useMemo, useState } from 'react';
@@ -11,6 +11,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Badge } from '@/components/ui/badge';
 import { Layers, Filter, Building2 } from 'lucide-react';
 import type { Story, Slab, Beam, Column, SlabProps, FlexureResult, ShearResult, ColumnResult } from '@/lib/structuralEngine';
+import type { FootingDesignResult, FootingMaterials } from '@/lib/foundationDesign';
 
 interface BeamDesignData {
   beamId: string;
@@ -48,6 +49,8 @@ interface BOQPanelProps {
   slabDesigns: SlabDesignData[];
   slabProps: SlabProps;
   analyzed: boolean;
+  foundationResults?: FootingDesignResult[];
+  foundationMat?: FootingMaterials | null;
 }
 
 // Weight per meter for rebar (kg/m) = dia² / 162.2
@@ -60,6 +63,7 @@ type FilterMode = 'all' | 'foundations' | string;
 
 export default function BOQPanel({
   stories, slabs, beams, columns, beamDesigns, colDesigns, slabDesigns, slabProps, analyzed,
+  foundationResults, foundationMat,
 }: BOQPanelProps) {
 
   const [storyFilter, setStoryFilter] = useState<FilterMode>('all');
@@ -118,6 +122,52 @@ export default function BOQPanel({
     return st ? st.label : storyFilter;
   }, [storyFilter, stories]);
 
+  // =================== FOUNDATION QUANTITIES ===================
+  const foundationConcreteData = useMemo(() => {
+    if (!foundationResults || foundationResults.length === 0) return null;
+    let total = 0;
+    const items = foundationResults.map(r => {
+      const Bm = r.B / 1000;
+      const Lm = r.L / 1000;
+      const tm = r.t / 1000;
+      const vol = Bm * Lm * tm;
+      total += vol;
+      return { colId: r.colId, B: Bm, L: Lm, t: tm, vol };
+    });
+    return { items, total };
+  }, [foundationResults]);
+
+  // Foundation steel: x-bars + y-bars per footing
+  const foundationSteelData = useMemo(() => {
+    if (!foundationResults || foundationResults.length === 0 || !analyzed) return null;
+    const diaSet = new Set<number>();
+    const fndSteel: Record<number, number> = {}; // dia → kg
+
+    for (const r of foundationResults) {
+      const Bm = r.B / 1000;
+      const Lm = r.L / 1000;
+
+      // X-direction bars (run along B, qty = bars_x covering L)
+      if (r.dia_x && r.bars_x) {
+        diaSet.add(r.dia_x);
+        const lengthPerBar = Bm + 0.2; // bar length + hooks
+        const w = rebarWeightPerMeter(r.dia_x) * lengthPerBar * r.bars_x;
+        fndSteel[r.dia_x] = (fndSteel[r.dia_x] || 0) + w;
+      }
+      // Y-direction bars (run along L, qty = bars_y covering B)
+      if (r.dia_y && r.bars_y) {
+        diaSet.add(r.dia_y);
+        const lengthPerBar = Lm + 0.2;
+        const w = rebarWeightPerMeter(r.dia_y) * lengthPerBar * r.bars_y;
+        fndSteel[r.dia_y] = (fndSteel[r.dia_y] || 0) + w;
+      }
+    }
+
+    const allDias = Array.from(diaSet).sort((a, b) => a - b);
+    const grandTotal = Object.values(fndSteel).reduce((a, b) => a + b, 0);
+    return { allDias, fndSteel, grandTotal };
+  }, [foundationResults, analyzed]);
+
   // =================== CONCRETE VOLUMES ===================
   const concreteData = useMemo(() => {
     // Slabs: area × thickness (convert mm to m)
@@ -148,9 +198,14 @@ export default function BOQPanel({
       colVolume += bm * hm * Lm;
     }
 
-    const total = slabVolume + beamVolume + colVolume;
-    return { slabVolume, beamVolume, colVolume, total };
-  }, [filteredSlabs, filteredBeams, filteredColumns, slabProps]);
+    // Foundations (only in foundations mode)
+    const fndVolume = storyFilter === 'foundations'
+      ? (foundationConcreteData?.total ?? 0)
+      : 0;
+
+    const total = slabVolume + beamVolume + colVolume + fndVolume;
+    return { slabVolume, beamVolume, colVolume, fndVolume, total };
+  }, [filteredSlabs, filteredBeams, filteredColumns, slabProps, storyFilter, foundationConcreteData]);
 
   // =================== STEEL QUANTITIES ===================
   const steelData = useMemo(() => {
@@ -160,6 +215,7 @@ export default function BOQPanel({
     const beamSteel: Record<number, number> = {};
     const colSteel: Record<number, number> = {};
     const slabSteel: Record<number, number> = {};
+    const fndSteelMap: Record<number, number> = {};
 
     const addWeight = (target: Record<number, number>, dia: number, lengthM: number, qty: number = 1) => {
       diaSet.add(dia);
@@ -204,7 +260,6 @@ export default function BOQPanel({
     }
 
     // Slab steel — only for filtered slabs
-    const filteredSlabDesignMap = new Map(filteredSlabDesigns.map(s => [s.id, s]));
     for (const s of filteredSlabDesigns) {
       if (!s.design) continue;
       const lx = s.design.lx;
@@ -222,19 +277,39 @@ export default function BOQPanel({
       }
     }
 
+    // Foundation steel (only in foundations mode)
+    if (storyFilter === 'foundations' && foundationSteelData) {
+      for (const [diaStr, w] of Object.entries(foundationSteelData.fndSteel)) {
+        const dia = parseInt(diaStr);
+        diaSet.add(dia);
+        fndSteelMap[dia] = (fndSteelMap[dia] || 0) + w;
+      }
+    }
+
     const allDias = Array.from(diaSet).sort((a, b) => a - b);
     const beamTotal = Object.values(beamSteel).reduce((a, b) => a + b, 0);
     const colTotal = Object.values(colSteel).reduce((a, b) => a + b, 0);
     const slabTotal = Object.values(slabSteel).reduce((a, b) => a + b, 0);
+    const fndTotal = Object.values(fndSteelMap).reduce((a, b) => a + b, 0);
 
     const diaTotals: Record<number, number> = {};
     for (const dia of allDias) {
-      diaTotals[dia] = (beamSteel[dia] || 0) + (colSteel[dia] || 0) + (slabSteel[dia] || 0);
+      diaTotals[dia] =
+        (beamSteel[dia] || 0) + (colSteel[dia] || 0) +
+        (slabSteel[dia] || 0) + (fndSteelMap[dia] || 0);
     }
 
-    const grandTotal = beamTotal + colTotal + slabTotal;
-    return { allDias, beamSteel, colSteel, slabSteel, beamTotal, colTotal, slabTotal, diaTotals, grandTotal };
-  }, [analyzed, filteredBeamDesigns, filteredColDesigns, filteredSlabDesigns, filteredBeams]);
+    const grandTotal = beamTotal + colTotal + slabTotal + fndTotal;
+    const hasFnd = storyFilter === 'foundations' && fndTotal > 0;
+    return {
+      allDias, beamSteel, colSteel, slabSteel, fndSteelMap,
+      beamTotal, colTotal, slabTotal, fndTotal,
+      diaTotals, grandTotal, hasFnd,
+    };
+  }, [analyzed, filteredBeamDesigns, filteredColDesigns, filteredSlabDesigns,
+      filteredBeams, storyFilter, foundationSteelData]);
+
+  const hasFoundationData = (foundationResults?.length ?? 0) > 0;
 
   return (
     <div className="space-y-4">
@@ -261,7 +336,7 @@ export default function BOQPanel({
                 ))}
               </optgroup>
               <optgroup label="── أخرى ──">
-                <option value="foundations">الأساسات (الدور الأرضي)</option>
+                <option value="foundations">الأساسات</option>
               </optgroup>
             </select>
 
@@ -278,12 +353,18 @@ export default function BOQPanel({
               <span>{filteredBeams.length} جسر</span>
               <span>•</span>
               <span>{filteredColumns.length} عمود</span>
+              {storyFilter === 'foundations' && hasFoundationData && (
+                <>
+                  <span>•</span>
+                  <span>{foundationResults!.length} قاعدة</span>
+                </>
+              )}
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Foundations section */}
+      {/* Foundations section header */}
       {storyFilter === 'foundations' && (
         <Card className="border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20">
           <CardHeader className="pb-2">
@@ -292,43 +373,54 @@ export default function BOQPanel({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <p className="text-xs text-amber-700 dark:text-amber-400">
-              تعرض هذه الكميات الأعمدة في الدور الأرضي (الدور الأول من الأسفل) باعتبارها العناصر المتصلة بمنظومة الأساسات.
-            </p>
-            <p className="text-xs text-muted-foreground">
-              <strong>ملاحظة:</strong> يتم تصميم الأساسات (القواعد والأوتاد) بشكل مستقل في قسم "تصميم الأساسات" بتبويب التصميم.
-              الكميات أدناه تشمل خرسانة وحديد الأعمدة الأرضية فقط.
-            </p>
-            {filteredColumns.length > 0 && (
-              <div className="overflow-x-auto rounded border border-amber-200 dark:border-amber-800">
-                <table className="text-[10px] w-full">
-                  <thead className="bg-amber-100/50 dark:bg-amber-900/30">
-                    <tr>
-                      <th className="px-2 py-1 text-right font-semibold">العمود</th>
-                      <th className="px-2 py-1 text-right font-semibold">الأبعاد (مم)</th>
-                      <th className="px-2 py-1 text-right font-semibold">الارتفاع (م)</th>
-                      <th className="px-2 py-1 text-right font-semibold">الحجم (م³)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredColumns.slice(0, 20).map(c => (
-                      <tr key={c.id} className="border-t border-amber-200/50 dark:border-amber-800/30">
-                        <td className="px-2 py-1 font-mono font-bold">{c.id}</td>
-                        <td className="px-2 py-1 font-mono">{c.b}×{c.h}</td>
-                        <td className="px-2 py-1 font-mono">{(c.L / 1000).toFixed(2)}</td>
-                        <td className="px-2 py-1 font-mono">{((c.b / 1000) * (c.h / 1000) * (c.L / 1000)).toFixed(3)}</td>
-                      </tr>
-                    ))}
-                    {filteredColumns.length > 20 && (
-                      <tr>
-                        <td colSpan={4} className="px-2 py-1 text-center text-muted-foreground">
-                          ... و {filteredColumns.length - 20} عمود آخر
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+            {!hasFoundationData ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                لم يتم تصميم الأساسات بعد. اذهب إلى تبويب التصميم ← تصميم الأساسات (WSM) لحساب الكميات.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  الكميات أدناه تشمل خرسانة وحديد القواعد المنفردة المُصمَّمة ({foundationResults!.length} قاعدة).
+                </p>
+                {/* Footing schedule */}
+                {foundationConcreteData && foundationConcreteData.items.length > 0 && (
+                  <div className="overflow-x-auto rounded border border-amber-200 dark:border-amber-800">
+                    <table className="text-[10px] w-full">
+                      <thead className="bg-amber-100/50 dark:bg-amber-900/30">
+                        <tr>
+                          <th className="px-2 py-1 text-right font-semibold">القاعدة</th>
+                          <th className="px-2 py-1 text-right font-semibold">B (م)</th>
+                          <th className="px-2 py-1 text-right font-semibold">L (م)</th>
+                          <th className="px-2 py-1 text-right font-semibold">t (م)</th>
+                          <th className="px-2 py-1 text-right font-semibold">الحجم (م³)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {foundationConcreteData.items.slice(0, 20).map(item => (
+                          <tr key={item.colId} className="border-t border-amber-200/50 dark:border-amber-800/30">
+                            <td className="px-2 py-1 font-mono font-bold">{item.colId}</td>
+                            <td className="px-2 py-1 font-mono">{item.B.toFixed(2)}</td>
+                            <td className="px-2 py-1 font-mono">{item.L.toFixed(2)}</td>
+                            <td className="px-2 py-1 font-mono">{item.t.toFixed(2)}</td>
+                            <td className="px-2 py-1 font-mono font-bold">{item.vol.toFixed(3)}</td>
+                          </tr>
+                        ))}
+                        {foundationConcreteData.items.length > 20 && (
+                          <tr>
+                            <td colSpan={5} className="px-2 py-1 text-center text-muted-foreground">
+                              ... و {foundationConcreteData.items.length - 20} قاعدة أخرى
+                            </td>
+                          </tr>
+                        )}
+                        <tr className="border-t border-amber-300 dark:border-amber-700 bg-amber-100/30 dark:bg-amber-900/20 font-bold">
+                          <td className="px-2 py-1" colSpan={4}>إجمالي خرسانة الأساسات</td>
+                          <td className="px-2 py-1 font-mono">{foundationConcreteData.total.toFixed(3)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
@@ -345,9 +437,12 @@ export default function BOQPanel({
           </CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          {filteredSlabs.length === 0 && filteredBeams.length === 0 && filteredColumns.length === 0 ? (
+          {filteredSlabs.length === 0 && filteredBeams.length === 0 && filteredColumns.length === 0
+           && concreteData.fndVolume === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-4">
               لا توجد عناصر في {filterLabel}
+              {storyFilter === 'foundations' && !hasFoundationData &&
+                ' — صمِّم الأساسات أولاً من تبويب التصميم'}
             </p>
           ) : (
             <Table>
@@ -360,28 +455,45 @@ export default function BOQPanel({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableRow>
-                  <TableCell className="text-xs font-medium">البلاطات</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{filteredSlabs.length}</TableCell>
-                  <TableCell className="text-xs">م³</TableCell>
-                  <TableCell className="font-mono text-xs font-bold">{concreteData.slabVolume.toFixed(2)}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="text-xs font-medium">الجسور</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{filteredBeams.length}</TableCell>
-                  <TableCell className="text-xs">م³</TableCell>
-                  <TableCell className="font-mono text-xs font-bold">{concreteData.beamVolume.toFixed(2)}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="text-xs font-medium">الأعمدة</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{filteredColumns.length}</TableCell>
-                  <TableCell className="text-xs">م³</TableCell>
-                  <TableCell className="font-mono text-xs font-bold">{concreteData.colVolume.toFixed(2)}</TableCell>
-                </TableRow>
+                {filteredSlabs.length > 0 && (
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">البلاطات</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{filteredSlabs.length}</TableCell>
+                    <TableCell className="text-xs">م³</TableCell>
+                    <TableCell className="font-mono text-xs font-bold">{concreteData.slabVolume.toFixed(2)}</TableCell>
+                  </TableRow>
+                )}
+                {filteredBeams.length > 0 && (
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">الجسور</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{filteredBeams.length}</TableCell>
+                    <TableCell className="text-xs">م³</TableCell>
+                    <TableCell className="font-mono text-xs font-bold">{concreteData.beamVolume.toFixed(2)}</TableCell>
+                  </TableRow>
+                )}
+                {filteredColumns.length > 0 && (
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">الأعمدة (دور أرضي)</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{filteredColumns.length}</TableCell>
+                    <TableCell className="text-xs">م³</TableCell>
+                    <TableCell className="font-mono text-xs font-bold">{concreteData.colVolume.toFixed(2)}</TableCell>
+                  </TableRow>
+                )}
+                {concreteData.fndVolume > 0 && (
+                  <TableRow className="bg-amber-50/50 dark:bg-amber-950/10">
+                    <TableCell className="text-xs font-medium text-amber-700 dark:text-amber-400">القواعد المنفردة</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{foundationResults?.length}</TableCell>
+                    <TableCell className="text-xs">م³</TableCell>
+                    <TableCell className="font-mono text-xs font-bold text-amber-700 dark:text-amber-400">
+                      {concreteData.fndVolume.toFixed(2)}
+                    </TableCell>
+                  </TableRow>
+                )}
                 <TableRow className="bg-muted/50 font-bold">
                   <TableCell className="text-xs font-bold">الإجمالي</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {filteredSlabs.length + filteredBeams.length + filteredColumns.length}
+                    {filteredSlabs.length + filteredBeams.length + filteredColumns.length +
+                      (storyFilter === 'foundations' && hasFoundationData ? (foundationResults?.length ?? 0) : 0)}
                   </TableCell>
                   <TableCell className="text-xs">م³</TableCell>
                   <TableCell className="font-mono text-xs font-bold text-primary">{concreteData.total.toFixed(2)}</TableCell>
@@ -432,6 +544,15 @@ export default function BOQPanel({
                     </TableRow>
                   );
                 })}
+                {hasFoundationData && foundationConcreteData && (
+                  <TableRow className="bg-amber-50/30 dark:bg-amber-950/10">
+                    <TableCell className="text-xs font-medium text-amber-700 dark:text-amber-400">الأساسات</TableCell>
+                    <TableCell className="font-mono text-xs">—</TableCell>
+                    <TableCell className="font-mono text-xs">—</TableCell>
+                    <TableCell className="font-mono text-xs text-amber-700 dark:text-amber-400">{foundationConcreteData.total.toFixed(2)}</TableCell>
+                    <TableCell className="font-mono text-xs font-bold text-amber-700 dark:text-amber-400">{foundationConcreteData.total.toFixed(2)}</TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </CardContent>
@@ -450,9 +571,13 @@ export default function BOQPanel({
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {!analyzed || !steelData ? (
-            <p className="text-xs text-muted-foreground text-center py-4">يجب تشغيل التحليل أولاً لحساب كميات الحديد</p>
+            <p className="text-xs text-muted-foreground text-center py-4">يجب تشغيل التحليل والتصميم أولاً لحساب كميات الحديد</p>
           ) : steelData.grandTotal === 0 ? (
-            <p className="text-xs text-muted-foreground text-center py-4">لا توجد بيانات حديد للعناصر المحددة</p>
+            <p className="text-xs text-muted-foreground text-center py-4">
+              لا توجد بيانات حديد للعناصر المحددة
+              {storyFilter === 'foundations' && !hasFoundationData &&
+                ' — صمِّم الأساسات أولاً من تبويب التصميم'}
+            </p>
           ) : (
             <Table>
               <TableHeader>
@@ -465,39 +590,58 @@ export default function BOQPanel({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableRow>
-                  <TableCell className="text-xs font-medium">الجسور</TableCell>
-                  {steelData.allDias.map(dia => (
-                    <TableCell key={dia} className="font-mono text-xs text-center">
-                      {((steelData.beamSteel[dia] || 0) / 1000).toFixed(3)}
+                {steelData.beamTotal > 0 && (
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">الجسور</TableCell>
+                    {steelData.allDias.map(dia => (
+                      <TableCell key={dia} className="font-mono text-xs text-center">
+                        {((steelData.beamSteel[dia] || 0) / 1000).toFixed(3)}
+                      </TableCell>
+                    ))}
+                    <TableCell className="font-mono text-xs text-center font-bold">
+                      {(steelData.beamTotal / 1000).toFixed(3)}
                     </TableCell>
-                  ))}
-                  <TableCell className="font-mono text-xs text-center font-bold">
-                    {(steelData.beamTotal / 1000).toFixed(3)}
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="text-xs font-medium">الأعمدة</TableCell>
-                  {steelData.allDias.map(dia => (
-                    <TableCell key={dia} className="font-mono text-xs text-center">
-                      {((steelData.colSteel[dia] || 0) / 1000).toFixed(3)}
+                  </TableRow>
+                )}
+                {steelData.colTotal > 0 && (
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">الأعمدة</TableCell>
+                    {steelData.allDias.map(dia => (
+                      <TableCell key={dia} className="font-mono text-xs text-center">
+                        {((steelData.colSteel[dia] || 0) / 1000).toFixed(3)}
+                      </TableCell>
+                    ))}
+                    <TableCell className="font-mono text-xs text-center font-bold">
+                      {(steelData.colTotal / 1000).toFixed(3)}
                     </TableCell>
-                  ))}
-                  <TableCell className="font-mono text-xs text-center font-bold">
-                    {(steelData.colTotal / 1000).toFixed(3)}
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="text-xs font-medium">البلاطات</TableCell>
-                  {steelData.allDias.map(dia => (
-                    <TableCell key={dia} className="font-mono text-xs text-center">
-                      {((steelData.slabSteel[dia] || 0) / 1000).toFixed(3)}
+                  </TableRow>
+                )}
+                {steelData.slabTotal > 0 && (
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">البلاطات</TableCell>
+                    {steelData.allDias.map(dia => (
+                      <TableCell key={dia} className="font-mono text-xs text-center">
+                        {((steelData.slabSteel[dia] || 0) / 1000).toFixed(3)}
+                      </TableCell>
+                    ))}
+                    <TableCell className="font-mono text-xs text-center font-bold">
+                      {(steelData.slabTotal / 1000).toFixed(3)}
                     </TableCell>
-                  ))}
-                  <TableCell className="font-mono text-xs text-center font-bold">
-                    {(steelData.slabTotal / 1000).toFixed(3)}
-                  </TableCell>
-                </TableRow>
+                  </TableRow>
+                )}
+                {steelData.hasFnd && steelData.fndTotal > 0 && (
+                  <TableRow className="bg-amber-50/50 dark:bg-amber-950/10">
+                    <TableCell className="text-xs font-medium text-amber-700 dark:text-amber-400">الأساسات</TableCell>
+                    {steelData.allDias.map(dia => (
+                      <TableCell key={dia} className="font-mono text-xs text-center text-amber-700 dark:text-amber-400">
+                        {((steelData.fndSteelMap[dia] || 0) / 1000).toFixed(3)}
+                      </TableCell>
+                    ))}
+                    <TableCell className="font-mono text-xs text-center font-bold text-amber-700 dark:text-amber-400">
+                      {(steelData.fndTotal / 1000).toFixed(3)}
+                    </TableCell>
+                  </TableRow>
+                )}
                 <TableRow className="bg-muted/50 font-bold">
                   <TableCell className="text-xs font-bold">الإجمالي</TableCell>
                   {steelData.allDias.map(dia => (
