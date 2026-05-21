@@ -36,7 +36,7 @@ import {
   Building2, Layers, Calculator, BarChart3, Ruler, Eye,
   Grid3X3, Settings2, Download, Bot, Building, Zap, Plus, Trash2,
   Undo2, Save, Check, Wand2, Search, Compass, Merge, Crosshair, CheckSquare, Upload, Activity,
-  Loader2
+  Loader2, X as XIcon,
 } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav, { type MainTab } from "@/components/BottomNav";
@@ -79,6 +79,9 @@ import ETABSAnalysisImport from "@/components/ETABSAnalysisImport";
 import type { ETABSBeamResult, ETABSColumnResult, ETABSReaction } from "@/components/ETABSAnalysisImport";
 import FoundationDesignPanel from "@/components/FoundationDesignPanel";
 import type { FootingDesignResult, FootingMaterials } from "@/lib/foundationDesign";
+import { useAnalysisWorker, type AnalysisInput as WorkerAnalysisInput } from '@/core/workers/useAnalysisWorker';
+import type { WorkerDiagnostics } from '@/core/workers/workerTypes';
+import AnalysisDiagnosticsPanel from '@/components/AnalysisDiagnosticsPanel';
 
 const ParamInput = ({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) => (
   <div className="space-y-1">
@@ -153,7 +156,11 @@ const Index = () => {
   const [isAnalyzing, setIsAnalyzing] = React.useState(false);
   const [analysisProgress, setAnalysisProgress] = React.useState(0);
   const [analysisStep, setAnalysisStep] = React.useState('');
+  const [analysisDiagnostics, setAnalysisDiagnostics] = React.useState<WorkerDiagnostics | null>(null);
   const progressTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Web Worker for off-thread analysis
+  const analysisWorker = useAnalysisWorker();
 
   // Pre-analysis validation state
   const [validationReport, setValidationReport] = React.useState<import('@/core/validation/preAnalysisValidator').ValidationReport | null>(null);
@@ -521,208 +528,74 @@ const Index = () => {
 
   const runAnalysis = () => {
     setFemError(null);
+    setAnalysisDiagnostics(null);
 
-    // ── إعداد شريط التقدم ──────────────────────────────────────────
+    // ── حساب خريطة المفصلات 2D في الـ UI thread (يحتاج getBeamReleaseState) ──
+    const beamHinges2DArr: Array<[string, 'I' | 'J' | 'BOTH']> = [];
+    for (const beam of beamsWithLoads) {
+      const rs = getBeamReleaseState(beam);
+      const hasHingeI = rs.nodeI.rx || rs.nodeI.ry || rs.nodeI.rz;
+      const hasHingeJ = rs.nodeJ.rx || rs.nodeJ.ry || rs.nodeJ.rz;
+      if (hasHingeI && hasHingeJ) beamHinges2DArr.push([beam.id, 'BOTH']);
+      else if (hasHingeI) beamHinges2DArr.push([beam.id, 'I']);
+      else if (hasHingeJ) beamHinges2DArr.push([beam.id, 'J']);
+    }
+
+    // ── إظهار شاشة التحميل ───────────────────────────────────────────────────
     setIsAnalyzing(true);
-    setAnalysisProgress(2);
-    setAnalysisStep('تجهيز النموذج...');
+    setAnalysisProgress(3);
+    setAnalysisStep('تهيئة معالج التحليل (Web Worker)...');
 
-    const ANALYSIS_STAGES = [
-      { upTo: 18, label: 'تجهيز الإطارات والعقد الإنشائية...' },
-      { upTo: 38, label: 'توزيع أحمال البلاطات على الجسور...' },
-      { upTo: 58, label: 'تجميع مصفوفة الصلابة الكلية...' },
-      { upTo: 76, label: 'حل منظومة المعادلات KU=F...' },
-      { upTo: 89, label: 'استخراج العزوم والقوى والانحرافات...' },
-      { upTo: 96, label: 'التحقق من نتائج التصميم...' },
-    ];
-    let _stageIdx = 0;
-    let _prog = 2;
-    if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-    progressTimerRef.current = setInterval(() => {
-      if (_stageIdx >= ANALYSIS_STAGES.length) return;
-      const _target = ANALYSIS_STAGES[_stageIdx].upTo;
-      _prog = Math.min(_prog + 0.9, _target);
-      setAnalysisProgress(_prog);
-      setAnalysisStep(ANALYSIS_STAGES[_stageIdx].label);
-      if (_prog >= _target) _stageIdx++;
-    }, 30);
-
-    const _finishAnalysis = () => {
-      if (progressTimerRef.current) { clearInterval(progressTimerRef.current); progressTimerRef.current = null; }
-      setAnalysisProgress(100);
-      setAnalysisStep('اكتمل التحليل بنجاح ✓');
-      setTimeout(() => { setIsAnalyzing(false); setAnalysisProgress(0); setAnalysisStep(''); }, 800);
+    // ── إرسال النموذج إلى الـ Worker ────────────────────────────────────────
+    const workerInput: WorkerAnalysisInput = {
+      frames,
+      beamsWithLoads,
+      columns,
+      mat,
+      slabs,
+      slabProps,
+      selectedEngine,
+      ignoreSlab,
+      effectiveFrameEndReleases,
+      beamStiffnessFactor,
+      colStiffnessFactor,
+      detectedConnections,
+      removedColumnIds,
+      beamHinges2D: beamHinges2DArr,
     };
 
-    // تأخير صغير لمنح المتصفح وقتاً لرسم شاشة التحميل قبل التنفيذ المتزامن
-    setTimeout(() => {
-      try {
-
-    const buildAnalyzedConnections = (
-      results: FrameResult[],
-      connections: BeamOnBeamConnection[] = detectedConnections,
-    ) => {
-      if (connections.length === 0) return [];
-
-      return connections.map(conn => {
-        let totalReaction = 0;
-
-        for (const secBeamId of conn.secondaryBeamIds) {
-          const beamResult = results.flatMap(fr => fr.beams).find(b => b.beamId === secBeamId);
-          const beam = beamsWithLoads.find(b => b.id === secBeamId);
-          if (!beamResult || !beam) continue;
-
-          const isAtStart = beam.fromCol === conn.removedColumnId;
-          totalReaction += isAtStart ? (beamResult.Rleft ?? 0) : (beamResult.Rright ?? 0);
-        }
-
-        const primaryBeam = beamsWithLoads.find(b => b.id === conn.primaryBeamId);
-        let distOnPrimary = conn.distanceOnPrimary;
-        if (primaryBeam) {
-          if (conn.primaryDirection === 'horizontal') {
-            const xMin = Math.min(primaryBeam.x1, primaryBeam.x2);
-            distOnPrimary = Math.abs(conn.point.x - xMin);
-          } else {
-            const yMin = Math.min(primaryBeam.y1, primaryBeam.y2);
-            distOnPrimary = Math.abs(conn.point.y - yMin);
-          }
-        }
-
-        return { ...conn, reactionForce: totalReaction, distanceOnPrimary: distOnPrimary };
-      });
-    };
-
-    // ── FEM (Coupled Beam–Slab) engine path — فقط عند عدم إهمال جساءة البلاطات ──
-    if (selectedEngine === 'fem_coupled' && !ignoreSlab) {
-      if (slabs.length === 0) {
-        setFemError('يتطلب محرك FEM وجود بلاطات معرّفة في النموذج');
-        return;
-      }
-      if (columns.length === 0) {
-        setFemError('يتطلب محرك FEM وجود أعمدة (ركائز) في النموذج');
-        return;
-      }
-      try {
-        const femModel = {
-          slabs,
-          beams: beamsWithLoads,
-          columns,
-          slabProps,
-          mat,
-          meshDensity: 2,
-        };
-        const coupledResults = getConnectedSlabResults(femModel, 2);
-        if (coupledResults.length === 0) {
-          setFemError('لم يُنتج محرك FEM نتائج — تحقق من إعدادات النموذج');
-          return;
-        }
-        let femFrameResults = adaptFEMResults(coupledResults, beamsWithLoads, frames);
-
-        // ── إذا كانت توجد جسور محمولة: استعمل محرك 3D للإطارات المتأثرة ──────
-        // محرك FEM لا يعالج اتصالات الجسر الحامل/المحمول بشكل صحيح (يُعطي صفراً)
-        // لذا: FEM للإطارات النظيفة، 3D للإطارات التي تحتوي جسوراً محمولة
-        if (detectedConnections.length > 0) {
-          const secondaryBeamIdSet = new Set(detectedConnections.flatMap(c => c.secondaryBeamIds));
-          const hasBobFrame = frames.some(f => f.beamIds.some(bid => secondaryBeamIdSet.has(bid)));
-          if (hasBobFrame) {
-            const results3D = getFrameResults3D(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, detectedConnections, slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor);
-            // دمج: الإطارات التي تحتوي جسوراً محمولة → 3D، الباقي → FEM
-            femFrameResults = femFrameResults.map((femRes, idx) => {
-              const frame = frames[idx];
-              if (!frame) return femRes;
-              const hasSec = frame.beamIds.some(bid => secondaryBeamIdSet.has(bid));
-              return hasSec ? (results3D[idx] ?? femRes) : femRes;
-            });
-          }
-        }
-
-        dispatch({ type: 'SET_FRAME_RESULTS', results: femFrameResults });
-        dispatch({ type: 'SET_BOB_CONNECTIONS', connections: [] });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'خطأ غير معروف في محرك FEM';
-        setFemError(`فشل تحليل FEM: ${msg}`);
-        return;
-      }
-      dispatch({ type: 'SET_ANALYZED', value: true });
-      return;
-    }
-
-    // ── FEM + إهمال جساءة البلاطات: تحليل إطار نقي (كـ ETABS "No Slab Stiffness") ──
-    // البلاطات تُستخدم فقط لنقل الأحمال إلى الجسور عبر المنطقة التأثيرية
-    // الجسور والأعمدة تحمل كل الجساءة الإنشائية — بدون مساهمة البلاطات
-    if (selectedEngine === 'fem_coupled' && ignoreSlab) {
-      // ينتقل إلى مسار المحرك 3D أدناه تلقائياً (نفس المنطق)
-      // لا يوجد return هنا — يكمل التنفيذ إلى المسار التالي
-    }
-
-    // ── Build 2D hinge map from user-defined end releases (frameEndReleases → rz = rotation in 2D) ──
-    const build2DHingeMap = (): Map<string, 'I' | 'J' | 'BOTH'> => {
-      const hingeMap = new Map<string, 'I' | 'J' | 'BOTH'>();
-      for (const beam of beamsWithLoads) {
-        const rs = getBeamReleaseState(beam);
-        const hasHingeI = rs.nodeI.rx || rs.nodeI.ry || rs.nodeI.rz;
-        const hasHingeJ = rs.nodeJ.rx || rs.nodeJ.ry || rs.nodeJ.rz;
-        if (hasHingeI && hasHingeJ) hingeMap.set(beam.id, 'BOTH');
-        else if (hasHingeI) hingeMap.set(beam.id, 'I');
-        else if (hasHingeJ) hingeMap.set(beam.id, 'J');
-      }
-      return hingeMap;
-    };
-
-    // ── Legacy 2D engine path (Matrix Stiffness Method) ─────────────────────
-    if (selectedEngine === 'legacy_2d') {
-      const bMap = new Map(beamsWithLoads.map(b => [b.id, b]));
-      const beamHinges2D = build2DHingeMap();
-      if (removedColumnIds.length > 0 && detectedConnections.length > 0) {
-        const result = analyzeWithBeamOnBeam(frames, bMap, columns, mat, removedColumnIds, detectedConnections, 10, 0.01, beamHinges2D, beamStiffnessFactor, colStiffnessFactor);
+    analysisWorker.startAnalysis(workerInput, {
+      onProgress: (prog, step) => {
+        setAnalysisProgress(prog);
+        setAnalysisStep(step);
+      },
+      onComplete: (result) => {
+        // حفظ التشخيصات وتحديث النتائج
+        setAnalysisDiagnostics(result.diagnostics);
         dispatch({ type: 'SET_FRAME_RESULTS', results: result.frameResults });
-        dispatch({ type: 'SET_BOB_CONNECTIONS', connections: result.connections });
-        if (!result.converged) {
-          console.warn(`Beam-on-Beam 2D: لم يتقارب التحليل بعد ${result.iterations} تكرارات`);
-        }
-      } else {
-        const results2D = frames.map(f => analyzeFrame(f, bMap, columns, mat, removedColumnIds, undefined, beamHinges2D, undefined, beamStiffnessFactor, colStiffnessFactor));
-        dispatch({ type: 'SET_FRAME_RESULTS', results: results2D });
-        dispatch({ type: 'SET_BOB_CONNECTIONS', connections: [] });
-      }
-      dispatch({ type: 'SET_ANALYZED', value: true });
-      return;
-    }
-
-    // ── Unified 3D engine path (Legacy 3D + Global Frame + Unified Core merged) ──
-    // الفروقات السابقة بين المحركات الثلاثة كانت سطحية (نفس مبدأ Direct Stiffness 3D).
-    // أصبح كل منها يمر الآن عبر `getFrameResults3D` الذي يدعم:
-    //   • Static condensation حقيقي للنهايات المحررة (Schur complement)
-    //   • P-Delta geometric stiffness (ACI 318-19 §6.6.4)
-    //   • استمرارية الجسور تلقائياً عبر assembly في مصفوفة الصلابة العامة
-    //   • معالجة beam-on-beam وتقسيم الجسور الحاملة
-    //   • معالجة وجه العمود لاستخراج العزوم
-    if (selectedEngine === 'global_frame' || selectedEngine === 'unified_core') {
-      // Backward compat: redirect to the unified legacy_3d path below
-    }
-
-    // ── Legacy 3D engine path ────────────────────────────────────────────────
-    // ملاحظة: تم إلغاء تمييز الجسور الحاملة ودمج أجزائها في محرك 3D Legacy
-    // بناءً على طلب المستخدم. المحرك يعالج الإطارات بشكل مستقل دون اكتشاف
-    // اتصالات beam-on-beam ودون تقسيم الجسر الحامل عند نقطة التحميل.
-    const conns3DLegacy: BeamOnBeamConnection[] = [];
-    const bMap = new Map(beamsWithLoads.map(b => [b.id, b]));
-    try {
-      const results3D = getFrameResults3D(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, conns3DLegacy, slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor);
-      dispatch({ type: 'SET_FRAME_RESULTS', results: results3D });
-      dispatch({ type: 'SET_BOB_CONNECTIONS', connections: [] });
-    } catch (err) {
-      console.warn('3D frame analysis failed, falling back to 2D:', err);
-      const beamHinges2D = build2DHingeMap();
-      const results2D = frames.map(f => analyzeFrame(f, bMap, columns, mat, removedColumnIds, undefined, beamHinges2D, undefined, beamStiffnessFactor, colStiffnessFactor));
-      dispatch({ type: 'SET_FRAME_RESULTS', results: results2D });
-      dispatch({ type: 'SET_BOB_CONNECTIONS', connections: [] });
-    }
-      dispatch({ type: 'SET_ANALYZED', value: true });
-      } finally {
-        _finishAnalysis();
-      }
-    }, 60); // تأخير 60ms لرسم شاشة التحميل أولاً
+        dispatch({ type: 'SET_BOB_CONNECTIONS', connections: result.bobConnections });
+        dispatch({ type: 'SET_ANALYZED', value: true });
+        // إنهاء شاشة التحميل بنجاح
+        setAnalysisProgress(100);
+        setAnalysisStep('اكتمل التحليل بنجاح ✓');
+        setTimeout(() => {
+          setIsAnalyzing(false);
+          setAnalysisProgress(0);
+          setAnalysisStep('');
+        }, 800);
+      },
+      onError: (message) => {
+        setFemError(message);
+        setIsAnalyzing(false);
+        setAnalysisProgress(0);
+        setAnalysisStep('');
+      },
+      onCancelled: () => {
+        setIsAnalyzing(false);
+        setAnalysisProgress(0);
+        setAnalysisStep('');
+      },
+    });
   };
 
   const getBeamReleaseKey = useCallback((beam: Beam) => (
@@ -1705,10 +1578,37 @@ const Index = () => {
 
             {/* رسالة الانتظار */}
             <p className="text-[10px] text-center text-muted-foreground leading-relaxed">
-              يُعالج التطبيق النموذج — يرجى الانتظار
+              يعمل التحليل في خيط منفصل (Web Worker)
               <br />
-              قد يستغرق ذلك بضع ثوانٍ للمشاريع الكبيرة متعددة الأدوار
+              الواجهة تبقى سريعة الاستجابة طوال فترة الحل
             </p>
+
+            {/* زر الإلغاء */}
+            {analysisProgress < 100 && (
+              <button
+                onClick={() => { analysisWorker.cancelAnalysis(); }}
+                className="w-full flex items-center justify-center gap-2 text-xs text-muted-foreground hover:text-destructive transition-colors py-1.5 rounded-lg hover:bg-destructive/5"
+              >
+                <XIcon size={12} />
+                إلغاء التحليل
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── لوحة تشخيصات أداء المحلل (تظهر بعد اكتمال التحليل) ── */}
+      {analysisDiagnostics && !isAnalyzing && (
+        <div className="fixed bottom-20 left-3 right-3 z-[100] animate-in slide-in-from-bottom-2 duration-300">
+          <div className="relative">
+            <AnalysisDiagnosticsPanel diagnostics={analysisDiagnostics} />
+            <button
+              onClick={() => setAnalysisDiagnostics(null)}
+              className="absolute top-2 left-2 w-6 h-6 flex items-center justify-center rounded-full bg-muted hover:bg-muted/80 text-muted-foreground"
+              aria-label="إغلاق"
+            >
+              <XIcon size={11} />
+            </button>
           </div>
         </div>
       )}

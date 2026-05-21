@@ -6,6 +6,7 @@
  * 2. LDLT factorisation (fallback for semi-definite)
  * 3. Gaussian elimination with partial pivoting (final fallback)
  * 4. Conjugate Gradient with Jacobi preconditioner (for large systems)
+ * 5. Sparse CG using CSR format (for very large / mobile systems)
  *
  * Includes:
  * - Matrix conditioning diagnostics
@@ -13,6 +14,8 @@
  * - Singularity warnings
  * - Instability tracing
  */
+
+import type { CSRMatrix } from '../sparse/csrMatrix';
 
 export type SolverMethod = 'cholesky' | 'cg' | 'auto';
 
@@ -372,4 +375,101 @@ function matvec(A: Float64Array, x: Float64Array, n: number): Float64Array {
     y[i] = s;
   }
   return y;
+}
+
+// ── Sparse CG solver ─────────────────────────────────────────────────────────
+
+/**
+ * Solve K_sparse · U = F using Preconditioned Conjugate Gradient.
+ * Uses CSR sparse matvec — O(nnz) per iteration instead of O(n²).
+ * Suitable for large systems where the dense CG is too slow or uses too much RAM.
+ */
+export function solveSparse(
+  K: CSRMatrix,
+  F: Float64Array,
+  config: Partial<SolverConfig> = {},
+): SolverResult {
+  const n = K.n;
+  if (n === 0) {
+    return {
+      U: new Float64Array(0), method: 'cg',
+      diagnostics: { minDiagonal: 0, maxDiagonal: 0, conditionEstimate: 0, nearZeroPivots: 0, zeroPivotIndices: [], warnings: [] },
+    };
+  }
+
+  const cfg = { ...DEFAULT_CONFIG, ...config };
+  const tol = cfg.cgTolerance;
+  const maxIter = cfg.cgMaxIter ?? n * 10;
+
+  // Jacobi preconditioner from sparse diagonal
+  const diag = K.diagonal();
+  const Minv = new Float64Array(n);
+  let minDiag = Infinity, maxDiag = 0;
+  const zeroPivotIndices: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = Math.abs(diag[i]);
+    if (d < minDiag) minDiag = d;
+    if (d > maxDiag) maxDiag = d;
+    if (d < ZERO_PIVOT_TOL) zeroPivotIndices.push(i);
+    Minv[i] = d > 1e-30 ? 1 / d : 1;
+  }
+
+  const warnings: string[] = [];
+  if (zeroPivotIndices.length > 0) {
+    warnings.push(`${zeroPivotIndices.length} near-zero diagonal entries detected (sparse solver).`);
+  }
+  const condEst = maxDiag > 0 && minDiag > 0 ? maxDiag / minDiag : Infinity;
+  if (condEst > COND_WARNING) {
+    warnings.push(`Estimated condition number ${condEst.toExponential(2)} may cause poor accuracy.`);
+  }
+
+  const diagnostics: SolverDiagnostics = {
+    minDiagonal: minDiag, maxDiagonal: maxDiag, conditionEstimate: condEst,
+    nearZeroPivots: zeroPivotIndices.length, zeroPivotIndices, warnings,
+  };
+
+  const U = new Float64Array(n);
+  const r = new Float64Array(F);
+  const z = new Float64Array(n);
+  const p = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) z[i] = Minv[i] * r[i];
+  p.set(z);
+
+  let rz = dot(r, z, n);
+  let iter = 0;
+  const normF = Math.sqrt(dot(F, F, n));
+  const threshold = tol * (normF > 0 ? normF : 1);
+  const Ap = new Float64Array(n);
+
+  while (iter < maxIter) {
+    K.matvec(p, Ap);              // sparse matvec — O(nnz)
+    const pAp = dot(p, Ap, n);
+    if (Math.abs(pAp) < 1e-30) break;
+    const alpha = rz / pAp;
+
+    for (let i = 0; i < n; i++) {
+      U[i] += alpha * p[i];
+      r[i] -= alpha * Ap[i];
+    }
+
+    const residualNorm = Math.sqrt(dot(r, r, n));
+    iter++;
+
+    if (residualNorm < threshold) {
+      return { U, method: 'cg', iterations: iter, residualNorm, diagnostics };
+    }
+
+    for (let i = 0; i < n; i++) z[i] = Minv[i] * r[i];
+    const rzNew = dot(r, z, n);
+    const beta = rzNew / rz;
+    for (let i = 0; i < n; i++) p[i] = z[i] + beta * p[i];
+    rz = rzNew;
+  }
+
+  const finalResidual = Math.sqrt(dot(r, r, n));
+  if (iter >= maxIter) {
+    diagnostics.warnings.push(`Sparse CG: did not converge in ${maxIter} iterations. Residual: ${finalResidual.toExponential(2)}`);
+  }
+  return { U, method: 'cg', iterations: iter, residualNorm: finalResidual, diagnostics };
 }
