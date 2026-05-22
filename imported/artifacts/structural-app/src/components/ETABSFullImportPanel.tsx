@@ -61,6 +61,68 @@ interface ETABSFullImportPanelProps {
  * Compares element Z*1000 (mm) to each story's top elevation (elevation+height in mm).
  * Returns the story with the closest top elevation.
  */
+/**
+ * Merge beam segments that share the same base label.
+ * ETABS auto-meshes a beam "89" into segments "89-1", "89-2", etc.
+ * This function groups segments by base label (stripping the trailing -N suffix),
+ * finds the two endpoint nodes via occurrence counting, and returns one merged beam.
+ *
+ * Rules:
+ * - Only strip the -N suffix if the ID matches /^(.+)-\d+$/.
+ * - If the resulting base ID already exists as an un-suffixed beam, keep segments separate.
+ * - Single-segment groups: just rename the ID to the base label.
+ */
+function mergeBeamSegments(
+  imported: ImportedBeam[],
+): { merged: ImportedBeam[]; mergedCount: number; renamedCount: number } {
+  const allIds = new Set(imported.map(b => b.id));
+  const groups = new Map<string, ImportedBeam[]>();
+  const orderedKeys: string[] = [];
+
+  for (const b of imported) {
+    const hasSuffix = /^(.+)-\d+$/.test(b.id);
+    const baseId = hasSuffix ? b.id.replace(/-\d+$/, '') : b.id;
+    // Avoid colliding with an existing un-suffixed beam
+    const conflictsWithOriginal = hasSuffix && allIds.has(baseId) && baseId !== b.id;
+    const key = conflictsWithOriginal ? b.id : baseId;
+
+    if (!groups.has(key)) { groups.set(key, []); orderedKeys.push(key); }
+    groups.get(key)!.push(b);
+  }
+
+  const merged: ImportedBeam[] = [];
+  let mergedCount = 0;
+  let renamedCount = 0;
+
+  for (const key of orderedKeys) {
+    const segs = groups.get(key)!;
+    if (segs.length === 1) {
+      const renamed = segs[0].id !== key;
+      if (renamed) renamedCount++;
+      merged.push({ ...segs[0], id: key });
+      continue;
+    }
+
+    // Find endpoint nodes: nodes that appear an odd number of times across nodeI/nodeJ
+    mergedCount++;
+    const nodeCount = new Map<string, number>();
+    for (const s of segs) {
+      nodeCount.set(s.nodeI, (nodeCount.get(s.nodeI) ?? 0) + 1);
+      nodeCount.set(s.nodeJ, (nodeCount.get(s.nodeJ) ?? 0) + 1);
+    }
+    const endpoints = [...nodeCount.entries()].filter(([, c]) => c % 2 === 1).map(([n]) => n);
+
+    if (endpoints.length >= 2) {
+      merged.push({ ...segs[0], id: key, nodeI: endpoints[0], nodeJ: endpoints[1] });
+    } else {
+      // Fallback: use extreme segments
+      merged.push({ ...segs[0], id: key, nodeJ: segs[segs.length - 1].nodeJ });
+    }
+  }
+
+  return { merged, mergedCount, renamedCount };
+}
+
 function detectStoryFromZ(zMeters: number, stories: Story[]): { id: string; label: string } {
   if (!stories.length) return { id: '', label: '—' };
   const zMm = zMeters * 1000;
@@ -271,8 +333,15 @@ export default function ETABSFullImportPanel({ stories, onApply }: ETABSFullImpo
           if (!id || !ni || !nj) continue;
           imported.push({ id, story: '', nodeI: ni, nodeJ: nj });
         }
-        setBeams(imported);
-        setImportStatus(prev => ({ ...prev, beams: `✓ تم استيراد ${imported.length} جسر` }));
+        // Merge auto-meshed segments (e.g. "89-1" + "89-2" → "89")
+        const { merged: mergedBeams, mergedCount, renamedCount } = mergeBeamSegments(imported);
+        setBeams(mergedBeams);
+        const mergeNote = mergedCount > 0
+          ? ` — دُمج ${mergedCount} جسر مقسَّم`
+          : renamedCount > 0
+            ? ` — أُعيد تسمية ${renamedCount} جسر`
+            : '';
+        setImportStatus(prev => ({ ...prev, beams: `✓ تم استيراد ${mergedBeams.length} جسر${mergeNote}` }));
 
       } else if (type === 'columns') {
         const imported: ImportedColumn[] = [];
