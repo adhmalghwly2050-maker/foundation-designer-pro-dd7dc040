@@ -92,13 +92,18 @@ export default function LevelPlanView({
   const isGroundLevel = selectedElevation <= 1;
   const tolerance = 100;
 
-  // Filter elements at this elevation
+  // Filter elements at this elevation.
+  // Convention: a column "belongs" to the floor level where its TOP is.
+  //   e.g. at elevation 4000 mm → show story-1 columns (zTop ≈ 4000)
+  //        at elevation 8000 mm → show story-2 columns (zTop ≈ 8000)
+  // At ground level (elevation ≤ 1 mm) we show support conditions: columns
+  // whose BOTTOM is at zero (i.e. the foundation support view).
   const colsAtLevel = columns.filter(c => {
     if (c.isRemoved) return false;
     const zBot = c.zBottom ?? 0;
     const zTop = c.zTop ?? (zBot + c.L);
     if (isGroundLevel) return Math.abs(zBot) <= tolerance;
-    return Math.abs(zBot - selectedElevation) <= tolerance || Math.abs(zTop - selectedElevation) <= tolerance;
+    return Math.abs(zTop - selectedElevation) <= tolerance;
   });
 
   const uniqueColPositions = new Map<string, Column[]>();

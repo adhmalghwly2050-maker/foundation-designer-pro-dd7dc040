@@ -183,6 +183,37 @@ function build3DModelWithPatternLoading(
     });
   }
 
+  // ── Column rigid-zone bounding boxes for beam-endpoint snapping ────────
+  // ETABS models columns as rigid bodies with their actual cross-section.
+  // When a beam endpoint falls within a column's plan footprint (but is offset
+  // from its centreline by ≤ b/2 or h/2), ETABS automatically connects the
+  // beam to the column node via an internal rigid zone.
+  // We replicate this here: before creating beam endpoint nodes we snap any
+  // point that falls inside a column's axis-aligned bounding box to the
+  // column's centreline, so both beams share one DOF set.
+  const colRigidZones = columns
+    .filter(c => !c.isRemoved)
+    .map(c => ({
+      cx:    c.x * 1000,                                    // column centre X (mm)
+      cy:    c.y * 1000,                                    // column centre Y (mm)
+      bHalf: c.b / 2,                                       // half-width along X (mm, c.b in mm)
+      hHalf: c.h / 2,                                       // half-width along Y (mm)
+      zTop:  c.zTop ?? ((c.zBottom ?? 0) + c.L),           // column top elevation (mm)
+    }));
+
+  /** Snap (xMm, yMm) to the nearest column centreline when the point is
+   *  inside the column's plan footprint at elevation zMm. Returns the
+   *  (possibly unchanged) coordinates. */
+  const snapToColumnCenter = (xMm: number, yMm: number, zMm: number): [number, number] => {
+    for (const rz of colRigidZones) {
+      if (Math.abs(zMm - rz.zTop) > 100) continue;            // must be at same floor (100 mm tol)
+      if (Math.abs(xMm - rz.cx) <= rz.bHalf && Math.abs(yMm - rz.cy) <= rz.hHalf) {
+        return [rz.cx, rz.cy];                                 // snap to column centreline
+      }
+    }
+    return [xMm, yMm];
+  };
+
   // ── Build beam elements ──────────────────────────────────────────────────
   // We keep track of per-element dead/live (factored UDL) for load cases.
   // Key = element id (possibly `beam_X_A` / `beam_X_B` for split elements).
@@ -227,10 +258,16 @@ function build3DModelWithPatternLoading(
       // Beam Z (already in mm). Falls back to 0 only if undefined.
       const zMm = beam.z ?? 0;
 
+      // Apply column rigid-zone snap: if a beam endpoint falls within a
+      // column's cross-sectional footprint, snap it to the column centreline
+      // so the beam shares the column's DOF node (ETABS rigid-zone behaviour).
+      const [sx1, sy1] = snapToColumnCenter(x1Mm, y1Mm, zMm);
+      const [sx2, sy2] = snapToColumnCenter(x2Mm, y2Mm, zMm);
+
       // Probe with NO restraints — registry OR-merges so any column-bottom
       // support at the same coord is preserved. This matches UF exactly.
-      const nodeIId = getOrCreateNode(x1Mm, y1Mm, zMm, [false, false, false, false, false, false]);
-      const nodeJId = getOrCreateNode(x2Mm, y2Mm, zMm, [false, false, false, false, false, false]);
+      const nodeIId = getOrCreateNode(sx1, sy1, zMm, [false, false, false, false, false, false]);
+      const nodeJId = getOrCreateNode(sx2, sy2, zMm, [false, false, false, false, false, false]);
 
       const elemId = `beam_${beamId}`;
 
@@ -543,21 +580,47 @@ function build3DModelWithPatternLoading(
   if (slabs && slabs.length > 0 && slabProps) {
     // ── FEM-based slab load distribution (ETABS-equivalent) ────────────────
     if (useFEMLoadDistribution) {
-      console.log('[3D Engine] Using FEM-based slab load distribution (ignoring slab stiffness)');
-      const femProfiles = computeFEMSlabProfiles(beams, slabs, slabProps, mat, columns);
+      // BUG FIX: run computeFEMSlabProfiles PER STORY, not globally.
+      // The FEM slab engine works in 2D (plan only). Passing slabs from all
+      // N stories at once causes it to see N× the slab area at the same plan
+      // coordinates, distributing N× too much load to every beam (the same
+      // ×N bug that was fixed in the geometric-fallback path below at ~line 581).
+      console.log('[3D Engine] Using FEM-based slab load distribution — per story (avoids ×N accumulation)');
 
-      for (const [elemId, profile] of femProfiles) {
-        // Skip split sub-elements
-        if (elemId.endsWith('_A') || elemId.endsWith('_B')) continue;
-
-        elemSlabProfiles.set(elemId, profile);
-
-        // Override UDL: beam SW + wall only; slab loads are in the profile
-        beamDeadLoads.set(elemId, profile.uniformDL_factored);
-        beamLiveLoads.set(elemId, 0);
+      const beamsByStory = new Map<string, Beam[]>();
+      const beamsNoStory: Beam[] = [];
+      for (const b of beams) {
+        if (b.storyId) {
+          if (!beamsByStory.has(b.storyId)) beamsByStory.set(b.storyId, []);
+          beamsByStory.get(b.storyId)!.push(b);
+        } else {
+          beamsNoStory.push(b);
+        }
       }
 
-      console.log(`[3D Engine] FEM profiles applied to ${femProfiles.size} beams`);
+      const applyFEMProfiles = (storyBeams: Beam[], storySlabs: Slab[]) => {
+        if (storyBeams.length === 0 || storySlabs.length === 0) return;
+        const storyProfiles = computeFEMSlabProfiles(storyBeams, storySlabs, slabProps!, mat, columns);
+        for (const [elemId, profile] of storyProfiles) {
+          if (elemId.endsWith('_A') || elemId.endsWith('_B')) continue;
+          elemSlabProfiles.set(elemId, profile);
+          beamDeadLoads.set(elemId, profile.uniformDL_factored);
+          beamLiveLoads.set(elemId, 0);
+        }
+      };
+
+      // Single-story models or beams without storyId: use only untagged slabs
+      if (beamsNoStory.length > 0) {
+        const noStorySlabs = slabs.filter(s => !s.storyId);
+        applyFEMProfiles(beamsNoStory, noStorySlabs.length > 0 ? noStorySlabs : slabs);
+      }
+      // Multi-story: each story's beams get only their own story's slabs
+      for (const [storyId, storyBeams] of beamsByStory) {
+        const storySlabs = slabs.filter(s => !s.storyId || s.storyId === storyId);
+        applyFEMProfiles(storyBeams, storySlabs);
+      }
+
+      console.log(`[3D Engine] FEM profiles applied to ${elemSlabProfiles.size} beams`);
     } else {
       // ── Geometric slab-edge transfer fallback ─────────────────────────────
       const wDL_service = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
