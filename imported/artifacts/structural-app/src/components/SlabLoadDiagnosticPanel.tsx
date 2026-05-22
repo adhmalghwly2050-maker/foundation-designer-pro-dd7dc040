@@ -109,12 +109,12 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
       const ll_2d = r2d.liveLoad;
 
       // ─── 3D Legacy engine path (geometric slab-edge transfer) ───
-      // Filter to only the slabs associated with this beam — identical to the 2D
-      // engine approach — so multi-story models don't accumulate loads from other
-      // stories (the ×N bug where N = number of stories with the same floor plan).
-      const beamSlabs = beam.slabs
-        .map(id => slabById.get(id))
-        .filter((s): s is typeof slabs[0] => s != null);
+      // Filter slabs to the same story as the beam — mirrors calculateBeamLoads in
+      // structuralEngine.ts — so multi-story models don't accumulate slab loads from
+      // all stories sharing the same x,y plane (the ×N bug).
+      const beamSlabs = beam.storyId
+        ? slabs.filter(s => !s.storyId || s.storyId === beam.storyId)
+        : slabs;
       const beamEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
       const profile = computeBeamLoadProfile(beam, beamEdgeLoads);
       const dl_3d = profile.equivalentDL;

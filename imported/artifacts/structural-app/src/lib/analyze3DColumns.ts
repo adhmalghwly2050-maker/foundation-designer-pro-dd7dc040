@@ -573,14 +573,14 @@ function build3DModelWithPatternLoading(
         const beam = beamsMap.get(baseBeamId);
         if (!beam) continue;
 
-        // Filter to slabs explicitly associated with this beam — same approach as
-        // the 2D engine (calculateBeamLoads). Without this filter, multi-story models
-        // accumulate slab loads from ALL stories at the same x,y coordinates,
-        // multiplying loads by the number of stories (the reported ×4 bug).
-        const beamSlabs = beam.slabs
-          .map(id => slabById.get(id))
-          .filter((s): s is typeof slabs[0] => s != null);
-        if (beamSlabs.length === 0) continue;
+        // Filter slabs to the same story as this beam — same approach used by
+        // calculateBeamLoads in structuralEngine.ts. Without this filter, multi-story
+        // models accumulate slab loads from ALL stories that share the same x,y plane,
+        // multiplying loads by the number of stories (the reported ×N bug).
+        // If neither beam nor slabs have storyId, all slabs are passed (single-story model).
+        const beamSlabs = beam.storyId
+          ? slabs.filter(s => !s.storyId || s.storyId === beam.storyId)
+          : slabs;
 
         const beamSlabEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
         const slabTransfer = computeBeamLoadProfile(beam, beamSlabEdgeLoads, PROFILE_T);
