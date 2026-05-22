@@ -195,33 +195,56 @@ export default function DesignComparisonPanel({
   // ── Column comparisons ────────────────────────────────────────────────────
   const colComparisons = useMemo<ColCompareRow[]>(() => {
     const rows: ColCompareRow[] = [];
-    const allColIds = new Set<string>();
-    colDesigns.forEach(cd => allColIds.add(cd.id));
-    etabsColumnResults.forEach(ec => allColIds.add(ec.colId));
+    const matchedEtabsIndices = new Set<number>();
 
-    for (const colId of allColIds) {
-      const col = columns.find(c => c.id === colId);
-      const storyObj = col ? stories.find(s => s.id === col.storyId) : null;
+    // One row per app column design (preserves per-story data — avoids collapsing
+    // duplicate IDs from different stories into a single row via Set deduplication).
+    for (const cd of colDesigns) {
+      const storyObj = stories.find(s => s.id === cd.storyId);
       const storyLabel = storyObj?.label || '—';
 
-      const appDesign = colDesigns.find(cd => cd.id === colId);
-      const etabsData = etabsColumnResults.find(ec => ec.colId === colId)
-        || etabsColumnResults.find(ec => ec.colId === colId.replace(/_[AB]$/, ''));
+      // Match ETABS: prefer same colId + same story label; fall back to colId only
+      let etabsIdx = etabsColumnResults.findIndex(
+        ec => (ec.colId === cd.id || ec.colId === cd.id.replace(/_[AB]$/, ''))
+           && ec.story === storyLabel,
+      );
+      if (etabsIdx === -1) {
+        etabsIdx = etabsColumnResults.findIndex(
+          ec => ec.colId === cd.id || ec.colId === cd.id.replace(/_[AB]$/, ''),
+        );
+      }
+      const etabsData = etabsIdx !== -1 ? etabsColumnResults[etabsIdx] : null;
+      if (etabsIdx !== -1) matchedEtabsIndices.add(etabsIdx);
 
       rows.push({
-        colId,
+        colId: cd.id,
         storyLabel,
-        appPu: appDesign?.Pu ?? null,
-        appMx: appDesign?.Mx ?? null,
-        appMy: appDesign?.My ?? null,
+        appPu: cd.Pu,
+        appMx: cd.Mx,
+        appMy: cd.My,
         etabsP: etabsData ? Math.abs(etabsData.P) : null,
         etabsM2: etabsData?.M2 ?? null,
         etabsM3: etabsData?.M3 ?? null,
       });
     }
 
+    // Add any ETABS entries that were not matched to an app column
+    etabsColumnResults.forEach((ec, i) => {
+      if (matchedEtabsIndices.has(i)) return;
+      rows.push({
+        colId: ec.colId,
+        storyLabel: ec.story,
+        appPu: null,
+        appMx: null,
+        appMy: null,
+        etabsP: Math.abs(ec.P),
+        etabsM2: ec.M2,
+        etabsM3: ec.M3,
+      });
+    });
+
     return rows.sort((a, b) => a.storyLabel.localeCompare(b.storyLabel) || a.colId.localeCompare(b.colId));
-  }, [columns, colDesigns, etabsColumnResults, stories]);
+  }, [colDesigns, etabsColumnResults, stories]);
 
   const hasApp = analyzed && frameResults.some(fr => fr.beams.length > 0);
   const hasEtabs = etabsAnalysisData.length > 0;
@@ -414,6 +437,10 @@ export default function DesignComparisonPanel({
                   {hasEtabsCols && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />نتائج ETABS</span>}
                   <span className="text-[10px]">P = ضغط محوري (kN) · M2/Mx وM3/My = عزوم (kN·m)</span>
                 </div>
+                <p className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 mt-1">
+                  ⚠️ <b>قيم التطبيق محسوبة بأحمال مضاعفة (1.2 × أحمال ميتة + 1.6 × أحمال حية)</b> وفق ACI 318.
+                  تأكد أن نتائج ETABS المستوردة من نفس التوليفة (1.2D+1.6L) وليست أحمال خدمة، لتكون المقارنة صحيحة.
+                </p>
               </CardHeader>
               <CardContent className="overflow-x-auto p-0">
                 <Table>

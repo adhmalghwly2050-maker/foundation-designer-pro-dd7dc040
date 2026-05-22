@@ -24,7 +24,7 @@ interface LevelPlanViewProps {
   slabs: Slab[];
   stories: Story[];
   selectedElevation: number;
-  onColumnSupportChange: (colId: string, endType: 'top' | 'bottom', value: 'F' | 'P') => void;
+  onColumnSupportChange: (colId: string, x: number, y: number, zBottom: number, endType: 'top' | 'bottom', value: 'F' | 'P') => void;
   onSupportRestraintsChange?: (posKeys: string[], restraints: SupportRestraints) => void;
   supportRestraints?: Record<string, SupportRestraints>;
   onElementLongPress?: (type: 'beam' | 'column' | 'slab', id: string) => void;

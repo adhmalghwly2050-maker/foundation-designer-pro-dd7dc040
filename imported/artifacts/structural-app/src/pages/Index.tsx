@@ -230,11 +230,27 @@ const Index = () => {
     return stories.find(s => s.id === storyId)?.label || storyId;
   }, [stories]);
 
-  // Handler for changing individual column support conditions
-  // Legacy support change callback (kept for prop compatibility)
-  const handleColumnSupportChange = useCallback((_colId: string, _endType: 'top' | 'bottom', _value: 'F' | 'P') => {
-    // No-op: replaced by per-DOF support restraints
-  }, []);
+  // Handler for changing individual column support conditions.
+  // SupportPlanView passes (colId, x, y, zBottom, endType, value) directly so we
+  // do not need the `columns` array here (avoids a "used before declaration" error).
+  const handleColumnSupportChange = useCallback(
+    (
+      _colId: string,
+      x: number,
+      y: number,
+      zBottom: number,
+      endType: 'top' | 'bottom',
+      value: 'F' | 'P',
+    ) => {
+      if (endType !== 'bottom') return; // Only bottom (foundation) conditions
+      const supportKey = `${x.toFixed(2)}_${y.toFixed(2)}_${zBottom}`;
+      const restraints = value === 'F'
+        ? { ux: true, uy: true, uz: true, rx: true, ry: true, rz: true }   // Fixed
+        : { ux: true, uy: true, uz: true, rx: false, ry: false, rz: false }; // Pinned
+      dispatch({ type: 'SET_SUPPORT_RESTRAINTS', posKey: supportKey, restraints });
+    },
+    [],
+  );
 
   // Per-DOF support restraints change
   const handleSupportRestraintsChange = useCallback((posKeys: string[], restraints: { ux: boolean; uy: boolean; uz: boolean; rx: boolean; ry: boolean; rz: boolean }) => {

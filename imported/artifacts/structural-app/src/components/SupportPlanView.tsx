@@ -14,7 +14,7 @@ interface SupportPlanViewProps {
   columns: Column[];
   stories: Story[];
   selectedElevation: number; // mm
-  onColumnSupportChange: (colId: string, endType: 'top' | 'bottom', value: 'F' | 'P') => void;
+  onColumnSupportChange: (colId: string, x: number, y: number, zBottom: number, endType: 'top' | 'bottom', value: 'F' | 'P') => void;
 }
 
 interface SupportDialogState {
@@ -85,11 +85,12 @@ export default function SupportPlanView({
   }, [isGroundLevel]);
 
   const handleSupportChange = (endType: 'top' | 'bottom', value: 'F' | 'P') => {
-    // Apply to ALL columns at this (x, y) position
+    // Apply to ALL columns at this (x, y) position — pass coordinates so the
+    // handler can build the correct support key without needing the columns array.
     const key = `${dialog.x.toFixed(2)}_${dialog.y.toFixed(2)}`;
     const cols = uniquePositions.get(key) || [];
     for (const c of cols) {
-      onColumnSupportChange(c.id, endType, value);
+      onColumnSupportChange(c.id, c.x, c.y, c.zBottom ?? 0, endType, value);
     }
     setDialog(prev => ({
       ...prev,
