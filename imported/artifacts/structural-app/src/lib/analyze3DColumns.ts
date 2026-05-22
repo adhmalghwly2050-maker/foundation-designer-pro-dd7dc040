@@ -25,6 +25,7 @@ export interface ColumnLoads3D {
   MyTop: number; // momentZ at top
   MyBot: number; // momentZ at bottom
   Vu: number;    // max shear
+  P_service: number; // خدمي: 1.0D + 1.0L — يستخدم لتصميم الأساسات (WSM)
 }
 
 interface BeamEnvelope3D {
@@ -79,7 +80,7 @@ function build3DModelWithPatternLoading(
   useFEMLoadDistribution?: boolean,
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
-): { model: Model3D; patternCases: LoadCase3D[]; primaryBeamSplitIds: Map<string, string> } {
+): { model: Model3D; patternCases: LoadCase3D[]; primaryBeamSplitIds: Map<string, string>; serviceCaseIndex: number } {
   const beamsMap = new Map(beams.map(b => [b.id, b]));
   const E = 4700 * Math.sqrt(mat.fc) * 1000; // MPa → kPa (kN/m²) — consistent with kN/m loads
   const G = E / (2 * (1 + 0.2));
@@ -755,7 +756,26 @@ function build3DModelWithPatternLoading(
     });
   }
 
-  return { model, patternCases, primaryBeamSplitIds };
+  // ── حالة الأحمال الخدمية: 1.0D + 1.0L ─────────────────────────────────────
+  // تُستخدم حصراً لتصميم الأساسات بطريقة WSM — لا تدخل في تصميم الأعمدة والجسور
+  const serviceCaseIndex = patternCases.length;
+  {
+    const sloads    = new Map<string, { wx: number; wy: number; wz: number }>();
+    const sprofiles = new Map<string, Array<{ t: number; wy: number }>>();
+    for (const eid of allBeamElemIds) {
+      const wD = beamDeadLoads.get(eid) ?? 0;
+      const wL = beamLiveLoads.get(eid) ?? 0;
+      sloads.set(eid, { wx: 0, wy: 0, wz: -(wD + wL) });
+      const prof = elemSlabProfiles.get(eid);
+      if (prof) sprofiles.set(eid, buildProfile(prof, 1.0, 1.0));
+    }
+    patternCases.push({
+      id: 'case_service', name: '1.0D+1.0L', type: 'dead', elementLoads: sloads,
+      elementLoadProfiles: sprofiles.size > 0 ? sprofiles : undefined,
+    });
+  }
+
+  return { model, patternCases, primaryBeamSplitIds, serviceCaseIndex };
 }
 
 function runPatternEnvelope3D(
@@ -774,16 +794,18 @@ function runPatternEnvelope3D(
   beamEnvelope: Map<string, BeamEnvelope3D>;
   colEnvelope: Map<string, ColumnEnvelope3D>;
   primaryBeamSplitIds: Map<string, string>;
+  serviceColAxial: Map<string, number>;
 } {
-  const { model, patternCases, primaryBeamSplitIds } = build3DModelWithPatternLoading(
+  const { model, patternCases, primaryBeamSplitIds, serviceCaseIndex } = build3DModelWithPatternLoading(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
   );
   const beamEnvelope = new Map<string, BeamEnvelope3D>();
   const colEnvelope  = new Map<string, ColumnEnvelope3D>();
+  const serviceColAxial = new Map<string, number>();
 
   if (model.elements.length === 0 || patternCases.length === 0) {
-    return { beamEnvelope, colEnvelope, primaryBeamSplitIds };
+    return { beamEnvelope, colEnvelope, primaryBeamSplitIds, serviceColAxial };
   }
 
   // Keep value with larger absolute magnitude while preserving sign
@@ -802,8 +824,20 @@ function runPatternEnvelope3D(
   // K assembled ONCE, LU factorised ONCE, then O(n²) substitution per case.
   const multiResults = analyze3DFrameMultiLoad(model, patternCases, { ignoreTorsion: true });
 
-  for (const result of multiResults) {
+  for (let caseIdx = 0; caseIdx < multiResults.length; caseIdx++) {
+    const result = multiResults[caseIdx];
+    const isServiceCase = caseIdx === serviceCaseIndex;
+
     for (const er of result.elements) {
+
+      // ── حالة الخدمي: تتبع القوى المحورية فقط للأساسات — لا تدخل في غلاف التصميم ──
+      if (isServiceCase) {
+        if (er.elementId.startsWith('col_')) {
+          const prev = serviceColAxial.get(er.elementId) ?? 0;
+          serviceColAxial.set(er.elementId, Math.max(prev, er.axial));
+        }
+        continue; // تخطى الغلاف الإنشائي للحالة الخدمية
+      }
 
       // ── Column envelope ──────────────────────────────────────────────────
       if (er.elementId.startsWith('col_')) {
@@ -862,7 +896,7 @@ function runPatternEnvelope3D(
     }
   }
 
-  return { beamEnvelope, colEnvelope, primaryBeamSplitIds };
+  return { beamEnvelope, colEnvelope, primaryBeamSplitIds, serviceColAxial };
 }
 
 /**
@@ -882,7 +916,7 @@ export function getColumnLoads3D(
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
 ): Map<string, ColumnLoads3D> {
-  const { colEnvelope } = runPatternEnvelope3D(
+  const { colEnvelope, serviceColAxial } = runPatternEnvelope3D(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
   );
@@ -891,6 +925,7 @@ export function getColumnLoads3D(
   for (const col of columns) {
     if (col.isRemoved) continue;
     const env = colEnvelope.get(`col_${col.id}`);
+    const P_service = serviceColAxial.get(`col_${col.id}`) ?? 0;
     if (env) {
       result.set(col.id, {
         Pu:    Math.max(env.axialMax, 0),   // design compression (≥ 0)
@@ -902,9 +937,10 @@ export function getColumnLoads3D(
         MyTop: env.momentZJ,
         MyBot: env.momentZI,
         Vu: env.shearMax,
+        P_service,
       });
     } else {
-      result.set(col.id, { Pu: 0, PuMin: 0, Mx: 0, My: 0, MxTop: 0, MxBot: 0, MyTop: 0, MyBot: 0, Vu: 0 });
+      result.set(col.id, { Pu: 0, PuMin: 0, Mx: 0, My: 0, MxTop: 0, MxBot: 0, MyTop: 0, MyBot: 0, Vu: 0, P_service: 0 });
     }
   }
 

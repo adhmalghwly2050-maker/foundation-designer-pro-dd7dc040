@@ -44,6 +44,7 @@ interface ColLoadInput {
 interface Props {
   columns: Column[];
   colDesigns: any[];
+  colLoads3D?: Map<string, { P_service?: number; Pu?: number }>;
   etabsReactions?: ETABSReaction[];
   titleBlockConfig?: any;
   mat: { fc: number; fy: number };
@@ -85,6 +86,7 @@ const StatusBadge = ({ ok }: { ok: boolean }) => (
 export default function FoundationDesignPanel({
   columns,
   colDesigns,
+  colLoads3D,
   etabsReactions,
   titleBlockConfig,
   mat,
@@ -136,10 +138,16 @@ export default function FoundationDesignPanel({
       const hasGround = groundCols.some(gc => gc.x === col.x && gc.y === col.y);
       if (!hasGround) continue;
 
-      const des = colDesigns.find(d => d.id === col.id || d.colId === col.id);
-      const Pu = des?.Pu ?? des?.design?.Pu ?? 0;
-      // احمال خدمية بدون معاملات (WSM): تقسيم DL≈60%, LL≈40% من Pu/1.2
-      const P_service = Pu / 1.2;
+      // الأولوية: P_service من التحليل (1.0D+1.0L)، فإن تعذّر → Pu/1.2
+      const load3D = colLoads3D?.get(col.id);
+      let P_service: number;
+      if (load3D?.P_service && load3D.P_service > 0) {
+        P_service = load3D.P_service;
+      } else {
+        const des = colDesigns.find(d => d.id === col.id || d.colId === col.id);
+        const Pu = des?.Pu ?? des?.design?.Pu ?? 0;
+        P_service = Pu / 1.2;
+      }
       const existing = posLoads.get(posKey);
       if (existing) {
         existing.P_DL += parseFloat((P_service * 0.6).toFixed(1));
@@ -173,7 +181,7 @@ export default function FoundationDesignPanel({
         };
       })
       .filter((c): c is ColLoadInput => c !== null && c.P_DL + c.P_LL > 5);
-  }, [columns, colDesigns]);
+  }, [columns, colDesigns, colLoads3D]);
 
   // ── Combine ETABS reactions with column geometry ───────────────────────────
   const etabsColLoads = useMemo<ColLoadInput[]>(() => {

@@ -130,7 +130,7 @@ const Index = () => {
     selectedNodeId, selectedFrameId, selectedAreaId,
     removedColumnIds, removedBeamIds, beamOverrides, colOverrides, slabPropsOverrides, extraBeams, extraColumns, etabsImportMode, etabsAnalysisData, titleBlockConfig, supportRestraints, frameEndReleases, transientFrameEndReleases,
     modalOpen, selectedElement, elemPropsOpen, elemPropsFrameId, elemPropsAreaId,
-    diagramOpen, diagramData, savedMessage, bobManualPrimary,
+    diagramOpen, diagramData, savedMessage, bobManualPrimary, undoStack,
   } = state;
 
   /**
@@ -1710,6 +1710,17 @@ const Index = () => {
         }
         rightSlot={
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => dispatch({ type: 'UNDO' })}
+              disabled={undoStack.length === 0}
+              title={`تراجع (Ctrl+Z)${undoStack.length > 0 ? ` — ${undoStack.length} خطوة` : ''}`}
+              className="flex items-center gap-1 px-2 h-8 rounded-lg bg-primary-foreground/10 text-primary-foreground disabled:opacity-30 hover:bg-primary-foreground/20 transition-colors text-xs font-medium"
+            >
+              <Undo2 size={15} />
+              {undoStack.length > 0 && (
+                <span className="min-w-[14px] text-center">{undoStack.length}</span>
+              )}
+            </button>
             <button className="w-8 h-8 rounded-lg bg-primary-foreground/10 flex items-center justify-center">
               <Search size={16} />
             </button>
@@ -3960,6 +3971,7 @@ const Index = () => {
                 <FoundationDesignPanel
                   columns={columns}
                   colDesigns={colDesigns}
+                  colLoads3D={colLoads3D}
                   etabsReactions={etabsReactions.length > 0 ? etabsReactions : undefined}
                   titleBlockConfig={titleBlockConfig}
                   mat={mat}
