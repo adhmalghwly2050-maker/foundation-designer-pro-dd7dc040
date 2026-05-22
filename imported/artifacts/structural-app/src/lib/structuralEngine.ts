@@ -3050,7 +3050,7 @@ export function designColumnBiaxial(
 
   const Ag = b * h;
   const rhoTrials = [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04];
-  const diameters = [14, 16, 18, 20, 22, 25, 30];
+  const diameters = [16, 18, 20, 22, 25, 30]; // الحد الأدنى 16mm
 
   let bestResult: BiaxialColumnResult | null = null;
 
@@ -3147,7 +3147,64 @@ export function designColumnBiaxial(
   }
 
   if (!bestResult) {
-    const dia = 25;
+    // fallback: جرب من 16mm تصاعدياً بنسبة 4%
+    const fallbackDiameters = [16, 18, 20, 22, 25, 30];
+    for (const dia of fallbackDiameters) {
+      const aBar = Math.PI * dia * dia / 4;
+      const nBars = Math.max(4, Math.ceil(0.04 * Ag / aBar));
+      const nBarsEven = nBars % 2 === 0 ? nBars : nBars + 1;
+      const pmX = generatePMDiagram(b, h, fc, fy, nBarsEven, dia);
+      const pmY = generatePMDiagram(h, b, fc, fy, nBarsEven, dia);
+      const checkX = checkPMCapacity(Pu, MxMagnified, pmX);
+      const checkY = checkPMCapacity(Pu, MyMagnified, pmY);
+      const P0fb = 0.85 * fc * (Ag - nBarsEven * aBar) / 1000 + fy * nBarsEven * aBar / 1000;
+      const phiP0fb = 0.65 * 0.80 * P0fb;
+      const phiPnxFb = checkX.phiPn > 0 ? checkX.phiPn : phiP0fb;
+      const phiPnyFb = checkY.phiPn > 0 ? checkY.phiPn : phiP0fb;
+      const recip = 1 / phiPnxFb + 1 / phiPnyFb - 1 / phiP0fb;
+      const breslerFb = recip > 0 ? Pu / (1 / recip) : 999;
+      if (breslerFb <= 1.0 || dia === 30) {
+        const rhoActualFb = nBarsEven * aBar / Ag;
+        const stirrupSpacingFb = Math.min(sConfinement, 16 * dia, Math.min(b, h), 300);
+        const overallRatioFb = Math.max(checkX.ratio, checkY.ratio, breslerFb);
+        bestResult = {
+          Pu, Mu: Math.max(MxMagnified, MyMagnified),
+          Mx, My, MxMagnified, MyMagnified,
+          checkSlenderness: isSlenderX || isSlenderY ? 'نحيف' : 'قصير',
+          bars: nBarsEven, dia,
+          stirrups: `Φ${stirrupDia}@${stirrupSpacingFb}mm`,
+          phiPn: Math.min(phiPnxFb, phiPnyFb),
+          phiMn: Math.min(checkX.phiMn, checkY.phiMn),
+          adequate: breslerFb <= 1.0,
+          rhoActual: rhoActualFb, kLu_r: Math.max(kLu_rx, kLu_ry),
+          deltaNs: Math.max(deltaNsX, deltaNsY),
+          MuMagnified: Math.max(MxMagnified, MyMagnified),
+          pmDiagram: pmX,
+          utilizationRatio: overallRatioFb,
+          interactionRatio: breslerFb,
+          designCapacity: Math.min(phiPnxFb, phiPnyFb),
+          safetyStatus: breslerFb <= 1.0 ? 'آمن' : 'غير آمن',
+          kLu_rx, kLu_ry, deltaNsX, deltaNsY,
+          isSlenderX, isSlenderY, breslerRatio: breslerFb,
+          phiPnx: phiPnxFb, phiPny: phiPnyFb, P0: phiP0fb,
+          biaxialAdequate: breslerFb <= 1.0,
+          slendernessStatusX: isSlenderX ? `نحيف (${kLu_rx.toFixed(1)}>${slendernessLimitX.toFixed(0)})` : `قصير (${kLu_rx.toFixed(1)}<${slendernessLimitX.toFixed(0)})`,
+          slendernessStatusY: isSlenderY ? `نحيف (${kLu_ry.toFixed(1)}>${slendernessLimitY.toFixed(0)})` : `قصير (${kLu_ry.toFixed(1)}<${slendernessLimitY.toFixed(0)})`,
+          requiredBForNonSlender, requiredHForNonSlender, suggestRotation, rotationReason,
+          wasRotated, originalB, originalH,
+          slendernessLimit: Math.max(slendernessLimitX, slendernessLimitY),
+          confinementLo: Lo, confinementSpacing: stirrupSpacingFb,
+          hoopsDetail: isSeismic
+            ? `Φ${stirrupDia}@${stirrupSpacingFb}mm داخل Lo=${Lo}mm + Φ${stirrupDia}@${sOutside}mm خارج Lo`
+            : `Φ${stirrupDia}@${stirrupSpacingFb}mm موحد (§25.7.2.2)`,
+          compressionControlled, balancedPb, balancedMb,
+        };
+        break;
+      }
+    }
+  }
+  if (!bestResult) {
+    const dia = 30;
     const aBar = Math.PI * dia * dia / 4;
     const nBars = Math.max(4, Math.ceil(0.04 * Ag / aBar));
     const nBarsEven = nBars % 2 === 0 ? nBars : nBars + 1;

@@ -275,6 +275,9 @@ export default function SupportPlanView({
                 {dialog.topEnd === 'F' ? 'Fixed' : 'Pinned'}
               </Badge></div>
             </div>
+            <div className="border border-amber-400 rounded p-2 bg-amber-50 text-xs text-amber-800 font-medium text-right">
+              ⚠️ بعد تغيير نوع الركيزة يجب الضغط على <strong>تشغيل التحليل</strong> لتفعيل التغيير في النتائج
+            </div>
           </div>
         </DialogContent>
       </Dialog>

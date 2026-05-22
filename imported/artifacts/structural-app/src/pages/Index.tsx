@@ -3539,7 +3539,7 @@ const Index = () => {
                                 <TableCell className="font-mono text-xs">{b.liveLoad.toFixed(2)}</TableCell>
                                 <TableCell className="font-mono text-xs">{(1.4 * b.deadLoad).toFixed(2)}</TableCell>
                                 <TableCell className="font-mono text-xs">{(1.2 * b.deadLoad + 1.6 * b.liveLoad).toFixed(2)}</TableCell>
-                                <TableCell className="text-xs">{b.slabs.join(', ') || '—'}</TableCell>
+                                <TableCell className="text-xs">{(b.slabs ?? []).join(', ') || '—'}</TableCell>
                                 <TableCell className="text-xs">
                                   {pointLoads.length === 0 ? (
                                     <span className="text-muted-foreground">—</span>
@@ -3659,7 +3659,7 @@ const Index = () => {
                   <CardContent className="overflow-x-auto">
                     <Table>
                       <TableHeader><TableRow>
-                        {['الدور','العمود','b×h','Pu (kN)','Mx أعلى','Mx أسفل','My أعلى','My أسفل','النحافة X','النحافة Y','الارتفاع'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
+                        {['الدور','العمود','b×h','Pu (kN)','Mx أعلى','Mx أسفل','My أعلى','My أسفل','النحافة X','النحافة Y','الارتفاع','تدوير'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
                       </TableRow></TableHeader>
                       <TableBody>
                         {stories.map((story, storyIdx) => 
@@ -3668,8 +3668,11 @@ const Index = () => {
                             const storiesAbove = stories.length - storyIdx;
                             const accumulatedPu = c.Pu * storiesAbove;
                             const loads = colLoads3D.get(c.id);
+                            const maxMx = Math.max(Math.abs(loads?.MxTop || 0), Math.abs(loads?.MxBot || 0));
+                            const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
+                            const needsRotation = maxMy > maxMx && c.b !== c.h;
                             return (
-                            <TableRow key={`${story.id}-${c.id}`} className="cursor-pointer hover:bg-accent/10" onClick={() => {
+                            <TableRow key={`${story.id}-${c.id}`} className={`cursor-pointer hover:bg-accent/10 ${needsRotation ? 'bg-orange-50/50' : ''}`} onClick={() => {
                               const loads = colLoads3D.get(c.id);
                               dispatch({
                                 type: 'OPEN_DIAGRAM',
@@ -3692,11 +3695,22 @@ const Index = () => {
                               <TableCell className="font-mono text-xs font-bold">{accumulatedPu.toFixed(2)}</TableCell>
                               <TableCell className="font-mono text-xs">{(loads?.MxTop || 0).toFixed(2)}</TableCell>
                               <TableCell className="font-mono text-xs">{(loads?.MxBot || 0).toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs">{(loads?.MyTop || 0).toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs">{(loads?.MyBot || 0).toFixed(2)}</TableCell>
+                              <TableCell className={`font-mono text-xs ${needsRotation ? 'text-orange-600 font-bold' : ''}`}>{(loads?.MyTop || 0).toFixed(2)}</TableCell>
+                              <TableCell className={`font-mono text-xs ${needsRotation ? 'text-orange-600 font-bold' : ''}`}>{(loads?.MyBot || 0).toFixed(2)}</TableCell>
                               <TableCell className="font-mono text-xs">{c.design.slendernessStatusX}</TableCell>
                               <TableCell className="font-mono text-xs">{c.design.slendernessStatusY}</TableCell>
                               <TableCell className="font-mono text-xs">{story.height}</TableCell>
+                              <TableCell onClick={e => e.stopPropagation()}>
+                                {needsRotation && (
+                                  <button
+                                    title={`My(${maxMy.toFixed(1)}) > Mx(${maxMx.toFixed(1)}) — تدوير المقطع ${c.b}×${c.h} ← ${c.h}×${c.b}`}
+                                    className="text-xs px-2 py-1 rounded bg-orange-500 hover:bg-orange-600 text-white font-bold transition-colors"
+                                    onClick={() => dispatch({ type: 'SET_COL_OVERRIDE', colId: c.id, override: { b: c.h, h: c.b } })}
+                                  >
+                                    ↺ تدوير
+                                  </button>
+                                )}
+                              </TableCell>
                             </TableRow>
                             );
                           })

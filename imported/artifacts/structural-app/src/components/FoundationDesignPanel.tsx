@@ -119,21 +119,60 @@ export default function FoundationDesignPanel({
 
   // ── Compute column loads from app analysis ──────────────────────────────────
   const appColLoads = useMemo<ColLoadInput[]>(() => {
-    return columns.map(col => {
+    // الأساسات تُصمَّم فقط لأعمدة الدور الأرضي (منسوب الأساسات)
+    // الأعمدة الأخرى في الأدوار العليا لها رقاب متصلة بأعمدة الدور الأول
+    const minZ = Math.min(...columns.map(c => c.zBottom ?? 0));
+
+    // تجميع احمال جميع الأدوار على كل موضع (x,y) لأعمدة الدور الأرضي
+    // باستخدام الأحمال الخدمية فقط (بدون معاملات أمان)
+    const groundCols = columns.filter(col => Math.abs((col.zBottom ?? 0) - minZ) < 1);
+
+    // تجميع جميع أحمال الأدوار على كل موضع عمود أرضي
+    const posLoads = new Map<string, { P_DL: number; P_LL: number; colB: number; colH: number; x: number; y: number }>();
+    for (const col of columns) {
+      // مفتاح الموضع (x, y) لتجميع الأحمال من جميع الأدوار
+      const posKey = `${col.x.toFixed(3)}_${col.y.toFixed(3)}`;
+      // تحقق أن هذا الموضع له عمود أرضي
+      const hasGround = groundCols.some(gc => gc.x === col.x && gc.y === col.y);
+      if (!hasGround) continue;
+
       const des = colDesigns.find(d => d.id === col.id || d.colId === col.id);
       const Pu = des?.Pu ?? des?.design?.Pu ?? 0;
-      // Approximate DL/LL split: DL≈60%, LL≈40% of factored Pu / 1.4
-      const P_service = Pu / 1.35;
-      return {
-        colId: col.id,
-        P_DL: parseFloat((P_service * 0.6).toFixed(1)),
-        P_LL: parseFloat((P_service * 0.4).toFixed(1)),
-        colB: col.b,
-        colH: col.h,
-        x: col.x / 1000,  // mm → m
-        y: col.y / 1000,
-      };
-    }).filter(c => c.P_DL + c.P_LL > 10);
+      // احمال خدمية بدون معاملات (WSM): تقسيم DL≈60%, LL≈40% من Pu/1.2
+      const P_service = Pu / 1.2;
+      const existing = posLoads.get(posKey);
+      if (existing) {
+        existing.P_DL += parseFloat((P_service * 0.6).toFixed(1));
+        existing.P_LL += parseFloat((P_service * 0.4).toFixed(1));
+      } else {
+        const gc = groundCols.find(c => c.x === col.x && c.y === col.y)!;
+        posLoads.set(posKey, {
+          P_DL: parseFloat((P_service * 0.6).toFixed(1)),
+          P_LL: parseFloat((P_service * 0.4).toFixed(1)),
+          colB: gc.b,
+          colH: gc.h,
+          x: gc.x,
+          y: gc.y,
+        });
+      }
+    }
+
+    return groundCols
+      .map(col => {
+        const posKey = `${col.x.toFixed(3)}_${col.y.toFixed(3)}`;
+        const loads = posLoads.get(posKey);
+        if (!loads) return null;
+        return {
+          colId: col.id,
+          P_DL: parseFloat(loads.P_DL.toFixed(1)),
+          P_LL: parseFloat(loads.P_LL.toFixed(1)),
+          colB: col.b,
+          colH: col.h,
+          x: col.x,
+          y: col.y,
+        };
+      })
+      .filter((c): c is ColLoadInput => c !== null && c.P_DL + c.P_LL > 5);
   }, [columns, colDesigns]);
 
   // ── Combine ETABS reactions with column geometry ───────────────────────────
