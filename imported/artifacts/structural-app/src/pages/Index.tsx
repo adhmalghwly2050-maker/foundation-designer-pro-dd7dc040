@@ -670,6 +670,11 @@ const Index = () => {
     setReleaseEditorData(getPersistentBeamReleaseState(beam));
   }, [getPersistentBeamReleaseState]);
 
+  const handleEditBeamProperties = useCallback((beamId: string) => {
+    const beam = beams.find(b => b.id === beamId);
+    if (beam) openBeamReleaseEditor(beam);
+  }, [beams, openBeamReleaseEditor]);
+
   const handleReleaseEditorToggle = useCallback((end: 'nodeI' | 'nodeJ', dof: ReleaseDOF, checked: boolean) => {
     setReleaseEditorData(prev => ({
       ...prev,
@@ -1785,6 +1790,7 @@ const Index = () => {
                     onSupportRestraintsChange={handleSupportRestraintsChange}
                     supportRestraints={supportRestraints}
                     onElementLongPress={handleLevelElementLongPress}
+                    onEditBeamProperties={handleEditBeamProperties}
                     onDeleteElement={handleLevelElementDelete}
                   />
                 </div>
@@ -2193,6 +2199,176 @@ const Index = () => {
                       </Table>
                     </CardContent>
                   </Card>
+
+                  {/* ── Beam-on-Beam Splitting Tool ── */}
+                  {(() => {
+                    const TOL = 0.005; // 5mm tolerance in meters
+
+                    const pointOnSegment = (px: number, py: number, ax: number, ay: number, bx: number, by: number): boolean => {
+                      const dAB = Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
+                      if (dAB < TOL) return false;
+                      const dAP = Math.sqrt((px - ax) ** 2 + (py - ay) ** 2);
+                      const dPB = Math.sqrt((bx - px) ** 2 + (by - py) ** 2);
+                      if (dAP < TOL || dPB < TOL) return false; // ignore endpoints
+                      return Math.abs(dAP + dPB - dAB) < TOL;
+                    };
+
+                    // For each active beam, find intersection points from other beams' endpoints
+                    type SplitCandidate = {
+                      primaryBeam: Beam;
+                      secondaryBeams: { secId: string; px: number; py: number }[];
+                    };
+
+                    const activeBs = beams.filter(b => !removedBeamIds.includes(b.id));
+                    const candidates: SplitCandidate[] = [];
+
+                    for (const primary of activeBs) {
+                      const intersections: { secId: string; px: number; py: number }[] = [];
+                      for (const sec of activeBs) {
+                        if (sec.id === primary.id) continue;
+                        // Check both endpoints of the secondary beam
+                        if (pointOnSegment(sec.x1, sec.y1, primary.x1, primary.y1, primary.x2, primary.y2)) {
+                          // Check not already added
+                          const key = `${sec.x1.toFixed(3)}_${sec.y1.toFixed(3)}`;
+                          if (!intersections.some(i => `${i.px.toFixed(3)}_${i.py.toFixed(3)}` === key)) {
+                            intersections.push({ secId: sec.id, px: sec.x1, py: sec.y1 });
+                          }
+                        }
+                        if (pointOnSegment(sec.x2, sec.y2, primary.x1, primary.y1, primary.x2, primary.y2)) {
+                          const key = `${sec.x2.toFixed(3)}_${sec.y2.toFixed(3)}`;
+                          if (!intersections.some(i => `${i.px.toFixed(3)}_${i.py.toFixed(3)}` === key)) {
+                            intersections.push({ secId: sec.id, px: sec.x2, py: sec.y2 });
+                          }
+                        }
+                      }
+                      if (intersections.length > 0) {
+                        candidates.push({ primaryBeam: primary, secondaryBeams: intersections });
+                      }
+                    }
+
+                    if (candidates.length === 0) return null;
+
+                    const handleSplitBeam = (primary: Beam) => {
+                      const candidate = candidates.find(c => c.primaryBeam.id === primary.id);
+                      if (!candidate) return;
+
+                      const isExtra = extraBeams.some(eb => eb.id === primary.id);
+
+                      // Sort intersection points along the beam direction
+                      const dx = primary.x2 - primary.x1;
+                      const dy = primary.y2 - primary.y1;
+                      const pts = candidate.secondaryBeams.map(s => ({
+                        ...s,
+                        t: Math.abs(dx) > Math.abs(dy)
+                          ? (s.px - primary.x1) / (dx || 1)
+                          : (s.py - primary.y1) / (dy || 1),
+                      })).sort((a, b) => a.t - b.t);
+
+                      // Build segment endpoints: start → pt1 → pt2 → ... → end
+                      const segPoints: { x: number; y: number }[] = [
+                        { x: primary.x1, y: primary.y1 },
+                        ...pts.map(p => ({ x: p.px, y: p.py })),
+                        { x: primary.x2, y: primary.y2 },
+                      ];
+
+                      // Remove original beam
+                      if (isExtra) {
+                        dispatch({ type: 'REMOVE_EXTRA_BEAM', id: primary.id });
+                      } else {
+                        dispatch({ type: 'TOGGLE_BEAM_REMOVAL', beamId: primary.id });
+                      }
+
+                      // Add split segments as extra beams
+                      for (let i = 0; i < segPoints.length - 1; i++) {
+                        const p1 = segPoints[i];
+                        const p2 = segPoints[i + 1];
+                        const segLen = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+                        const newId = `${primary.id}-${i + 1}`;
+                        dispatch({
+                          type: 'ADD_EXTRA_BEAM',
+                          beam: {
+                            id: newId,
+                            fromCol: '', toCol: '',
+                            x1: p1.x, y1: p1.y,
+                            x2: p2.x, y2: p2.y,
+                            z: primary.z,
+                            length: segLen,
+                            direction: primary.direction,
+                            b: primary.b, h: primary.h,
+                            deadLoad: primary.deadLoad ?? 0,
+                            liveLoad: primary.liveLoad ?? 0,
+                            wallLoad: primary.wallLoad ?? 0,
+                            slabs: [],
+                            storyId: primary.storyId,
+                          },
+                        });
+                      }
+                    };
+
+                    const handleSplitAll = () => {
+                      for (const c of candidates) {
+                        handleSplitBeam(c.primaryBeam);
+                      }
+                    };
+
+                    return (
+                      <Card className="border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 dark:border-amber-800">
+                        <CardHeader className="pb-2">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <CardTitle className="text-sm text-amber-700 dark:text-amber-400">
+                                تقسيم الجسور الحاملة
+                              </CardTitle>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">
+                                تم رصد {candidates.length} جسر حامل تستند عليه جسور محمولة — يجب تقسيمها لضمان صحة مصفوفة الجساءة
+                              </p>
+                            </div>
+                            <Button size="sm" variant="default" className="h-8 text-xs bg-amber-600 hover:bg-amber-700 text-white shrink-0" onClick={handleSplitAll}>
+                              تقسيم الكل
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="overflow-x-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                {['الجسر الحامل', 'الجسور المحمولة', 'نقاط الارتكاز (X, Y)', 'عدد الأجزاء', 'تقسيم'].map(h => (
+                                  <TableHead key={h} className="text-xs">{h}</TableHead>
+                                ))}
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {candidates.map(({ primaryBeam: pb, secondaryBeams }) => (
+                                <TableRow key={pb.id}>
+                                  <TableCell className="font-mono text-xs font-bold">{pb.id}</TableCell>
+                                  <TableCell className="text-xs">
+                                    <div className="flex flex-wrap gap-1">
+                                      {secondaryBeams.map(s => (
+                                        <Badge key={s.secId} variant="outline" className="text-[10px] font-mono">{s.secId}</Badge>
+                                      ))}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-xs font-mono text-muted-foreground">
+                                    <div className="space-y-0.5">
+                                      {secondaryBeams.map(s => (
+                                        <div key={`${s.px}_${s.py}`}>({s.px.toFixed(2)}, {s.py.toFixed(2)})</div>
+                                      ))}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-xs font-mono">{secondaryBeams.length + 1}</TableCell>
+                                  <TableCell>
+                                    <Button size="sm" variant="outline" className="h-7 text-xs border-amber-400 text-amber-700 hover:bg-amber-100" onClick={() => handleSplitBeam(pb)}>
+                                      تقسيم
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </CardContent>
+                      </Card>
+                    );
+                  })()}
 
                   {/* ── Nodes Table (derived from model) ── */}
                   <Card>
@@ -4465,10 +4641,16 @@ const Index = () => {
 
           {releaseEditorBeam && (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground md:grid-cols-3">
-                <div>من ({releaseEditorBeam.x1.toFixed(2)}, {releaseEditorBeam.y1.toFixed(2)})</div>
-                <div>إلى ({releaseEditorBeam.x2.toFixed(2)}, {releaseEditorBeam.y2.toFixed(2)})</div>
-                <div>المنسوب Z: {((releaseEditorBeam.z ?? 0) / 1000).toFixed(2)} م</div>
+              <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2 text-xs">
+                <div className="font-semibold text-foreground text-sm mb-1">معلومات الجسر</div>
+                <div className="grid grid-cols-2 gap-2 text-muted-foreground">
+                  <div>البداية (X1, Y1): <span className="font-mono text-foreground">({releaseEditorBeam.x1.toFixed(2)}, {releaseEditorBeam.y1.toFixed(2)})</span></div>
+                  <div>النهاية (X2, Y2): <span className="font-mono text-foreground">({releaseEditorBeam.x2.toFixed(2)}, {releaseEditorBeam.y2.toFixed(2)})</span></div>
+                  <div>المنسوب Z: <span className="font-mono text-foreground">{((releaseEditorBeam.z ?? 0) / 1000).toFixed(2)} م</span></div>
+                  <div>الطول: <span className="font-mono text-foreground">{releaseEditorBeam.length.toFixed(2)} م</span></div>
+                  <div>العرض b: <span className="font-mono text-foreground">{releaseEditorBeam.b} مم</span></div>
+                  <div>الارتفاع h: <span className="font-mono text-foreground">{releaseEditorBeam.h} مم</span></div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

@@ -28,6 +28,7 @@ interface LevelPlanViewProps {
   onSupportRestraintsChange?: (posKeys: string[], restraints: SupportRestraints) => void;
   supportRestraints?: Record<string, SupportRestraints>;
   onElementLongPress?: (type: 'beam' | 'column' | 'slab', id: string) => void;
+  onEditBeamProperties?: (beamId: string) => void;
   onDeleteElement?: (type: 'beam' | 'column' | 'slab', id: string) => void;
 }
 
@@ -69,7 +70,7 @@ interface SupportDialogState {
 }
 
 export default function LevelPlanView({
-  columns, beams, slabs, stories, selectedElevation, onColumnSupportChange, onSupportRestraintsChange, supportRestraints, onElementLongPress, onDeleteElement,
+  columns, beams, slabs, stories, selectedElevation, onColumnSupportChange, onSupportRestraintsChange, supportRestraints, onElementLongPress, onEditBeamProperties, onDeleteElement,
 }: LevelPlanViewProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [viewBox, setViewBox] = useState({ x: -2, y: -2, w: 16, h: 18 });
@@ -245,16 +246,9 @@ export default function LevelPlanView({
       longPressTriggered.current = true;
       // Open element properties dialog
       if (type === 'beam') {
-        const beam = beamsAtLevel.find(b => b.id === id);
-        if (beam) {
-          setEditDialog({
-            open: true, type: 'beam', id, label: id,
-            b: beam.b ?? 200, h: beam.h ?? 400,
-            length: Math.sqrt((beam.x2 - beam.x1) ** 2 + (beam.y2 - beam.y1) ** 2),
-            thickness: 0, topEnd: 'F', bottomEnd: 'F',
-            x: (beam.x1 + beam.x2) / 2, y: (beam.y1 + beam.y2) / 2,
-            releaseI: { ...defaultRelease }, releaseJ: { ...defaultRelease },
-          });
+        // For beams: open the full release editor via parent callback
+        if (onEditBeamProperties) {
+          onEditBeamProperties(id);
         }
       } else if (type === 'column') {
         const col = colsAtLevel.find(c => c.id === id);
@@ -681,10 +675,21 @@ export default function LevelPlanView({
             </Badge>
             <span className="font-bold font-mono">{selectedElement.id}</span>
           </div>
-          <Button size="sm" variant="outline" className="h-7 text-[10px] mt-1 w-full"
+          {selectedElement.type === 'beam' && (() => {
+            const b = beamsAtLevel.find(bm => bm.id === selectedElement.id);
+            if (!b) return null;
+            return (
+              <div className="text-[10px] text-muted-foreground mt-1 space-y-0.5 font-mono">
+                <div>من: ({b.x1.toFixed(2)}, {b.y1.toFixed(2)}) → ({b.x2.toFixed(2)}, {b.y2.toFixed(2)})</div>
+                <div>الأبعاد: {b.b}×{b.h} مم | طول: {Math.sqrt((b.x2-b.x1)**2+(b.y2-b.y1)**2).toFixed(2)} م</div>
+              </div>
+            );
+          })()}
+          <Button size="sm" variant="outline" className="h-7 text-[10px] mt-2 w-full"
             onClick={() => {
-              // Trigger long press handler to open full properties
-              if (onElementLongPress) {
+              if (selectedElement.type === 'beam' && onEditBeamProperties) {
+                onEditBeamProperties(selectedElement.id);
+              } else if (onElementLongPress) {
                 onElementLongPress(selectedElement.type, selectedElement.id);
               }
             }}>
