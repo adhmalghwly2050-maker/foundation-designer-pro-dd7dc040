@@ -36,7 +36,7 @@ import {
   Building2, Layers, Calculator, BarChart3, Ruler, Eye,
   Grid3X3, Settings2, Download, Bot, Building, Zap, Plus, Trash2,
   Undo2, Save, Check, Wand2, Search, Compass, Merge, Crosshair, CheckSquare, Upload, Activity,
-  Loader2, X as XIcon,
+  Loader2, X as XIcon, RotateCcw,
 } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav, { type MainTab } from "@/components/BottomNav";
@@ -187,6 +187,10 @@ const Index = () => {
 
   // Design tab: sub-tab state
   const [designSubTab, setDesignSubTab] = React.useState<'beams_cols' | 'foundations' | 'comparison'>('beams_cols');
+
+  // Biaxial column analysis: selected columns for bulk rotation + story filter
+  const [biaxialSelectedCols, setBiaxialSelectedCols] = React.useState<Set<string>>(new Set());
+  const [biaxialStoryFilter, setBiaxialStoryFilter] = React.useState<string>('');
 
   // Custom load combinations
   const [loadCombos, setLoadCombos] = React.useState([
@@ -895,12 +899,34 @@ const Index = () => {
       });
     }
 
+    // ── اكتشاف مجموعات الجسور المقسّمة (مثل: 67-1, 67-2, 67-3) ──────────────
+    // الجسور التي تحمل اسمًا مثل "X-N" حيث N رقم تسلسلي هي أجزاء جسر واحد
+    // قُسّم أثناء النمذجة — نجمعها هنا ونصمّمها كجسر واحد في مرحلة ثالثة.
+    const splitGroupMap = new Map<string, { beamId: string; frameIdx: number; beamIdx: number }[]>();
+    for (let fi = 0; fi < frameResults.length; fi++) {
+      for (let bi = 0; bi < frameResults[fi].beams.length; bi++) {
+        const beamId = frameResults[fi].beams[bi].beamId;
+        const m = beamId.match(/^(.+)-(\d+)$/);
+        if (!m) continue;
+        const baseId = m[1];
+        if (!splitGroupMap.has(baseId)) splitGroupMap.set(baseId, []);
+        splitGroupMap.get(baseId)!.push({ beamId, frameIdx: fi, beamIdx: bi });
+      }
+    }
+    // احتفظ فقط بالمجموعات التي تحوي جزأين أو أكثر
+    const splitPartIds = new Set<string>();
+    for (const [baseId, parts] of splitGroupMap) {
+      if (parts.length < 2) { splitGroupMap.delete(baseId); continue; }
+      for (const p of parts) splitPartIds.add(p.beamId);
+    }
+
     // Second pass: design non-carrier beams normally
     for (const fr of frameResults) {
       const numBeams = fr.beams.length;
       for (let bi = 0; bi < numBeams; bi++) {
         const br = fr.beams[bi];
         if (mergedBeamIds.has(br.beamId)) continue; // already merged
+        if (splitPartIds.has(br.beamId)) continue;   // part of a split group — handled in 3rd pass
         const beam = beamsWithLoads.find(b => b.id === br.beamId);
         if (!beam) continue;
 
@@ -947,6 +973,98 @@ const Index = () => {
         });
       }
     }
+    // ── المرحلة الثالثة: تصميم مجموعات الجسور المقسّمة كجسر واحد ─────────────
+    for (const [baseId, parts] of splitGroupMap) {
+      // جمع نتائج جميع الأجزاء
+      const partData: Array<{
+        br: typeof frameResults[0]['beams'][0];
+        beam: typeof beamsWithLoads[0];
+        frameId: string;
+        posMin: number;
+      }> = [];
+
+      for (const p of parts) {
+        const fr = frameResults[p.frameIdx];
+        const br = fr.beams[p.beamIdx];
+        const beam = beamsWithLoads.find(b => b.id === br.beamId);
+        if (!beam) continue;
+        // قيمة للفرز: الحد الأدنى لموضع الجسر (x1 أو y1 بحسب الاتجاه)
+        const posMin = beam.direction === 'horizontal'
+          ? Math.min(beam.x1, beam.x2)
+          : Math.min(beam.y1, beam.y2);
+        partData.push({ br, beam, frameId: fr.frameId, posMin });
+      }
+      if (partData.length === 0) continue;
+
+      // ترتيب الأجزاء بحسب الموضع (يسار → يمين أو أسفل → أعلى)
+      partData.sort((a, b) => a.posMin - b.posMin);
+
+      const leftPart  = partData[0];
+      const rightPart = partData[partData.length - 1];
+
+      // الجسر المرجعي: أكبر مقطع
+      const refBeam = partData.reduce((best, p) =>
+        p.beam.b * p.beam.h >= best.beam.b * best.beam.h ? p.beam : best.beam,
+        partData[0].beam,
+      );
+
+      const totalSpan = partData.reduce((s, p) => s + p.br.span, 0);
+
+      // العزوم: يسار من الجزء الأيسر، يمين من الجزء الأيمن، أقصى عزم موجب من الكل
+      const Mleft  = Math.abs(leftPart.br.Mleft);
+      const Mright = Math.abs(rightPart.br.Mright);
+      const Mmid   = Math.max(...partData.map(p => p.br.Mmid));
+      const Vu     = Math.max(...partData.flatMap(p => [
+        Math.abs(p.br.Rleft ?? 0),
+        Math.abs(p.br.Rright ?? 0),
+      ]));
+
+      // T-beam effective flange width
+      const hasSlabs = refBeam.slabs.length > 0;
+      let effectiveFlangeWidth = 0;
+      if (hasSlabs) {
+        const widths: number[] = [];
+        for (const slabId of refBeam.slabs) {
+          const slab = slabs.find(s => s.id === slabId);
+          if (!slab) continue;
+          widths.push(refBeam.direction === 'horizontal'
+            ? Math.abs(slab.y2 - slab.y1)
+            : Math.abs(slab.x2 - slab.x1));
+        }
+        effectiveFlangeWidth = Math.min(
+          totalSpan * 1000 / 4,
+          refBeam.b + 16 * slabProps.thickness,
+          widths.reduce((a, b) => a + b, 0) * 1000,
+        );
+      }
+
+      const flexLeft  = designFlexure(Mleft,  refBeam.b, refBeam.h, mat.fc, mat.fy);
+      const flexMid   = designFlexure(Mmid,   refBeam.b, refBeam.h, mat.fc, mat.fy, 40,
+        hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
+      const flexRight = designFlexure(Mright, refBeam.b, refBeam.h, mat.fc, mat.fy);
+      const wuBeam = 1.2 * refBeam.deadLoad + 1.6 * refBeam.liveLoad;
+      const AsForShear = Math.max(flexLeft.As, flexMid.As, flexRight.As);
+      const shear = designShear(Vu, refBeam.b, refBeam.h, mat.fc, mat.fyt, 40,
+        mat.stirrupDia || 10, wuBeam, 300, AsForShear);
+      const deflection = calculateDeflection(totalSpan, refBeam.b, refBeam.h, mat.fc,
+        refBeam.deadLoad, refBeam.liveLoad, flexMid.As, 'both-ends', 'B',
+        flexMid.As * 0.3, 1.0, 60);
+
+      designs.push({
+        beamId: baseId,
+        frameId: leftPart.frameId,
+        span: totalSpan,
+        Mleft: -Mleft,
+        Mmid,
+        Mright: -Mright,
+        Vu,
+        Rleft:  leftPart.br.Rleft  ?? 0,
+        Rright: rightPart.br.Rright ?? 0,
+        flexLeft, flexMid, flexRight, shear, deflection,
+        mergedCarrierIds: parts.map(p => p.beamId),
+      });
+    }
+
     return designs;
   }, [frameResults, beamsWithLoads, mat, analyzed, bobConnections, slabs, slabProps, designSource, designExecuted, etabsAnalysisData]);
 
@@ -2930,6 +3048,7 @@ const Index = () => {
                 <TabsTrigger value="analysis-beam-loads" className="text-[11px] gap-1 min-h-[36px] shrink-0 whitespace-nowrap text-purple-600 dark:text-purple-400"><Ruler size={12} />أحمال الجسور</TabsTrigger>
                 <TabsTrigger value="analysis-slab" className="text-[11px] gap-1 min-h-[36px] shrink-0 whitespace-nowrap text-teal-600 dark:text-teal-400"><Layers size={12} />تحليل البلاطات</TabsTrigger>
                 <TabsTrigger value="analysis-slab-load-diag" className="text-[11px] gap-1 min-h-[36px] shrink-0 whitespace-nowrap text-cyan-600 dark:text-cyan-400"><Activity size={12} />تشخيص نقل أحمال البلاطة</TabsTrigger>
+                <TabsTrigger value="analysis-biaxial" className="text-[11px] gap-1 min-h-[36px] shrink-0 whitespace-nowrap text-orange-600 dark:text-orange-400"><RotateCcw size={12} />الأعمدة ثنائية المحور</TabsTrigger>
               </TabsList>
               <TabsContent value="analysis-main" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
             {/* ── Analysis Engine Selector ──────────────────────────────── */}
@@ -3755,72 +3874,7 @@ const Index = () => {
                   </Card>
                 ))}
 
-                {/* Column Analysis Results - Biaxial - Multi-story */}
-                <Card>
-                  <CardHeader className="pb-2"><CardTitle className="text-sm">نتائج تحليل الأعمدة (ثنائي المحور) - جميع الأدوار</CardTitle></CardHeader>
-                  <CardContent className="overflow-x-auto">
-                    <Table>
-                      <TableHeader><TableRow>
-                        {['الدور','العمود','b×h','Pu (kN)','Mx أعلى','Mx أسفل','My أعلى','My أسفل','النحافة X','النحافة Y','الارتفاع','تدوير'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
-                      </TableRow></TableHeader>
-                      <TableBody>
-                        {stories.map((story, storyIdx) => 
-                          (isAllStories || story.id === selectedStoryId) &&
-                          colDesigns.filter(c => c.storyId === story.id).map(c => {
-                            const storiesAbove = stories.length - storyIdx;
-                            const accumulatedPu = c.Pu * storiesAbove;
-                            const loads = colLoads3D.get(c.id);
-                            const maxMx = Math.max(Math.abs(loads?.MxTop || 0), Math.abs(loads?.MxBot || 0));
-                            const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
-                            const needsRotation = maxMy > maxMx && c.b !== c.h;
-                            return (
-                            <TableRow key={`${story.id}-${c.id}`} className={`cursor-pointer hover:bg-accent/10 ${needsRotation ? 'bg-orange-50/50' : ''}`} onClick={() => {
-                              const loads = colLoads3D.get(c.id);
-                              dispatch({
-                                type: 'OPEN_DIAGRAM',
-                                data: {
-                                  elementId: c.id,
-                                  elementType: 'column' as const,
-                                  span: (story.height || 3000) / 1000,
-                                  colLength: story.height || 3000,
-                                  MxTop: loads?.MxTop || 0,
-                                  MxBot: loads?.MxBot || 0,
-                                  MyTop: loads?.MyTop || 0,
-                                  MyBot: loads?.MyBot || 0,
-                                  Pu: accumulatedPu,
-                                },
-                              });
-                            }}>
-                              <TableCell className="text-xs font-medium text-muted-foreground">{story.label}</TableCell>
-                              <TableCell className="font-mono text-xs">{c.id}</TableCell>
-                              <TableCell className="font-mono text-xs">{c.b}×{c.h}</TableCell>
-                              <TableCell className="font-mono text-xs font-bold">{accumulatedPu.toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs">{(loads?.MxTop || 0).toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs">{(loads?.MxBot || 0).toFixed(2)}</TableCell>
-                              <TableCell className={`font-mono text-xs ${needsRotation ? 'text-orange-600 font-bold' : ''}`}>{(loads?.MyTop || 0).toFixed(2)}</TableCell>
-                              <TableCell className={`font-mono text-xs ${needsRotation ? 'text-orange-600 font-bold' : ''}`}>{(loads?.MyBot || 0).toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs">{c.design.slendernessStatusX}</TableCell>
-                              <TableCell className="font-mono text-xs">{c.design.slendernessStatusY}</TableCell>
-                              <TableCell className="font-mono text-xs">{story.height}</TableCell>
-                              <TableCell onClick={e => e.stopPropagation()}>
-                                {needsRotation && (
-                                  <button
-                                    title={`My(${maxMy.toFixed(1)}) > Mx(${maxMx.toFixed(1)}) — تدوير المقطع ${c.b}×${c.h} ← ${c.h}×${c.b}`}
-                                    className="text-xs px-2 py-1 rounded bg-orange-500 hover:bg-orange-600 text-white font-bold transition-colors"
-                                    onClick={() => dispatch({ type: 'SET_COL_OVERRIDE', colId: c.id, override: { b: c.h, h: c.b } })}
-                                  >
-                                    ↺ تدوير
-                                  </button>
-                                )}
-                              </TableCell>
-                            </TableRow>
-                            );
-                          })
-                        )}
-                      </TableBody>
-                    </Table>
-                  </CardContent>
-                </Card>
+                {/* ── الجدول ثنائي المحور نُقل إلى تبويب "الأعمدة ثنائية المحور" ── */}
 
                 {/* Joint Connectivity - Column Above/Below at each joint */}
                 <Card>
@@ -3929,6 +3983,201 @@ const Index = () => {
                   colLoads3D={colLoads3D}
                 />
               </TabsContent>
+
+              {/* ══ تبويب نتائج الأعمدة ثنائية المحور ══ */}
+              <TabsContent value="analysis-biaxial" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
+                <div className="space-y-4">
+
+                  {/* شريط التحكم */}
+                  <Card>
+                    <CardContent className="py-3">
+                      <div className="flex flex-wrap items-center gap-3">
+
+                        {/* فلتر الدور */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-muted-foreground">الدور:</span>
+                          <select
+                            className="h-8 rounded border border-border bg-background text-xs px-2 focus:outline-none"
+                            value={biaxialStoryFilter}
+                            onChange={e => setBiaxialStoryFilter(e.target.value)}
+                          >
+                            <option value="">جميع الأدوار</option>
+                            {stories.map(s => (
+                              <option key={s.id} value={s.id}>{s.label}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <span className="text-xs text-muted-foreground border-r border-border pr-3">
+                          {biaxialSelectedCols.size} عمود محدد
+                        </span>
+
+                        {/* تحديد الكل الذي يحتاج تدوير */}
+                        <button
+                          className="text-xs px-2 py-1 rounded border border-border hover:bg-accent/30 transition-colors"
+                          onClick={() => {
+                            const needRotation = new Set<string>();
+                            for (const story of stories) {
+                              if (biaxialStoryFilter && story.id !== biaxialStoryFilter) continue;
+                              for (const c of colDesigns.filter(cd => cd.storyId === story.id)) {
+                                const loads = colLoads3D.get(c.id);
+                                const maxMx = Math.max(Math.abs(loads?.MxTop || 0), Math.abs(loads?.MxBot || 0));
+                                const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
+                                if (maxMy > maxMx && c.b !== c.h) needRotation.add(c.id);
+                              }
+                            }
+                            setBiaxialSelectedCols(needRotation);
+                          }}
+                        >
+                          ✓ تحديد كل التي تحتاج تدوير
+                        </button>
+
+                        {/* إلغاء التحديد */}
+                        <button
+                          className="text-xs px-2 py-1 rounded border border-border hover:bg-accent/30 transition-colors"
+                          onClick={() => setBiaxialSelectedCols(new Set())}
+                        >
+                          ✕ إلغاء التحديد
+                        </button>
+
+                        {/* زر التدوير الجماعي */}
+                        {biaxialSelectedCols.size > 0 && (
+                          <button
+                            className="text-xs px-3 py-1.5 rounded bg-orange-500 hover:bg-orange-600 text-white font-bold flex items-center gap-1.5 transition-colors shadow"
+                            onClick={() => {
+                              for (const colId of biaxialSelectedCols) {
+                                const col = columns.find(c => c.id === colId);
+                                if (col) {
+                                  dispatch({ type: 'SET_COL_OVERRIDE', colId, override: { b: col.h, h: col.b } });
+                                }
+                              }
+                              setBiaxialSelectedCols(new Set());
+                            }}
+                          >
+                            <RotateCcw size={12} />
+                            تدوير الأعمدة المحددة ({biaxialSelectedCols.size})
+                          </button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* الجدول */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">
+                        نتائج تحليل الأعمدة (ثنائي المحور) —{' '}
+                        {biaxialStoryFilter
+                          ? (stories.find(s => s.id === biaxialStoryFilter)?.label ?? biaxialStoryFilter)
+                          : 'جميع الأدوار'}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-xs w-8 text-center">☑</TableHead>
+                            {['الدور','العمود','b×h','Pu (kN)','Mx أعلى','Mx أسفل','My أعلى','My أسفل','نحافة X','نحافة Y','الارتفاع','حالة'].map(h => (
+                              <TableHead key={h} className="text-xs">{h}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {stories.map(story => {
+                            if (biaxialStoryFilter && story.id !== biaxialStoryFilter) return null;
+                            return colDesigns.filter(c => c.storyId === story.id).map(c => {
+                              const loads = colLoads3D.get(c.id);
+                              const Pu = loads?.Pu ?? 0;
+                              const maxMx = Math.max(Math.abs(loads?.MxTop || 0), Math.abs(loads?.MxBot || 0));
+                              const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
+                              const needsRotation = maxMy > maxMx && c.b !== c.h;
+                              const isSelected = biaxialSelectedCols.has(c.id);
+                              return (
+                                <TableRow
+                                  key={`biaxial-${story.id}-${c.id}`}
+                                  className={`cursor-pointer hover:bg-accent/10 ${needsRotation ? 'bg-orange-50/40 dark:bg-orange-900/10' : ''} ${isSelected ? 'outline outline-2 outline-orange-400/60' : ''}`}
+                                  onClick={() => {
+                                    dispatch({
+                                      type: 'OPEN_DIAGRAM',
+                                      data: {
+                                        elementId: c.id,
+                                        elementType: 'column' as const,
+                                        span: (story.height || 3000) / 1000,
+                                        colLength: story.height || 3000,
+                                        MxTop: loads?.MxTop || 0,
+                                        MxBot: loads?.MxBot || 0,
+                                        MyTop: loads?.MyTop || 0,
+                                        MyBot: loads?.MyBot || 0,
+                                        Pu,
+                                      },
+                                    });
+                                  }}
+                                >
+                                  {/* خانة الاختيار */}
+                                  <TableCell
+                                    className="text-center"
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      if (!needsRotation) return;
+                                      setBiaxialSelectedCols(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(c.id)) next.delete(c.id); else next.add(c.id);
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    {needsRotation && (
+                                      <Checkbox
+                                        checked={isSelected}
+                                        onCheckedChange={checked => {
+                                          setBiaxialSelectedCols(prev => {
+                                            const next = new Set(prev);
+                                            if (checked) next.add(c.id); else next.delete(c.id);
+                                            return next;
+                                          });
+                                        }}
+                                        onClick={e => e.stopPropagation()}
+                                      />
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-xs font-medium text-muted-foreground">{story.label}</TableCell>
+                                  <TableCell className="font-mono text-xs">{c.id}</TableCell>
+                                  <TableCell className="font-mono text-xs">{c.b}×{c.h}</TableCell>
+                                  <TableCell className="font-mono text-xs font-bold">{Pu.toFixed(1)}</TableCell>
+                                  <TableCell className="font-mono text-xs">{(loads?.MxTop || 0).toFixed(2)}</TableCell>
+                                  <TableCell className="font-mono text-xs">{(loads?.MxBot || 0).toFixed(2)}</TableCell>
+                                  <TableCell className={`font-mono text-xs ${needsRotation ? 'text-orange-600 dark:text-orange-400 font-bold' : ''}`}>{(loads?.MyTop || 0).toFixed(2)}</TableCell>
+                                  <TableCell className={`font-mono text-xs ${needsRotation ? 'text-orange-600 dark:text-orange-400 font-bold' : ''}`}>{(loads?.MyBot || 0).toFixed(2)}</TableCell>
+                                  <TableCell className="font-mono text-xs">{c.design.slendernessStatusX}</TableCell>
+                                  <TableCell className="font-mono text-xs">{c.design.slendernessStatusY}</TableCell>
+                                  <TableCell className="font-mono text-xs">{story.height}</TableCell>
+                                  <TableCell>
+                                    {needsRotation ? (
+                                      <Badge variant="outline" className="text-[10px] border-orange-400 text-orange-600 dark:text-orange-400 bg-orange-50/60 dark:bg-orange-900/20">
+                                        My&gt;Mx — تدوير
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[10px] border-green-400 text-green-600 dark:text-green-400 bg-green-50/60 dark:bg-green-900/20">
+                                        ✓ مقبول
+                                      </Badge>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            });
+                          })}
+                        </TableBody>
+                      </Table>
+                      <p className="text-[10px] text-muted-foreground mt-2 leading-relaxed">
+                        ⓘ Pu مُستخرج مباشرةً من التحليل ثلاثي الأبعاد لكل عمود — يشمل تلقائياً تراكم الأحمال من جميع الأدوار العلوية دون ضرب يدوي.
+                        الأعمدة المظللة باللون البرتقالي: My &gt; Mx مع مقطع غير مربع — تدوير المقطع 90° يُحسّن الكفاءة الإنشائية.
+                        بعد التدوير الجماعي يُعاد التحليل تلقائياً عند الضغط على "تشغيل التحليل".
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
             </Tabs>
           </TabsContent>
 

@@ -44,7 +44,7 @@ interface Props {
   columns: Column[];
   slabProps: SlabProps;
   mat: MatProps;
-  colLoads3D?: Map<string, { P_service?: number }>;
+  colLoads3D?: Map<string, { P_service?: number; Pu?: number }>;
 }
 
 interface RowData {
@@ -333,6 +333,36 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
                   </div>
                 )}
               </div>
+              {/* ── ردود أفعال الأعمدة تفصيلياً ── */}
+              {equilibrium.hasAnalysis && (() => {
+                const activeCols = columns.filter(c => !c.isRemoved);
+                const minZ = activeCols.length
+                  ? activeCols.reduce((m, c) => Math.min(m, (c as any).zBottom ?? 0), Infinity)
+                  : 0;
+                const groundCols = activeCols.filter(
+                  c => Math.abs(((c as any).zBottom ?? 0) - minZ) < 1,
+                );
+                return (
+                  <div className="space-y-0.5 max-h-36 overflow-y-auto border border-border/50 rounded px-2 py-1.5 bg-background/50">
+                    <div className="text-[10px] font-semibold text-muted-foreground mb-1 sticky top-0 bg-background/80 py-0.5">
+                      رد فعل كل ركيزة (P_service):
+                    </div>
+                    {groundCols.map(c => {
+                      const P = colLoads3D?.get(c.id)?.P_service ?? 0;
+                      return (
+                        <div key={c.id} className="flex items-center justify-between gap-2 text-[11px] border-b border-dashed border-border/40 last:border-0 py-0.5">
+                          <span className="font-mono text-muted-foreground shrink-0">
+                            ({c.x.toFixed(1)}, {c.y.toFixed(1)})
+                          </span>
+                          <span className="font-mono font-medium tabular-nums">
+                            {fmt(P, 1)} kN
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {/* ── نتيجة التحقق ── */}
               {equilibrium.balanceErr !== null && (
