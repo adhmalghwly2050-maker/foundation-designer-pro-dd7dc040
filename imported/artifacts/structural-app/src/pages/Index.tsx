@@ -192,6 +192,7 @@ const Index = () => {
   // Biaxial column analysis: selected columns for bulk rotation + story filter
   const [biaxialSelectedCols, setBiaxialSelectedCols] = React.useState<Set<string>>(new Set());
   const [biaxialStoryFilter, setBiaxialStoryFilter] = React.useState<string>('');
+  const [rotatedColIds, setRotatedColIds] = React.useState<Set<string>>(new Set());
 
   // Custom load combinations
   const [loadCombos, setLoadCombos] = React.useState([
@@ -316,11 +317,19 @@ const Index = () => {
   const columns = useMemo(() => {
     // When ETABS import mode is active, skip auto-generation and use imported columns only
     if (etabsImportMode) {
-      return extraColumns.map(c => ({
-        ...c,
-        zBottom: c.zBottom ?? 0,
-        zTop: c.zTop ?? (c.L || 0),
-      }));
+      return extraColumns.map(c => {
+        const ov = colOverrides[c.id];
+        return {
+          ...c,
+          b: ov?.b ?? c.b,
+          h: ov?.h ?? c.h,
+          L: ov?.L ?? c.L,
+          x: ov?.x ?? c.x,
+          y: ov?.y ?? c.y,
+          zBottom: c.zBottom ?? 0,
+          zTop: c.zTop ?? (c.L || 0),
+        };
+      });
     }
     // Get unique column positions from slabs (ignoring storyId for position extraction)
     const uniqueSlabs = slabs.filter((s, i, arr) => {
@@ -4087,11 +4096,16 @@ const Index = () => {
                           <button
                             className="text-xs px-3 py-1.5 rounded bg-orange-500 hover:bg-orange-600 text-white font-bold flex items-center gap-1.5 transition-colors shadow"
                             onClick={() => {
+                              const justRotated = new Set<string>();
                               for (const colId of biaxialSelectedCols) {
                                 const col = columns.find(c => c.id === colId);
-                                if (col) {
+                                if (col && col.b !== col.h) {
                                   dispatch({ type: 'SET_COL_OVERRIDE', colId, override: { b: col.h, h: col.b } });
+                                  justRotated.add(colId);
                                 }
+                              }
+                              if (justRotated.size > 0) {
+                                setRotatedColIds(prev => new Set([...prev, ...justRotated]));
                               }
                               setBiaxialSelectedCols(new Set());
                             }}
@@ -4134,10 +4148,11 @@ const Index = () => {
                               const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
                               const needsRotation = maxMy > maxMx && c.b !== c.h;
                               const isSelected = biaxialSelectedCols.has(c.id);
+                              const wasRotated = rotatedColIds.has(c.id);
                               return (
                                 <TableRow
                                   key={`biaxial-${story.id}-${c.id}`}
-                                  className={`cursor-pointer hover:bg-accent/10 ${needsRotation ? 'bg-orange-50/40 dark:bg-orange-900/10' : ''} ${isSelected ? 'outline outline-2 outline-orange-400/60' : ''}`}
+                                  className={`cursor-pointer hover:bg-accent/10 ${wasRotated ? 'bg-green-50/40 dark:bg-green-900/10' : needsRotation ? 'bg-orange-50/40 dark:bg-orange-900/10' : ''} ${isSelected ? 'outline outline-2 outline-orange-400/60' : ''}`}
                                   onClick={() => {
                                     dispatch({
                                       type: 'OPEN_DIAGRAM',
@@ -4184,7 +4199,7 @@ const Index = () => {
                                   </TableCell>
                                   <TableCell className="text-xs font-medium text-muted-foreground">{story.label}</TableCell>
                                   <TableCell className="font-mono text-xs">{c.id}</TableCell>
-                                  <TableCell className="font-mono text-xs">{c.b}×{c.h}</TableCell>
+                                  <TableCell className={`font-mono text-xs font-bold ${wasRotated ? 'text-green-600 dark:text-green-400' : ''}`}>{c.b}×{c.h}{wasRotated ? ' ✓' : ''}</TableCell>
                                   <TableCell className="font-mono text-xs font-bold">{Pu.toFixed(1)}</TableCell>
                                   <TableCell className="font-mono text-xs">{(loads?.MxTop || 0).toFixed(2)}</TableCell>
                                   <TableCell className="font-mono text-xs">{(loads?.MxBot || 0).toFixed(2)}</TableCell>
@@ -4194,7 +4209,11 @@ const Index = () => {
                                   <TableCell className="font-mono text-xs">{c.design.slendernessStatusY}</TableCell>
                                   <TableCell className="font-mono text-xs">{story.height}</TableCell>
                                   <TableCell>
-                                    {needsRotation ? (
+                                    {wasRotated ? (
+                                      <Badge variant="outline" className="text-[10px] border-green-500 text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 font-bold">
+                                        ✓ تم التدوير
+                                      </Badge>
+                                    ) : needsRotation ? (
                                       <Badge variant="outline" className="text-[10px] border-orange-400 text-orange-600 dark:text-orange-400 bg-orange-50/60 dark:bg-orange-900/20">
                                         My&gt;Mx — تدوير
                                       </Badge>
