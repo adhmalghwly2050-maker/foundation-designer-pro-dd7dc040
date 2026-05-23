@@ -131,6 +131,7 @@ const Index = () => {
     removedColumnIds, removedBeamIds, beamOverrides, colOverrides, slabPropsOverrides, extraBeams, extraColumns, etabsImportMode, etabsAnalysisData, titleBlockConfig, supportRestraints, frameEndReleases, transientFrameEndReleases,
     modalOpen, selectedElement, elemPropsOpen, elemPropsFrameId, elemPropsAreaId,
     diagramOpen, diagramData, savedMessage, bobManualPrimary, undoStack,
+    colRigidEndOffsets,
   } = state;
 
   /**
@@ -599,6 +600,7 @@ const Index = () => {
       detectedConnections,
       removedColumnIds,
       beamHinges2D: beamHinges2DArr,
+      colRigidEndOffsets,
     };
 
     analysisWorker.startAnalysis(workerInput, {
@@ -1004,7 +1006,7 @@ const Index = () => {
 
       // الجسر المرجعي: أكبر مقطع
       const refBeam = partData.reduce((best, p) =>
-        p.beam.b * p.beam.h >= best.beam.b * best.beam.h ? p.beam : best.beam,
+        p.beam.b * p.beam.h >= best.b * best.h ? p.beam : best,
         partData[0].beam,
       );
 
@@ -1171,22 +1173,22 @@ const Index = () => {
       return getFrameResults3D(
         frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, conns3DLegacy,
         slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor,
-        /* enforceReleasedZeros */ false,
+        /* enforceReleasedZeros */ false, colRigidEndOffsets,
       );
     } catch {
       return [] as FrameResult[];
     }
-  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor]);
+  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets]);
 
   // Global Frame results for comparison
   const frameResultsGF = useMemo(() => {
     if (!analyzed || frames.length === 0) return [] as FrameResult[];
     try {
-      return getFrameResultsGlobalFrame(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor);
+      return getFrameResultsGlobalFrame(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets);
     } catch {
       return [] as FrameResult[];
     }
-  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor]);
+  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets]);
 
   // Unified Core = identical algorithm to Global Frame (both are aliases for getFrameResults3D).
   // Reuse the cached GF result to avoid a redundant full 3D solve.
@@ -1205,12 +1207,12 @@ const Index = () => {
       // 3D Legacy: نقل أحمال البلاطات إلى الجسور بنفس طريقة محرك 2D
       // (التوزيع الهندسي عبر buildSlabEdgeLoads + computeBeamLoadProfile — نظرية خط الانهيار/المساحة الرافدة)
       // وليس عبر FEM، لضمان تطابق الأحمال المنقولة بين 2D و 3D Legacy.
-      return getColumnLoads3D(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor);
+      return getColumnLoads3D(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets);
     } catch {
       // Fallback to 2D if 3D fails
       return colLoadsBiaxial;
     }
-  }, [analyzed, frames, beamsWithLoads, columns, mat, colLoadsBiaxial, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor]);
+  }, [analyzed, frames, beamsWithLoads, columns, mat, colLoadsBiaxial, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets]);
 
   const jointConnectivity = useMemo(() => {
     if (!analyzed) return [] as JointConnectivityInfo[];
@@ -3182,6 +3184,46 @@ const Index = () => {
                     <p className="text-[9px] text-muted-foreground mt-1">
                       غيّر القيم أعلاه للتحكم بجساءة الجسور والأعمدة عند التحليل
                     </p>
+                  </div>
+
+                  {/* إزاحات النهايات الصلبة (ETABS End Length Offsets) */}
+                  <div className="mt-2 rounded-md bg-orange-500/5 border border-orange-200/50 dark:border-orange-800/50 px-3 py-2">
+                    <p className="text-[10px] text-orange-700 dark:text-orange-400 font-semibold mb-1">
+                      إزاحات النهايات الصلبة (ETABS End Length Offsets):
+                    </p>
+                    <p className="text-[9px] text-muted-foreground mb-2 leading-relaxed">
+                      تُقلِّص البحر الفعّال للجسر إلى حافة العمود بدلاً من مركزه — تُقلِّل العزوم عند الوجوه.
+                    </p>
+                    {columns.filter(c => !c.isRemoved).length === 0 ? (
+                      <p className="text-[9px] text-muted-foreground italic">لا توجد أعمدة</p>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="mb-1.5 text-[9px] px-2 py-0.5 rounded border border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors"
+                          onClick={() => {
+                            const allCols = columns.filter(c => !c.isRemoved);
+                            const allEnabled = allCols.every(c => colRigidEndOffsets[c.id]);
+                            allCols.forEach(c => dispatch({ type: 'SET_COL_RIGID_OFFSET', colId: c.id, enabled: !allEnabled }));
+                          }}
+                        >
+                          {columns.filter(c => !c.isRemoved).every(c => colRigidEndOffsets[c.id]) ? '⬜ إلغاء الكل' : '☑ تفعيل الكل'}
+                        </button>
+                        <div className="flex flex-wrap gap-1">
+                          {columns.filter(c => !c.isRemoved).map(c => (
+                            <label key={c.id} className="flex items-center gap-1 text-[9px] cursor-pointer select-none bg-background border border-border rounded px-1.5 py-0.5 hover:bg-accent/20 transition-colors">
+                              <input
+                                type="checkbox"
+                                className="w-3 h-3 accent-orange-500"
+                                checked={!!colRigidEndOffsets[c.id]}
+                                onChange={e => dispatch({ type: 'SET_COL_RIGID_OFFSET', colId: c.id, enabled: e.target.checked })}
+                              />
+                              <span className="font-mono">{c.id} <span className="text-muted-foreground">({c.b}×{c.h})</span></span>
+                            </label>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 

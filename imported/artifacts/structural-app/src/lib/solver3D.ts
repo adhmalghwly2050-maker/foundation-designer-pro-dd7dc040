@@ -57,6 +57,13 @@ export interface Element3D {
   };
   /** Local axis orientation vector (for non-vertical columns / skewed beams) */
   localYOverride?: [number, number, number];
+  /**
+   * Rigid end offsets (ETABS-style End Length Offsets, ACI 318-19 §6.3.2).
+   * Length of rigid zone at node I / node J along the element axis (mm).
+   * Effective flexible length: Lf = L - rigidOffsetI - rigidOffsetJ.
+   */
+  rigidOffsetI?: number;
+  rigidOffsetJ?: number;
 }
 
 export interface LoadCase3D {
@@ -166,6 +173,59 @@ export function rectangularSection(b: number, h: number): SectionProps {
   const J = a * Math.pow(2 * bHalf, 3) * (1/3 - 0.21 * ratio * (1 - Math.pow(ratio, 4) / 12));
   
   return { A, Iy, Iz, J };
+}
+
+// ======================== RIGID END OFFSET TRANSFORMATION ========================
+
+/**
+ * Build 12×12 rigid-offset transformation matrix (ETABS-style End Length Offsets).
+ * Rigid zones at node I (length rI) and node J (length rJ) along local axis 1.
+ * Maps flexible-end DOFs → physical joint DOFs: d_joint = Trig × d_flex
+ */
+function buildRigidOffsetTransform3D(rI: number, rJ: number): Float64Array {
+  const T = new Float64Array(144);
+  for (let i = 0; i < 12; i++) T[i * 12 + i] = 1;
+  if (rI !== 0) {
+    T[1 * 12 + 5] = -rI;
+    T[2 * 12 + 4] =  rI;
+  }
+  if (rJ !== 0) {
+    T[7 * 12 + 11] =  rJ;
+    T[8 * 12 + 10] = -rJ;
+  }
+  return T;
+}
+
+/** ke_phys = Trig^T × ke_flex × Trig */
+function applyRigidOffsetToK3D(ke: Float64Array, Trig: Float64Array): Float64Array {
+  const n = 12;
+  const tmp = new Float64Array(n * n);
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < n; k++) s += ke[i * n + k] * Trig[k * n + j];
+      tmp[i * n + j] = s;
+    }
+  const out = new Float64Array(n * n);
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < n; k++) s += Trig[k * n + i] * tmp[k * n + j];
+      out[i * n + j] = s;
+    }
+  return out;
+}
+
+/** f_phys = Trig^T × f_flex */
+function applyRigidOffsetToF3D(f: Float64Array, Trig: Float64Array): Float64Array {
+  const n = 12;
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let k = 0; k < n; k++) s += Trig[k * n + i] * f[k];
+    out[i] = s;
+  }
+  return out;
 }
 
 // ======================== COORDINATE TRANSFORMATION ========================
@@ -933,7 +993,11 @@ export function analyze3DFrame(
     const section = elem.type === 'beam'
       ? rectangularSection(elem.h, elem.b)   // beam: pass depth first → Iz = b×h³/12 (major axis)
       : rectangularSection(elem.b, elem.h);  // column: pass width first → Iy = b×h³/12, Iz = h×b³/12
-    let ke_local = elementStiffnessLocal(L, elem.E, elem.G, section, elem.stiffnessModifier, ignoreTorsion);
+    const rigI3D = Math.max(0, elem.rigidOffsetI ?? 0);
+    const rigJ3D = Math.max(0, elem.rigidOffsetJ ?? 0);
+    const hasRigid3D = rigI3D > 1e-6 || rigJ3D > 1e-6;
+    const Leff3D = hasRigid3D ? Math.max(L - rigI3D - rigJ3D, L * 0.1) : L;
+    let ke_local = elementStiffnessLocal(Leff3D, elem.E, elem.G, section, elem.stiffnessModifier, ignoreTorsion);
     let fef_needs_condensation = false;
     
     // Apply proper static condensation for end releases (ETABS-style)
@@ -976,7 +1040,12 @@ export function analyze3DFrame(
         }
       }
     }
-    
+
+    if (hasRigid3D) {
+      const Trig3D = buildRigidOffsetTransform3D(rigI3D, rigJ3D);
+      ke_local = applyRigidOffsetToK3D(ke_local, Trig3D);
+    }
+
     const ke_global = transformStiffnessToGlobal(ke_local, T);
     
     // Get element load from load case
@@ -1001,7 +1070,7 @@ export function analyze3DFrame(
     
     // FEF in local, then transform to global
     // Convert kN/m to N/mm: × 1 (since we work in N/mm consistently)
-    let fef_local = fixedEndForcesUDL(L, totalLocalW.wx, totalLocalW.wy, totalLocalW.wz);
+    let fef_local = fixedEndForcesUDL(Leff3D, totalLocalW.wx, totalLocalW.wy, totalLocalW.wz);
 
     // ── ETABS-equivalent non-uniform slab load profile ────────────────────────
     // For horizontal beams with a trapezoidal/triangular slab tributary load,
@@ -1029,6 +1098,17 @@ export function analyze3DFrame(
       combined[11] += fef_prof[11];  // Mz at J
       fef_local = combined;
     }
+    if (hasRigid3D) {
+      const Trig3D = buildRigidOffsetTransform3D(rigI3D, rigJ3D);
+      fef_local = applyRigidOffsetToF3D(fef_local, Trig3D);
+      fef_local[0] += totalLocalW.wx * rigI3D;  fef_local[6] += totalLocalW.wx * rigJ3D;
+      fef_local[1] += totalLocalW.wy * rigI3D;  fef_local[7] += totalLocalW.wy * rigJ3D;
+      fef_local[5] += totalLocalW.wy * rigI3D * rigI3D / 2;
+      fef_local[11] -= totalLocalW.wy * rigJ3D * rigJ3D / 2;
+      fef_local[2] += totalLocalW.wz * rigI3D;  fef_local[8] += totalLocalW.wz * rigJ3D;
+      fef_local[4] -= totalLocalW.wz * rigI3D * rigI3D / 2;
+      fef_local[10] += totalLocalW.wz * rigJ3D * rigJ3D / 2;
+    }
     // Apply static condensation to FEF: F*_r = F_r - K_rc * K_cc^(-1) * F_c
     if (fef_needs_condensation && elem.releases) {
       const rI = elem.releases.nodeI;
@@ -1051,7 +1131,7 @@ export function analyze3DFrame(
         if (rJ.mz) releasedDofs.push(11);
       }
       // Need original ke for FEF condensation
-      const ke_orig = elementStiffnessLocal(L, elem.E, elem.G, section, elem.stiffnessModifier, ignoreTorsion);
+      const ke_orig = elementStiffnessLocal(Leff3D, elem.E, elem.G, section, elem.stiffnessModifier, ignoreTorsion);
       const condensedFef = applyStaticCondensationFEF(ke_orig, fef_local, releasedDofs);
       for (let i = 0; i < 12; i++) fef_local[i] = condensedFef[i];
     }

@@ -43,6 +43,8 @@ export interface AnalysisInput {
   analysisMode?: AnalysisMode;
   /** Hint: whether WASM is available in this build */
   wasmAvailable?: boolean;
+  /** Per-column rigid end offsets (ETABS-style End Length Offsets) */
+  colRigidEndOffsets?: Record<string, boolean>;
 }
 
 // ── Solver performance diagnostics ──────────────────────────────────────────

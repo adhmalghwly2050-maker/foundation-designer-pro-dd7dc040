@@ -50,6 +50,7 @@ export function getFrameResultsGlobalFrame(
   slabProps?: SlabProps,
   beamStiffnessFactor = 0.35,
   colStiffnessFactor = 0.70,
+  colRigidEndOffsets?: Record<string, boolean>,
 ): FrameResult[] {
   return getFrameResults3D(
     frames,
@@ -63,11 +64,13 @@ export function getFrameResultsGlobalFrame(
     false, // useFEMLoadDistribution
     beamStiffnessFactor,
     colStiffnessFactor,
+    false, // enforceReleasedZeros
+    colRigidEndOffsets,
   );
 }
 
 /**
- * Alias موحّد — يمرّ مباشرة إلى محرك Legacy 3D المدمج.
+ * Alias موحّد — يمرّر مباشرة إلى محرك Legacy 3D المدمج.
  */
 export function getFrameResultsUnifiedCore(
   frames: Frame[],
@@ -80,6 +83,7 @@ export function getFrameResultsUnifiedCore(
   slabProps?: SlabProps,
   beamStiffnessFactor = 0.35,
   colStiffnessFactor = 0.70,
+  colRigidEndOffsets?: Record<string, boolean>,
 ): FrameResult[] {
   return getFrameResults3D(
     frames,
@@ -93,5 +97,7 @@ export function getFrameResultsUnifiedCore(
     false,
     beamStiffnessFactor,
     colStiffnessFactor,
+    false,
+    colRigidEndOffsets,
   );
 }

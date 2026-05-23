@@ -80,6 +80,7 @@ function build3DModelWithPatternLoading(
   useFEMLoadDistribution?: boolean,
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
+  colRigidEndOffsets?: Record<string, boolean>,
 ): { model: Model3D; patternCases: LoadCase3D[]; primaryBeamSplitIds: Map<string, string>; serviceCaseIndex: number } {
   const beamsMap = new Map(beams.map(b => [b.id, b]));
   const E = 4700 * Math.sqrt(mat.fc) * 1000; // MPa → kPa (kN/m²) — consistent with kN/m loads
@@ -215,6 +216,27 @@ function build3DModelWithPatternLoading(
     return [xMm, yMm];
   };
 
+  /**
+   * Get rigid end offset (mm) for a beam endpoint that has been snapped to
+   * a column centreline.  Returns half the column dimension along the beam
+   * axis when the user has enabled rigid end offsets for that column;
+   * returns 0 otherwise.
+   */
+  const getBeamEndOffset = (xMm: number, yMm: number, zMm: number, isHoriz: boolean): number => {
+    if (!colRigidEndOffsets) return 0;
+    for (const c of columns) {
+      if (c.isRemoved || !colRigidEndOffsets[c.id]) continue;
+      const cx = c.x * 1000;
+      const cy = c.y * 1000;
+      const zTop = c.zTop ?? ((c.zBottom ?? 0) + c.L);
+      if (Math.abs(zMm - zTop) > 100) continue;
+      if (Math.abs(xMm - cx) < 2 && Math.abs(yMm - cy) < 2) {
+        return isHoriz ? c.b / 2 : c.h / 2;
+      }
+    }
+    return 0;
+  };
+
   // ── Build beam elements ──────────────────────────────────────────────────
   // We keep track of per-element dead/live (factored UDL) for load cases.
   // Key = element id (possibly `beam_X_A` / `beam_X_B` for split elements).
@@ -264,6 +286,7 @@ function build3DModelWithPatternLoading(
       // so the beam shares the column's DOF node (ETABS rigid-zone behaviour).
       const [sx1, sy1] = snapToColumnCenter(x1Mm, y1Mm, zMm);
       const [sx2, sy2] = snapToColumnCenter(x2Mm, y2Mm, zMm);
+      const isHorizBeam = Math.abs(x2Mm - x1Mm) >= Math.abs(y2Mm - y1Mm);
 
       // Probe with NO restraints — registry OR-merges so any column-bottom
       // support at the same coord is preserved. This matches UF exactly.
@@ -293,6 +316,8 @@ function build3DModelWithPatternLoading(
       // No "both ends present" guard needed — the registry guarantees a node
       // exists (or was created) for any (x,y,z) probe. The element is added
       // unconditionally, exactly as in globalFrameBridge.ts.
+      const rigI = getBeamEndOffset(sx1, sy1, zMm, isHorizBeam);
+      const rigJ = getBeamEndOffset(sx2, sy2, zMm, isHorizBeam);
       elements3d.push({
         id: elemId,
         type: 'beam',
@@ -305,6 +330,8 @@ function build3DModelWithPatternLoading(
         wLocal: { wx: 0, wy: 0, wz: 0 },
         stiffnessModifier: beamStiffnessFactor,
         releases,
+        ...(rigI > 0 && { rigidOffsetI: rigI }),
+        ...(rigJ > 0 && { rigidOffsetJ: rigJ }),
       });
       const beamSW_init = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
       const wallLoad_init = beam.wallLoad ?? 0;
@@ -790,6 +817,7 @@ function runPatternEnvelope3D(
   useFEMLoadDistribution?: boolean,
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
+  colRigidEndOffsets?: Record<string, boolean>,
 ): {
   beamEnvelope: Map<string, BeamEnvelope3D>;
   colEnvelope: Map<string, ColumnEnvelope3D>;
@@ -799,6 +827,7 @@ function runPatternEnvelope3D(
   const { model, patternCases, primaryBeamSplitIds, serviceCaseIndex } = build3DModelWithPatternLoading(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
+    colRigidEndOffsets,
   );
   const beamEnvelope = new Map<string, BeamEnvelope3D>();
   const colEnvelope  = new Map<string, ColumnEnvelope3D>();
@@ -915,10 +944,12 @@ export function getColumnLoads3D(
   useFEMLoadDistribution?: boolean,
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
+  colRigidEndOffsets?: Record<string, boolean>,
 ): Map<string, ColumnLoads3D> {
   const { colEnvelope, serviceColAxial } = runPatternEnvelope3D(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
+    colRigidEndOffsets,
   );
 
   const result = new Map<string, ColumnLoads3D>();
@@ -973,12 +1004,14 @@ export function getFrameResults3D(
    * يجب إخفاؤه. تُركت المعلمة موجودة فقط للتوافق الخلفي مع نداءات قديمة.
    */
   enforceReleasedZeros: boolean = false,
+  colRigidEndOffsets?: Record<string, boolean>,
 ): FrameResult[] {
   const beamsMap = new Map(beams.map(b => [b.id, b]));
   const ENDPOINT_COLUMN_TOL = 0.05; // m
   const { beamEnvelope, primaryBeamSplitIds } = runPatternEnvelope3D(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
+    colRigidEndOffsets,
   );
 
   // ── Build release lookup from explicit input-tab releases only ─────────

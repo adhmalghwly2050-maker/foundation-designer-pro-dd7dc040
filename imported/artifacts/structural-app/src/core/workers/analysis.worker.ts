@@ -79,6 +79,7 @@ async function runAnalysis(input: AnalysisInput): Promise<void> {
     beamStiffnessFactor, colStiffnessFactor,
     detectedConnections, removedColumnIds,
     beamHinges2D: beamHinges2DArr,
+    colRigidEndOffsets,
   } = input;
 
   const beamHinges2D = new Map<string, 'I' | 'J' | 'BOTH'>(beamHinges2DArr);
@@ -171,6 +172,7 @@ async function runAnalysis(input: AnalysisInput): Promise<void> {
             effectiveFrameEndReleases, detectedConnections,
             slabs, slabProps, false,
             beamStiffnessFactor, colStiffnessFactor,
+            false, colRigidEndOffsets,
           );
           femFrameResults = femFrameResults.map((femRes, idx) => {
             const frame = frames[idx];
@@ -269,6 +271,7 @@ async function runAnalysis(input: AnalysisInput): Promise<void> {
           effectiveFrameEndReleases, [],
           slabs, slabProps, false,
           beamStiffnessFactor, colStiffnessFactor,
+          false, colRigidEndOffsets,
         );
         bobConnections = [];
         engineUsed = selectedEngine;

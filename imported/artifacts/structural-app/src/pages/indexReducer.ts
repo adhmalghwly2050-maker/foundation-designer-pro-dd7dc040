@@ -86,6 +86,11 @@ export interface AppState {
    * المفتاح: removedColumnId، القيمة: اتجاه الجسر الحامل المفروض ('horizontal' | 'vertical').
    */
   bobManualPrimary: Record<string, 'horizontal' | 'vertical'>;
+  /**
+   * Rigid End Offsets (ETABS-style End Length Offsets, ACI 318-19 §6.3.2).
+   * Per-column: true = enable rigid zone from each beam end to column face.
+   */
+  colRigidEndOffsets: Record<string, boolean>;
   /** نتائج التحليل المستوردة من ETABS لاستخدامها في التصميم */
   etabsAnalysisData: { beamId: string; story: string; Mleft: number; Mmid: number; Mright: number; Vu: number }[];
   /** معلومات جدول اللوحة (Title Block) */
@@ -177,6 +182,7 @@ export type AppAction =
   | { type: 'SET_BEAM_STIFFNESS_FACTOR'; value: number }
   | { type: 'SET_COL_STIFFNESS_FACTOR'; value: number }
   | { type: 'SET_BOB_MANUAL_PRIMARY'; colId: string; direction: 'horizontal' | 'vertical' | null }
+  | { type: 'SET_COL_RIGID_OFFSET'; colId: string; enabled: boolean }
   | { type: 'MERGE_BEAMS'; mergedBeam: Beam; removedIds: string[] }
   | { type: 'ADD_VIRTUAL_REMOVED_COLUMN'; colId: string; x: number; y: number }
   | { type: 'SET_ETABS_IMPORT_MODE'; value: boolean }
@@ -275,6 +281,7 @@ export const initialState: AppState = {
   beamStiffnessFactor: 0.35,
   colStiffnessFactor: 0.70,
   bobManualPrimary: {},
+  colRigidEndOffsets: {},
 };
 
 // Actions that should NOT be tracked in undo (UI-only actions)
@@ -355,6 +362,15 @@ function coreReducer(state: AppState, action: AppAction): AppState {
         updated[action.colId] = action.direction;
       }
       return { ...state, bobManualPrimary: updated, analyzed: false };
+    }
+    case 'SET_COL_RIGID_OFFSET': {
+      const updated = { ...state.colRigidEndOffsets };
+      if (action.enabled) {
+        updated[action.colId] = true;
+      } else {
+        delete updated[action.colId];
+      }
+      return { ...state, colRigidEndOffsets: updated, analyzed: false };
     }
     case 'SET_ACTIVE_TAB':
       return { ...state, activeTab: action.tab };
