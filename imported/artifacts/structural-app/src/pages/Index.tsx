@@ -3185,20 +3185,111 @@ const Index = () => {
                     </div>
                     {validationReport.issues.map((issue, i) => (
                       <div key={i} className="mt-1">
-                        <span className="font-medium">
-                          {issue.type === 'duplicate_nodes' && `🔗 عقد مكررة: ${issue.count}`}
-                          {issue.type === 'dangling_nodes' && `⚡ عقد معلقة: ${issue.count}`}
-                          {issue.type === 'zero_length_elements' && `📏 عناصر صفرية الطول: ${issue.count}`}
-                          {issue.type === 'disconnected_model' && `🔌 نموذج غير متصل: ${issue.components} أجزاء`}
-                          {issue.type === 'no_supports' && `🏗️ لا توجد مساند`}
-                          {issue.type === 'unstable_system' && `⚠️ تحذير استقرار`}
-                        </span>
-                        {issue.details && issue.details.length > 0 && (
-                          <ul className="mt-0.5 space-y-0.5 list-disc list-inside text-[10px]">
-                            {issue.details.slice(0, 5).map((d, j) => <li key={j}>{d}</li>)}
-                            {issue.details.length > 5 && <li>... و{issue.details.length - 5} أخرى</li>}
-                          </ul>
+                        {/* ── عرض عادي لجميع أنواع المشاكل عدا انفصال النموذج ── */}
+                        {issue.type !== 'disconnected_model' && (
+                          <>
+                            <span className="font-medium">
+                              {issue.type === 'duplicate_nodes' && `🔗 عقد مكررة: ${issue.count}`}
+                              {issue.type === 'dangling_nodes' && `⚡ عقد معلقة: ${issue.count}`}
+                              {issue.type === 'zero_length_elements' && `📏 عناصر صفرية الطول: ${issue.count}`}
+                              {issue.type === 'no_supports' && `🏗️ لا توجد مساند`}
+                              {issue.type === 'unstable_system' && `⚠️ تحذير استقرار`}
+                            </span>
+                            {issue.details && issue.details.length > 0 && (
+                              <ul className="mt-0.5 space-y-0.5 list-disc list-inside text-[10px]">
+                                {issue.details.slice(0, 5).map((d, j) => <li key={j}>{d}</li>)}
+                                {issue.details.length > 5 && <li>... و{issue.details.length - 5} أخرى</li>}
+                              </ul>
+                            )}
+                          </>
                         )}
+
+                        {/* ── عرض تفصيلي لخطأ انفصال النموذج ── */}
+                        {issue.type === 'disconnected_model' && (() => {
+                          const colMap  = new Map(columns.filter(c => !c.isRemoved).map(c => [c.id, c]));
+                          const beamMap = new Map(beams.map(b => [b.id, b]));
+                          const storyMap = new Map(stories.map(s => [s.id, s.label]));
+                          const comps   = issue.componentElements ?? [];
+                          const maxSize = Math.max(...comps.map(c => c.length));
+
+                          return (
+                            <div className="space-y-2">
+                              <span className="font-medium text-red-700 dark:text-red-400">
+                                🔌 النموذج غير متصل — {issue.components} أجزاء منفصلة
+                              </span>
+                              <div className="space-y-1.5 mt-1">
+                                {comps.map((compElems, idx) => {
+                                  const isMain = compElems.length === maxSize;
+
+                                  if (isMain) {
+                                    const nCols  = compElems.filter(e => e.type === 'column').length;
+                                    const nBeams = compElems.filter(e => e.type === 'beam').length;
+                                    return (
+                                      <div key={idx} className="text-[10px] text-muted-foreground border border-dashed border-border rounded px-2 py-1">
+                                        ✅ الجزء الرئيسي — {nCols} عمود، {nBeams} جسر (الإطار المتصل)
+                                      </div>
+                                    );
+                                  }
+
+                                  // جزء معزول — فكّ رموز العناصر
+                                  const isolCols = compElems
+                                    .filter(e => e.type === 'column')
+                                    .map(e => colMap.get(e.id.replace(/^col_/, '')))
+                                    .filter((c): c is NonNullable<typeof c> => !!c);
+                                  const isolBeams = compElems
+                                    .filter(e => e.type === 'beam')
+                                    .map(e => beamMap.get(e.id.replace(/^beam_/, '')))
+                                    .filter((b): b is NonNullable<typeof b> => !!b);
+
+                                  return (
+                                    <div key={idx} className="rounded-lg border border-red-300 dark:border-red-800 bg-red-500/8 p-2 text-[10px] space-y-1">
+                                      <div className="font-semibold text-red-700 dark:text-red-400">
+                                        ⛔ جزء معزول {idx + 1} — {compElems.length} عنصر غير متصل بالإطار الرئيسي
+                                      </div>
+
+                                      {isolCols.length > 0 && (
+                                        <div className="space-y-0.5">
+                                          <div className="font-medium text-muted-foreground">الأعمدة المعزولة:</div>
+                                          {isolCols.map((c, ci) => {
+                                            const storyLabel = c.storyId ? (storyMap.get(c.storyId) ?? c.storyId) : null;
+                                            return (
+                                              <div key={ci} className="flex items-center gap-1">
+                                                <span>📌</span>
+                                                <span>عمود عند موضع ({c.x.toFixed(2)} m، {c.y.toFixed(2)} m)</span>
+                                                {storyLabel && <span className="text-muted-foreground">— {storyLabel}</span>}
+                                                <span className="text-muted-foreground">({c.b}×{c.h} مم)</span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+
+                                      {isolBeams.length > 0 && (
+                                        <div className="space-y-0.5">
+                                          <div className="font-medium text-muted-foreground">الجسور المعزولة:</div>
+                                          {isolBeams.map((b, bi) => {
+                                            const storyLabel = b.storyId ? (storyMap.get(b.storyId) ?? b.storyId) : null;
+                                            return (
+                                              <div key={bi} className="flex items-center gap-1">
+                                                <span>📐</span>
+                                                <span>جسر من ({b.x1.toFixed(2)}, {b.y1.toFixed(2)}) إلى ({b.x2.toFixed(2)}, {b.y2.toFixed(2)}) م</span>
+                                                {storyLabel && <span className="text-muted-foreground">— {storyLabel}</span>}
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+
+                                      <div className="text-[9px] text-muted-foreground border-t border-red-200 dark:border-red-800 pt-1 mt-1">
+                                        💡 الحل: تأكد من وجود جسر أو عمود يربط هذه العناصر بالإطار الرئيسي — أو تحقق من تطابق الإحداثيات عند نقاط الوصل.
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>

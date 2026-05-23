@@ -39,6 +39,8 @@ export interface ValidationIssue {
   count: number;
   details?: string[];
   components?: number;
+  /** For disconnected_model: per-component list of element IDs + types */
+  componentElements?: Array<Array<{ id: string; type: 'beam' | 'column' }>>;
 }
 
 export interface ValidationReport {
@@ -422,10 +424,17 @@ export function runPreAnalysisChecks(
   const components = findDisconnectedComponents(adjClean);
   const numComponents = components.length;
   if (numComponents > 1) {
+    // لكل جزء: ابحث عن العناصر التي يقع طرفاها داخله
+    const componentElements = components.map(comp =>
+      elements
+        .filter(el => comp.has(el.nodeI) && comp.has(el.nodeJ))
+        .map(el => ({ id: el.id, type: el.type })),
+    );
     issues.push({
       type: 'disconnected_model',
       count: numComponents,
       components: numComponents,
+      componentElements,
       details: components.map((comp, i) =>
         `Component ${i + 1}: ${comp.size} node(s) — [${[...comp].slice(0, 5).join(', ')}${comp.size > 5 ? '...' : ''}]`
       ),
