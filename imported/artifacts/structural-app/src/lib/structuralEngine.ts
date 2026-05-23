@@ -1716,10 +1716,12 @@ export function designFlexure(
   const effectiveMinBars = governedByMin ? Math.max(minBars, 4) : minBars;
   let bestDia = 12;
   let bestN = effectiveMinBars;
-  let bestScore = Infinity;
   let bestLayers = 1;
+  let found = false;
 
+  // Progressive selection: pick the FIRST (smallest) diameter that satisfies spacing and fits
   for (const dia of diameters) {
+    if (found) break;
     const aBar = Math.PI * dia * dia / 4;
     const nRequired = Math.max(effectiveMinBars, Math.ceil(AsUsed / aBar));
     if (nRequired < effectiveMinBars) continue;
@@ -1737,14 +1739,10 @@ export function designFlexure(
       // Fits in one layer — check actual clear spacing
       const clearSpacing = (availableWidth - nRequired * dia) / (nRequired - 1);
       if (clearSpacing >= minClear) {
-        const wasteRatio = (nRequired * aBar - AsUsed) / AsUsed;
-        const score = wasteRatio + (nRequired > 5 ? 0.3 : 0);
-        if (score < bestScore) {
-          bestScore = score;
-          bestDia = dia;
-          bestN = nRequired;
-          bestLayers = 1;
-        }
+        bestDia = dia;
+        bestN = nRequired;
+        bestLayers = 1;
+        found = true;
       }
     } else if (nRequired <= maxBarsPerLayer * 2) {
       // Needs two layers
@@ -1754,20 +1752,16 @@ export function designFlexure(
       const clearSpacing2 = nPerLayer2 > 1 ? (availableWidth - nPerLayer2 * dia) / (nPerLayer2 - 1) : availableWidth;
 
       if (clearSpacing1 >= minClear && clearSpacing2 >= minClear) {
-        const wasteRatio = (nRequired * aBar - AsUsed) / AsUsed;
-        const score = wasteRatio + 0.5; // penalize two layers
-        if (score < bestScore) {
-          bestScore = score;
-          bestDia = dia;
-          bestN = nRequired;
-          bestLayers = 2;
-        }
+        bestDia = dia;
+        bestN = nRequired;
+        bestLayers = 2;
+        found = true;
       }
     }
   }
 
   // Final fallback: use largest diameter with minimum bars
-  if (bestScore === Infinity) {
+  if (!found) {
     for (let i = diameters.length - 1; i >= 0; i--) {
       const dia = diameters[i];
       const aBar = Math.PI * dia * dia / 4;
@@ -3050,7 +3044,7 @@ export function designColumnBiaxial(
 
   const Ag = b * h;
   const rhoTrials = [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04];
-  const diameters = [16, 18, 20, 22, 25, 30]; // الحد الأدنى 16mm
+  const diameters = [16, 18, 20, 22]; // الحد الأدنى 16mm والحد الأقصى 22mm
 
   let bestResult: BiaxialColumnResult | null = null;
 
@@ -3069,7 +3063,7 @@ export function designColumnBiaxial(
     const AsReq = rho * Ag;
     for (const dia of diameters) {
       const aBar = Math.PI * dia * dia / 4;
-      const nBars = Math.max(4, Math.ceil(AsReq / aBar));
+      const nBars = Math.max(6, Math.ceil(AsReq / aBar));
       const nBarsEven = nBars % 2 === 0 ? nBars : nBars + 1;
       if (nBarsEven > 20) continue;
 
@@ -3148,10 +3142,10 @@ export function designColumnBiaxial(
 
   if (!bestResult) {
     // fallback: جرب من 16mm تصاعدياً بنسبة 4%
-    const fallbackDiameters = [16, 18, 20, 22, 25, 30];
+    const fallbackDiameters = [16, 18, 20, 22];
     for (const dia of fallbackDiameters) {
       const aBar = Math.PI * dia * dia / 4;
-      const nBars = Math.max(4, Math.ceil(0.04 * Ag / aBar));
+      const nBars = Math.max(6, Math.ceil(0.04 * Ag / aBar));
       const nBarsEven = nBars % 2 === 0 ? nBars : nBars + 1;
       const pmX = generatePMDiagram(b, h, fc, fy, nBarsEven, dia);
       const pmY = generatePMDiagram(h, b, fc, fy, nBarsEven, dia);
@@ -3204,9 +3198,9 @@ export function designColumnBiaxial(
     }
   }
   if (!bestResult) {
-    const dia = 30;
+    const dia = 22;
     const aBar = Math.PI * dia * dia / 4;
-    const nBars = Math.max(4, Math.ceil(0.04 * Ag / aBar));
+    const nBars = Math.max(6, Math.ceil(0.04 * Ag / aBar));
     const nBarsEven = nBars % 2 === 0 ? nBars : nBars + 1;
     const pmX = generatePMDiagram(b, h, fc, fy, nBarsEven, dia);
     const pmY = generatePMDiagram(h, b, fc, fy, nBarsEven, dia);
@@ -3448,18 +3442,16 @@ export function calculateFrameBentUp(
     const bentFromNextLeft = i < n - 1 ? bentResults[i + 1].bentBarsArea : 0;
     const bentContributionRightAs = bentFromThisRight + bentFromNextLeft;
 
-    // Additional top bars needed (as area)
-    const additionalTopLeftAs = Math.max(0, requiredTopLeftAs - bentContributionLeftAs);
-    const additionalTopRightAs = Math.max(0, requiredTopRightAs - bentContributionRightAs);
-
-    // Convert area to bar count using top bar diameter
+    // Convert to bar counts using top bar diameter (count-based comparison for consistency)
     const aBarTop = Math.PI * topDia * topDia / 4;
-    const additionalTopLeft = Math.ceil(additionalTopLeftAs / aBarTop);
-    const additionalTopRight = Math.ceil(additionalTopRightAs / aBarTop);
-
-    // Convert contribution areas to equivalent bar counts for display
+    const requiredTopLeftBars = Math.ceil(requiredTopLeftAs / aBarTop);
+    const requiredTopRightBars = Math.ceil(requiredTopRightAs / aBarTop);
     const bentContributionLeftBars = Math.floor(bentContributionLeftAs / aBarTop);
     const bentContributionRightBars = Math.floor(bentContributionRightAs / aBarTop);
+
+    // Additional top bars needed (count-based, consistent comparison)
+    const additionalTopLeft = Math.max(0, requiredTopLeftBars - bentContributionLeftBars);
+    const additionalTopRight = Math.max(0, requiredTopRightBars - bentContributionRightBars);
 
     // Final top bars = max of what's needed at left and right
     const finalTopBars = Math.max(additionalTopLeft, additionalTopRight, 2); // minimum 2 top bars
@@ -3467,8 +3459,8 @@ export function calculateFrameBentUp(
     result.beams.push({
       beamId: bf.br.beamId,
       bentUp: bent,
-      requiredTopLeft: Math.ceil(requiredTopLeftAs / aBarTop),
-      requiredTopRight: Math.ceil(requiredTopRightAs / aBarTop),
+      requiredTopLeft: requiredTopLeftBars,
+      requiredTopRight: requiredTopRightBars,
       bentContributionLeft: bentContributionLeftBars,
       bentContributionRight: bentContributionRightBars,
       additionalTopLeft,

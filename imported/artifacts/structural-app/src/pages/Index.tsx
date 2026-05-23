@@ -4403,7 +4403,10 @@ const Index = () => {
                         {stories.map(story => 
                           (isAllStories || story.id === selectedStoryId) &&
                           beamDesigns.filter(d => {
-                            const beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            let beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            if (!beam && (d as any).mergedCarrierIds) {
+                              beam = beamsWithLoads.find(b => (d as any).mergedCarrierIds.includes(b.id));
+                            }
                             return beam?.storyId === story.id;
                           }).map(d => {
                           const bent = getBentUpData(d.beamId);
@@ -4485,10 +4488,16 @@ const Index = () => {
                         {stories.map(story =>
                           (isAllStories || story.id === selectedStoryId) &&
                           beamDesigns.filter(d => {
-                            const beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            let beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            if (!beam && (d as any).mergedCarrierIds) {
+                              beam = beamsWithLoads.find(b => (d as any).mergedCarrierIds.includes(b.id));
+                            }
                             return beam?.storyId === story.id;
                           }).map(d => {
-                            const beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            let beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            if (!beam && (d as any).mergedCarrierIds) {
+                              beam = beamsWithLoads.find(b => (d as any).mergedCarrierIds.includes(b.id));
+                            }
                             const bw = beam?.b ?? 250;
                             const hh = beam?.h ?? 500;
                             const dEff = hh - 40 - 12;  // approx effective depth
@@ -4531,7 +4540,10 @@ const Index = () => {
                         {stories.map(story =>
                           (isAllStories || story.id === selectedStoryId) &&
                           beamDesigns.filter(d => {
-                            const beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            let beam = beamsWithLoads.find(b => b.id === d.beamId);
+                            if (!beam && (d as any).mergedCarrierIds) {
+                              beam = beamsWithLoads.find(b => (d as any).mergedCarrierIds.includes(b.id));
+                            }
                             return beam?.storyId === story.id;
                           }).map(d => (
                             <TableRow key={`${story.id}-${d.beamId}`}>
@@ -4557,16 +4569,14 @@ const Index = () => {
                         {['الدور','العمود','Pu','Mx المضخم','My المضخم','Bresler','النحافة','الحالة','التسليح'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
                       </TableRow></TableHeader>
                       <TableBody>
-                        {stories.map((story, storyIdx) =>
+                        {stories.map((story) =>
                           (isAllStories || story.id === selectedStoryId) &&
                           colDesigns.filter(c => c.storyId === story.id).map(c => {
-                            const storiesAbove = stories.length - storyIdx;
-                            const accPu = c.Pu * storiesAbove;
                             return (
                           <TableRow key={`${story.id}-${c.id}`} className="cursor-pointer" onClick={() => handleSelectElement('column', c.id)}>
                             <TableCell className="text-xs font-medium text-muted-foreground">{story.label}</TableCell>
                             <TableCell className="font-mono text-xs">{c.id}</TableCell>
-                            <TableCell className="font-mono text-xs font-bold">{accPu.toFixed(1)}</TableCell>
+                            <TableCell className="font-mono text-xs font-bold">{c.Pu.toFixed(1)}</TableCell>
                             <TableCell className="font-mono text-xs">{c.design.MxMagnified.toFixed(1)}</TableCell>
                             <TableCell className="font-mono text-xs">{c.design.MyMagnified.toFixed(1)}</TableCell>
                             <TableCell className="font-mono text-xs">{c.design.breslerRatio.toFixed(2)}</TableCell>
