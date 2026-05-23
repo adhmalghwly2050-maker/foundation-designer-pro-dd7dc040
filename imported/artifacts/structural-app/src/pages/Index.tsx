@@ -3835,6 +3835,7 @@ const Index = () => {
                   columns={columns}
                   slabProps={slabProps}
                   mat={mat}
+                  colLoads3D={colLoads3D}
                 />
               </TabsContent>
             </Tabs>
