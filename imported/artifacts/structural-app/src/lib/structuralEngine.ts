@@ -2817,6 +2817,61 @@ export function getJointConnectivityInfo(
   return results;
 }
 
+// ─── Safe Dimension Suggester ─────────────────────────────────────────────────
+
+/**
+ * Find the minimum standard b×h (mm) that makes a column structurally safe
+ * under biaxial bending per Bresler Reciprocal Method with ρ = 4%.
+ *
+ * Standard sizes tried (mm): 200, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800
+ * Tries combinations in ascending area order so it returns the smallest adequate section.
+ *
+ * Returns { b, h } or null if no standard size up to 800×800 is sufficient.
+ */
+function suggestSafeDimensions(
+  Pu: number,
+  MxMagnified: number,
+  MyMagnified: number,
+  fc: number,
+  fy: number,
+): { b: number; h: number } | null {
+  const sizes = [200, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800];
+  const dia = 20;
+  const aBar = Math.PI * dia * dia / 4;
+
+  // Generate all b×h pairs (h ≥ b) sorted by area ascending
+  const pairs: { b: number; h: number; area: number }[] = [];
+  for (const h of sizes) {
+    for (const b of sizes.filter(s => s <= h)) {
+      pairs.push({ b, h, area: b * h });
+    }
+  }
+  pairs.sort((a, b) => a.area - b.area);
+
+  for (const { b: bT, h: hT } of pairs) {
+    const Ag = bT * hT;
+    const nBars = Math.max(4, Math.ceil(0.04 * Ag / aBar));
+    const nBarsEven = nBars % 2 === 0 ? nBars : nBars + 1;
+    if (nBarsEven > 28) continue; // impractical
+
+    const pmX = generatePMDiagram(bT, hT, fc, fy, nBarsEven, dia);
+    const pmY = generatePMDiagram(hT, bT, fc, fy, nBarsEven, dia);
+    const checkX = checkPMCapacity(Pu, MxMagnified, pmX);
+    const checkY = checkPMCapacity(Pu, MyMagnified, pmY);
+
+    const Ast = nBarsEven * aBar;
+    const P0  = (0.85 * fc * (Ag - Ast) + fy * Ast) / 1000;
+    const phiP0  = 0.65 * 0.80 * P0;
+    const phiPnx = checkX.phiPn > 0 ? checkX.phiPn : phiP0;
+    const phiPny = checkY.phiPn > 0 ? checkY.phiPn : phiP0;
+    const recip  = 1 / phiPnx + 1 / phiPny - 1 / phiP0;
+    const bRatio = recip > 0 ? Pu / (1 / recip) : 999;
+
+    if (bRatio <= 1.0) return { b: bT, h: hT };
+  }
+  return null;
+}
+
 // ===================== BIAXIAL COLUMN DESIGN (Bresler Reciprocal Method) =====================
 
 /**
@@ -2844,6 +2899,10 @@ export interface BiaxialColumnResult extends ColumnResult {
   slendernessStatusY: string;
   requiredBForNonSlender: number;
   requiredHForNonSlender: number;
+  /** Minimum b (mm) to make column safe structurally — null if current section is adequate. */
+  requiredBForSafety?: number;
+  /** Minimum h (mm) to make column safe structurally — null if current section is adequate. */
+  requiredHForSafety?: number;
   suggestRotation: boolean;
   rotationReason: string;
   wasRotated: boolean;
@@ -3255,6 +3314,25 @@ export function designColumnBiaxial(
       compressionControlled,
       balancedPb, balancedMb,
     };
+  }
+
+  // Post-process: if the final result is still unsafe, compute minimum safe dimensions.
+  // Uses fixed magnified moments (conservative: same loads, larger section).
+  if (bestResult && !bestResult.biaxialAdequate) {
+    const suggestion = suggestSafeDimensions(
+      bestResult.Pu,
+      bestResult.MxMagnified,
+      bestResult.MyMagnified,
+      fc,
+      fy,
+    );
+    if (suggestion) {
+      bestResult = {
+        ...bestResult,
+        requiredBForSafety: suggestion.b,
+        requiredHForSafety: suggestion.h,
+      };
+    }
   }
 
   return bestResult;

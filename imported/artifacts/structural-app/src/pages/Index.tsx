@@ -4773,6 +4773,11 @@ const Index = () => {
                               <Badge variant={c.design.biaxialAdequate ? "default" : "destructive"} className="text-[10px]">
                                 {c.design.biaxialAdequate ? 'آمن' : 'غير آمن'}
                               </Badge>
+                              {!c.design.biaxialAdequate && c.design.requiredBForSafety && (
+                                <div className="text-[9px] text-destructive mt-0.5 font-bold leading-tight">
+                                  ⇒ {c.design.requiredBForSafety}×{c.design.requiredHForSafety}mm
+                                </div>
+                              )}
                             </TableCell>
                             <TableCell className="font-mono text-xs">{c.design.bars}Φ{c.design.dia}</TableCell>
                           </TableRow>

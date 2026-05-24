@@ -2,6 +2,7 @@
  * Geometry Processor
  * ═══════════════════════════════════════════════════════════════
  * Converts raw model input into a clean StructuralModel:
+ * - Analytical connectivity resolution (beam-to-column snap, ETABS-style)
  * - Merges coincident nodes (tolerance-based spatial hashing)
  * - Detects shared edges between elements
  * - Builds connectivity graph
@@ -10,6 +11,7 @@
  */
 
 import type { StructuralModel, StructuralNode, StructuralElement } from '../model/types';
+import { processTopology } from '../connectivity/analyticalConnectivity';
 
 /** Default merge tolerance in mm. */
 const MERGE_TOLERANCE = 1.0;
@@ -179,11 +181,21 @@ export function processGeometry(
   model: StructuralModel,
   tolerance: number = MERGE_TOLERANCE,
 ): ProcessedGeometry {
-  // 1. Merge nodes
-  const nodeMergeResult = mergeNodes(model.nodes, tolerance);
+  // 0. Analytical connectivity resolution (ETABS-style beam-to-column snap).
+  //    This must run BEFORE node merging so that beam endpoints offset from
+  //    column centrelines are snapped analytically before the 1mm merge step.
+  const topologyResult = processTopology(model);
+  const analyticalModel: StructuralModel = {
+    ...model,
+    nodes: topologyResult.nodes,
+    elements: topologyResult.elements,
+  };
+
+  // 1. Merge nodes (standard 1mm tolerance after analytical snap)
+  const nodeMergeResult = mergeNodes(analyticalModel.nodes, tolerance);
 
   // 2. Remap element node IDs
-  const remappedElements: StructuralElement[] = model.elements.map(el => ({
+  const remappedElements: StructuralElement[] = analyticalModel.elements.map(el => ({
     ...el,
     nodeIds: el.nodeIds.map(nid => nodeMergeResult.idMap.get(nid) ?? nid),
   }));
@@ -195,7 +207,7 @@ export function processGeometry(
   const beamSlabIntersections = detectBeamSlabIntersections(remappedElements);
 
   const processedModel: StructuralModel = {
-    ...model,
+    ...analyticalModel,
     nodes: nodeMergeResult.mergedNodes,
     elements: remappedElements,
   };
