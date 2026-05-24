@@ -2066,11 +2066,14 @@ export function designColumnETABS(
   const isSlender = kLu_r > slendernessLimit;
   const checkSlender = isSlender ? 'نحيف' : 'قصير';
 
+  // ACI 318-19 §6.6.4: For short columns use analysis moment directly.
+  // For slender columns apply M2,min per §6.6.4.5.4 then magnify.
   let deltaNs = 1.0;
-  let MuMagnified = Math.max(Mu, Pu * (15 + 0.03 * h) / 1000);
+  let MuMagnified = Math.abs(Mu); // short column: analysis moment used directly
 
   if (isSlender) {
-    const mag = momentMagnification(Pu, Mu, b, h, fc, fy, Lu, k);
+    const M2_design = Math.max(Math.abs(Mu), Pu * (15 + 0.03 * h) / 1000);
+    const mag = momentMagnification(Pu, M2_design, b, h, fc, fy, Lu, k);
     deltaNs = mag.deltaNs;
     MuMagnified = mag.MuMagnified;
   }
@@ -2996,22 +2999,27 @@ export function designColumnBiaxial(
   const M1y = Math.min(Math.abs(myTop), Math.abs(myBot));
   const M2y = Math.max(Math.abs(myTop), Math.abs(myBot));
 
-  // Moment magnification
+  // Moment magnification — ACI 318-19 §6.6.4
+  // For SHORT columns: use analysis moments directly (no minimum eccentricity required per ACI 318-19).
+  // For SLENDER columns: apply M2,min = Pu*(15+0.03h)/1000 per §6.6.4.5.4, then magnify with δns.
   let deltaNsX = 1.0;
-  let MxMagnified = Math.max(Math.abs(Mx), Pu * (15 + 0.03 * h) / 1000);
+  let MxMagnified = Math.abs(Mx); // short column default: analysis moment used directly
   if (isSlenderX) {
-    // Pass signed ratio for Cm calculation
-    const signedM1x = M2x > 0 ? ratioX * M2x : 0; // reconstruct signed M1
-    const magX = momentMagnification(Pu, Math.abs(Mx), b, h, fc, fy, Lu, kx, signedM1x, M2x);
+    // ACI 318-19 §6.6.4.5.4: M2 shall not be taken less than M2,min = Pu*(15+0.03h) [SI]
+    const M2x_design = Math.max(Math.abs(Mx), Pu * (15 + 0.03 * h) / 1000);
+    const signedM1x = M2x_design > 0 ? ratioX * M2x_design : 0;
+    const magX = momentMagnification(Pu, M2x_design, b, h, fc, fy, Lu, kx, signedM1x, M2x_design);
     deltaNsX = magX.deltaNs;
     MxMagnified = magX.MuMagnified;
   }
 
   let deltaNsY = 1.0;
-  let MyMagnified = Math.max(Math.abs(My), Pu * (15 + 0.03 * b) / 1000);
+  let MyMagnified = Math.abs(My); // short column default: analysis moment used directly
   if (isSlenderY) {
-    const signedM1y = M2y > 0 ? ratioY * M2y : 0;
-    const magY = momentMagnification(Pu, Math.abs(My), h, b, fc, fy, Lu, ky, signedM1y, M2y);
+    // ACI 318-19 §6.6.4.5.4: M2 shall not be taken less than M2,min = Pu*(15+0.03b) [SI]
+    const M2y_design = Math.max(Math.abs(My), Pu * (15 + 0.03 * b) / 1000);
+    const signedM1y = M2y_design > 0 ? ratioY * M2y_design : 0;
+    const magY = momentMagnification(Pu, M2y_design, h, b, fc, fy, Lu, ky, signedM1y, M2y_design);
     deltaNsY = magY.deltaNs;
     MyMagnified = magY.MuMagnified;
   }

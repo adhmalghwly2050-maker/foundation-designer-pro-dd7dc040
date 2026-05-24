@@ -4725,11 +4725,17 @@ const Index = () => {
                 </Card>
 
                 <Card>
-                  <CardHeader className="pb-2"><CardTitle className="text-sm">تصميم الأعمدة (Bresler - ثنائي المحور)</CardTitle></CardHeader>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">تصميم الأعمدة (Bresler - ثنائي المحور)</CardTitle>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      <span className="font-semibold text-foreground">Mx / My</span> = عزوم التحليل من النموذج ثلاثي الأبعاد (kN·m) ·
+                      <span className="font-semibold text-foreground"> Mx* / My*</span> = عزوم التصميم المضخّمة (kN·m، تشمل δns للأعمدة النحيفة وفق ACI 318-19 §6.6.4.5)
+                    </p>
+                  </CardHeader>
                   <CardContent className="overflow-x-auto">
                     <Table>
                       <TableHeader><TableRow>
-                        {['الدور','العمود','Pu','Mx المضخم','My المضخم','Bresler','النحافة','الحالة','التسليح'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
+                        {['الدور','العمود','Pu (kN)','Mx (kN·m)','My (kN·m)','Mx* (kN·m)','My* (kN·m)','Bresler','النحافة','الحالة','التسليح'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
                       </TableRow></TableHeader>
                       <TableBody>
                         {stories.map((story) =>
@@ -4740,8 +4746,10 @@ const Index = () => {
                             <TableCell className="text-xs font-medium text-muted-foreground">{story.label}</TableCell>
                             <TableCell className="font-mono text-xs">{c.id}</TableCell>
                             <TableCell className="font-mono text-xs font-bold">{c.Pu.toFixed(1)}</TableCell>
-                            <TableCell className="font-mono text-xs">{c.design.MxMagnified.toFixed(1)}</TableCell>
-                            <TableCell className="font-mono text-xs">{c.design.MyMagnified.toFixed(1)}</TableCell>
+                            <TableCell className="font-mono text-xs text-blue-600 dark:text-blue-400">{c.Mx.toFixed(1)}</TableCell>
+                            <TableCell className="font-mono text-xs text-blue-600 dark:text-blue-400">{c.My.toFixed(1)}</TableCell>
+                            <TableCell className="font-mono text-xs font-semibold">{c.design.MxMagnified.toFixed(1)}</TableCell>
+                            <TableCell className="font-mono text-xs font-semibold">{c.design.MyMagnified.toFixed(1)}</TableCell>
                             <TableCell className="font-mono text-xs">{c.design.breslerRatio.toFixed(2)}</TableCell>
                             <TableCell className="text-xs">
                               {c.design.checkSlenderness}
