@@ -730,21 +730,20 @@ const Index = () => {
       nodeJRestraints: releaseEditorData.nodeJ,
     });
 
-    // Save dimensions if changed
-    const dimsChanged = releaseEditorDims.b !== beam.b || releaseEditorDims.h !== beam.h;
-    if (dimsChanged) {
-      if (releaseEditorApplyOtherFloors) {
-        // Apply to all beams at same x1,y1,x2,y2 position (different floors)
-        const samePosBeans = beams.filter(b =>
-          Math.abs(b.x1 - beam.x1) < 0.01 && Math.abs(b.y1 - beam.y1) < 0.01 &&
-          Math.abs(b.x2 - beam.x2) < 0.01 && Math.abs(b.y2 - beam.y2) < 0.01
-        );
-        for (const b of samePosBeans) {
-          dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: b.id, override: { b: releaseEditorDims.b, h: releaseEditorDims.h } });
-        }
-      } else {
-        dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: beam.id, override: { b: releaseEditorDims.b, h: releaseEditorDims.h } });
+    // Save dimensions (always dispatch — let the user decide what to save)
+    const newB = Number(releaseEditorDims.b) || beam.b;
+    const newH = Number(releaseEditorDims.h) || beam.h;
+    if (releaseEditorApplyOtherFloors) {
+      // Apply to all beams at same x1,y1,x2,y2 position (different floors)
+      const samePosBeans = beams.filter(b =>
+        Math.abs(b.x1 - beam.x1) < 0.01 && Math.abs(b.y1 - beam.y1) < 0.01 &&
+        Math.abs(b.x2 - beam.x2) < 0.01 && Math.abs(b.y2 - beam.y2) < 0.01
+      );
+      for (const b of samePosBeans) {
+        dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: b.id, override: { b: newB, h: newH } });
       }
+    } else {
+      dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: beam.id, override: { b: newB, h: newH } });
     }
 
     dispatch({ type: 'RESET_ANALYSIS' });
@@ -3890,19 +3889,41 @@ const Index = () => {
                       onClick={() => {
                         import('xlsx').then(XLSX => {
                           const data: any[] = [];
+                          // Build set of split-part IDs to skip
+                          const splitPartIdsXls = new Set<string>();
+                          for (const parts of Object.values(splitBeamGroups)) {
+                            for (const p of parts) splitPartIdsXls.add(p);
+                          }
                           for (const fr of frameResults) {
+                            // Collect canonical beams (merge split parts)
+                            const seen = new Set<string>();
                             for (const b of fr.beams) {
-                              const bBeam = beamsWithLoads.find(bw => bw.id === b.beamId);
-                              const story = bBeam ? stories.find(s => s.id === bBeam.storyId) : null;
+                              let canonId = b.beamId;
+                              if (splitPartIdsXls.has(b.beamId)) {
+                                const base = Object.entries(splitBeamGroups).find(([, parts]) => parts.includes(b.beamId))?.[0];
+                                if (base) canonId = base;
+                              }
+                              if (seen.has(canonId)) continue;
+                              seen.add(canonId);
+                              // Aggregate across all parts
+                              const partIds = splitBeamGroups[canonId] || [canonId];
+                              const allParts = fr.beams.filter(x => partIds.includes(x.beamId));
+                              const aggMleft = allParts.reduce((m, x) => Math.max(m, Math.abs(x.Mleft)), 0);
+                              const aggMmid  = allParts.reduce((m, x) => Math.max(m, x.Mmid), 0);
+                              const aggMright = allParts.reduce((m, x) => Math.max(m, Math.abs(x.Mright)), 0);
+                              const aggVu    = allParts.reduce((m, x) => Math.max(m, x.Vu), 0);
+                              const aggSpan  = allParts.reduce((s, x) => s + x.span, 0) || b.span;
+                              const repBeam = beamsWithLoads.find(bw => bw.id === canonId) || beamsWithLoads.find(bw => partIds.includes(bw.id));
+                              const story = repBeam ? stories.find(s => s.id === repBeam.storyId) : null;
                               data.push({
                                 'الإطار': fr.frameId,
                                 'الدور': story?.label ?? '',
-                                'الجسر': b.beamId,
-                                'البحر (م)': +b.span.toFixed(2),
-                                'M يسار (kN·m)': +b.Mleft.toFixed(2),
-                                'M منتصف (kN·m)': +b.Mmid.toFixed(2),
-                                'M يمين (kN·m)': +b.Mright.toFixed(2),
-                                'Vu (kN)': +b.Vu.toFixed(2),
+                                'الجسر': canonId,
+                                'البحر (م)': +aggSpan.toFixed(2),
+                                'M يسار (kN·m)': +aggMleft.toFixed(2),
+                                'M منتصف (kN·m)': +aggMmid.toFixed(2),
+                                'M يمين (kN·m)': +aggMright.toFixed(2),
+                                'Vu (kN)': +aggVu.toFixed(2),
                               });
                             }
                           }
@@ -3918,7 +3939,39 @@ const Index = () => {
                     </Button>
                   </div>
                 )}
-                {frameResults.map(fr => (
+                {frameResults.map(fr => {
+                  // Build merged beam list — one row per canonical beam
+                  const splitPartIdsTable = new Set<string>();
+                  for (const parts of Object.values(splitBeamGroups)) {
+                    for (const p of parts) splitPartIdsTable.add(p);
+                  }
+                  const mergedBeams: Array<{
+                    canonId: string; span: number;
+                    Mleft: number; Mmid: number; Mright: number; Vu: number;
+                    firstPartId: string;
+                  }> = [];
+                  const seenIds = new Set<string>();
+                  for (const b of fr.beams) {
+                    let canonId = b.beamId;
+                    if (splitPartIdsTable.has(b.beamId)) {
+                      const base = Object.entries(splitBeamGroups).find(([, parts]) => parts.includes(b.beamId))?.[0];
+                      if (base) canonId = base;
+                    }
+                    if (seenIds.has(canonId)) continue;
+                    seenIds.add(canonId);
+                    const partIds = splitBeamGroups[canonId] || [canonId];
+                    const allParts = fr.beams.filter(x => partIds.includes(x.beamId));
+                    mergedBeams.push({
+                      canonId,
+                      firstPartId: b.beamId,
+                      span: allParts.reduce((s, x) => s + x.span, 0) || b.span,
+                      Mleft:  allParts.reduce((m, x) => { const v = Math.abs(x.Mleft);  return v > Math.abs(m) ? -v : m; }, b.Mleft),
+                      Mmid:   allParts.reduce((m, x) => Math.abs(x.Mmid) > Math.abs(m) ? x.Mmid : m, b.Mmid),
+                      Mright: allParts.reduce((m, x) => { const v = Math.abs(x.Mright); return v > Math.abs(m) ? -v : m; }, b.Mright),
+                      Vu:     allParts.reduce((m, x) => Math.max(m, x.Vu), b.Vu),
+                    });
+                  }
+                  return (
                   <Card key={fr.frameId}>
                     <CardHeader className="pb-2">
                       <CardTitle className="text-sm">إطار {fr.frameId} <span className="text-muted-foreground text-xs">(اضغط على جسر لعرض الرسومات)</span></CardTitle>
@@ -3929,14 +3982,14 @@ const Index = () => {
                           {['الجسر','البحر','M علوي يسار','M سفلي أقصى','M علوي يمين','Vu','📊'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
                         </TableRow></TableHeader>
                         <TableBody>
-                          {fr.beams.map(b => {
+                          {mergedBeams.map(b => {
                             const midMoment = b.Mmid;
-                            // Determine hinge status for this beam (same logic as handleAnalysisElementClick)
-                            const bBeam = beamsWithLoads.find(bw => bw.id === b.beamId);
+                            const bBeam = beamsWithLoads.find(bw => bw.id === b.canonId)
+                              || beamsWithLoads.find(bw => (splitBeamGroups[b.canonId] || [b.canonId]).includes(bw.id));
                             let bHingeLeft = false, bHingeRight = false;
                             if (bBeam) {
                               for (const conn of detectedConnections) {
-                                if (conn.secondaryBeamIds.includes(b.beamId)) {
+                                if (conn.secondaryBeamIds.includes(b.firstPartId)) {
                                   if (bBeam.fromCol === conn.removedColumnId) bHingeLeft  = true;
                                   if (bBeam.toCol   === conn.removedColumnId) bHingeRight = true;
                                 }
@@ -3945,18 +3998,16 @@ const Index = () => {
                               if (rs.nodeI.rz) bHingeLeft  = true;
                               if (rs.nodeJ.rz) bHingeRight = true;
                             }
-                            const displayMleft  = b.Mleft;
-                            const displayMright = b.Mright;
                             return (
-                            <TableRow key={b.beamId} className="cursor-pointer hover:bg-accent/10" onClick={() => handleAnalysisElementClick(b.beamId)}>
-                              <TableCell className="font-mono text-xs">{b.beamId}</TableCell>
+                            <TableRow key={b.canonId} className="cursor-pointer hover:bg-accent/10" onClick={() => handleAnalysisElementClick(b.firstPartId)}>
+                              <TableCell className="font-mono text-xs">{b.canonId}</TableCell>
                               <TableCell className="font-mono text-xs">{b.span.toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs" style={{ color: displayMleft < 0 ? 'hsl(0 84.2% 60.2%)' : 'hsl(142 71% 45%)' }}>
-                                {displayMleft.toFixed(2)}{bHingeLeft ? ' ⭕' : ''}
+                              <TableCell className="font-mono text-xs" style={{ color: b.Mleft < 0 ? 'hsl(0 84.2% 60.2%)' : 'hsl(142 71% 45%)' }}>
+                                {b.Mleft.toFixed(2)}{bHingeLeft ? ' ⭕' : ''}
                               </TableCell>
                               <TableCell className="font-mono text-xs font-bold" style={{ color: midMoment > 0 ? 'hsl(142 71% 45%)' : 'hsl(0 84.2% 60.2%)' }}>{midMoment.toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs" style={{ color: displayMright < 0 ? 'hsl(0 84.2% 60.2%)' : 'hsl(142 71% 45%)' }}>
-                                {displayMright.toFixed(2)}{bHingeRight ? ' ⭕' : ''}
+                              <TableCell className="font-mono text-xs" style={{ color: b.Mright < 0 ? 'hsl(0 84.2% 60.2%)' : 'hsl(142 71% 45%)' }}>
+                                {b.Mright.toFixed(2)}{bHingeRight ? ' ⭕' : ''}
                               </TableCell>
                               <TableCell className="font-mono text-xs">{b.Vu.toFixed(2)}</TableCell>
                               <TableCell><Badge variant="outline" className="text-[10px] cursor-pointer">رسومات</Badge></TableCell>
@@ -3967,7 +4018,8 @@ const Index = () => {
                       </Table>
                     </CardContent>
                   </Card>
-                ))}
+                  );
+                })}
 
                 {/* ── الجدول ثنائي المحور نُقل إلى تبويب "الأعمدة ثنائية المحور" ── */}
 
@@ -4133,6 +4185,53 @@ const Index = () => {
                           onClick={() => setBiaxialSelectedCols(new Set())}
                         >
                           ✕ إلغاء التحديد
+                        </button>
+
+                        {/* زر تصدير نتائج الأعمدة إلى Excel */}
+                        <button
+                          className="text-xs px-2 py-1 rounded border border-border hover:bg-accent/30 transition-colors flex items-center gap-1"
+                          onClick={() => {
+                            import('xlsx').then(XLSX => {
+                              const data: any[] = [];
+                              for (const story of stories) {
+                                if (biaxialStoryFilter && story.id !== biaxialStoryFilter) continue;
+                                for (const c of colDesigns.filter(cd => cd.storyId === story.id)) {
+                                  const loads = colLoads3D.get(c.id);
+                                  const Pu = loads?.Pu ?? 0;
+                                  const MxTop = loads?.MxTop ?? 0;
+                                  const MxBot = loads?.MxBot ?? 0;
+                                  const MyTop = loads?.MyTop ?? 0;
+                                  const MyBot = loads?.MyBot ?? 0;
+                                  const maxMx = Math.max(Math.abs(MxTop), Math.abs(MxBot));
+                                  const maxMy = Math.max(Math.abs(MyTop), Math.abs(MyBot));
+                                  data.push({
+                                    'الدور': story.label,
+                                    'العمود': c.id,
+                                    'b (مم)': c.b,
+                                    'h (مم)': c.h,
+                                    'Pu (kN)': +Pu.toFixed(1),
+                                    'Mx أعلى (kN·m)': +MxTop.toFixed(2),
+                                    'Mx أسفل (kN·m)': +MxBot.toFixed(2),
+                                    'My أعلى (kN·m)': +MyTop.toFixed(2),
+                                    'My أسفل (kN·m)': +MyBot.toFixed(2),
+                                    'Mx أقصى (kN·m)': +maxMx.toFixed(2),
+                                    'My أقصى (kN·m)': +maxMy.toFixed(2),
+                                    'نحافة X': c.design.slendernessStatusX,
+                                    'نحافة Y': c.design.slendernessStatusY,
+                                    'الارتفاع (مم)': story.height,
+                                    'الحالة': c.design.biaxialAdequate ? 'آمن' : 'غير آمن',
+                                  });
+                                }
+                              }
+                              const ws = XLSX.utils.json_to_sheet(data);
+                              const wb = XLSX.utils.book_new();
+                              XLSX.utils.book_append_sheet(wb, ws, 'نتائج الأعمدة');
+                              XLSX.writeFile(wb, 'column_biaxial_results.xlsx');
+                            });
+                          }}
+                        >
+                          <Download size={12} />
+                          تصدير إلى Excel
                         </button>
 
                         {/* زر التدوير الجماعي */}
