@@ -3,7 +3,8 @@
  * Includes undo history, wall load support, and multi-story support.
  */
 
-import type { Slab, Column, Beam, MatProps, SlabProps, FrameResult, BeamOnBeamConnection, Story } from '@/lib/structuralEngine';
+import type { Slab, Column, Beam, MatProps, SlabProps, FrameResult, BeamOnBeamConnection, Story, ManualJointOverride } from '@/lib/structuralEngine';
+export type { ManualJointOverride };
 import type { ToolType } from '@/components/ToolPalette';
 import type { EngineType } from '@/lib/analysisController';
 
@@ -91,6 +92,11 @@ export interface AppState {
    * Per-column: true = enable rigid zone from each beam end to column face.
    */
   colRigidEndOffsets: Record<string, boolean>;
+  /**
+   * اتصالات جسر-عمود يدوية: تجبر نقطة نهاية الجسر على الاتصال بمركز العمود
+   * حتى لو لم تتطابق إحداثياتهما هندسياً.
+   */
+  manualJointOverrides: ManualJointOverride[];
   /** نتائج التحليل المستوردة من ETABS لاستخدامها في التصميم */
   etabsAnalysisData: { beamId: string; story: string; Mleft: number; Mmid: number; Mright: number; Vu: number }[];
   /** معلومات جدول اللوحة (Title Block) */
@@ -187,7 +193,8 @@ export type AppAction =
   | { type: 'ADD_VIRTUAL_REMOVED_COLUMN'; colId: string; x: number; y: number }
   | { type: 'SET_ETABS_IMPORT_MODE'; value: boolean }
   | { type: 'SET_ETABS_ANALYSIS_DATA'; data: AppState['etabsAnalysisData'] }
-  | { type: 'SET_TITLE_BLOCK_CONFIG'; config: Partial<AppState['titleBlockConfig']> };
+  | { type: 'SET_TITLE_BLOCK_CONFIG'; config: Partial<AppState['titleBlockConfig']> }
+  | { type: 'SET_MANUAL_JOINT_OVERRIDES'; overrides: ManualJointOverride[] };
 
 const defaultStoryId = 'ST1';
 
@@ -282,6 +289,7 @@ export const initialState: AppState = {
   colStiffnessFactor: 0.70,
   bobManualPrimary: {},
   colRigidEndOffsets: {},
+  manualJointOverrides: [],
 };
 
 // Actions that should NOT be tracked in undo (UI-only actions)
@@ -372,6 +380,8 @@ function coreReducer(state: AppState, action: AppAction): AppState {
       }
       return { ...state, colRigidEndOffsets: updated, analyzed: false };
     }
+    case 'SET_MANUAL_JOINT_OVERRIDES':
+      return { ...state, manualJointOverrides: action.overrides, analyzed: false };
     case 'SET_ACTIVE_TAB':
       return { ...state, activeTab: action.tab };
     case 'SET_MODE':

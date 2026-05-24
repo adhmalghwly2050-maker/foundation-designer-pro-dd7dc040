@@ -418,6 +418,26 @@ export interface BeamOnBeamConnection {
   reactionForce: number;
 }
 
+/**
+ * Manual beam-to-column joint override.
+ * Forces a specific beam endpoint to analytically connect to a column,
+ * even when their centrelines do not geometrically coincide.
+ *
+ * The snap picks whichever beam endpoint is geometrically closer to the
+ * specified column and moves it to the column centreline in the FEM model.
+ * No fake tiny members are created — connectivity is enforced via shared DOF node.
+ */
+export interface ManualJointOverride {
+  /** Unique ID for this override (typically `${columnId}_${beamId}`). */
+  id: string;
+  /** Column to snap to. */
+  columnId: string;
+  /** Beam whose nearest endpoint is force-snapped to that column. */
+  beamId: string;
+  /** Story context (for UI filtering). */
+  storyId: string;
+}
+
 // ===================== STRUCTURED RESULT TYPES =====================
 export interface BeamAnalysisResult {
   beamId: string;

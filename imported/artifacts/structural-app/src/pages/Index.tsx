@@ -19,6 +19,7 @@ import {
   getJointConnectivityInfo, JointConnectivityInfo,
 } from "@/lib/structuralEngine";
 import { getColumnLoads3D, getFrameResults3D } from "@/lib/analyze3DColumns";
+import ManualConnectionManager from "@/components/ManualConnectionManager";
 import { adaptFEMResults, ENGINE_LABELS, type EngineType } from '@/lib/analysisController';
 import { getFrameResultsGlobalFrame } from '@/lib/globalFrameBridge';
 import { getConnectedSlabResults } from "@/slabFEMEngine";
@@ -132,6 +133,7 @@ const Index = () => {
     modalOpen, selectedElement, elemPropsOpen, elemPropsFrameId, elemPropsAreaId,
     diagramOpen, diagramData, savedMessage, bobManualPrimary, undoStack,
     colRigidEndOffsets,
+    manualJointOverrides,
   } = state;
 
   /**
@@ -195,6 +197,8 @@ const Index = () => {
   const [biaxialSelectedCols, setBiaxialSelectedCols] = React.useState<Set<string>>(new Set());
   const [biaxialStoryFilter, setBiaxialStoryFilter] = React.useState<string>('');
   const [rotatedColIds, setRotatedColIds] = React.useState<Set<string>>(new Set());
+
+  const [connectionManagerOpen, setConnectionManagerOpen] = React.useState(false);
 
   // Custom load combinations
   const [loadCombos, setLoadCombos] = React.useState([
@@ -1225,12 +1229,12 @@ const Index = () => {
       return getFrameResults3D(
         frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, conns3DLegacy,
         slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor,
-        /* enforceReleasedZeros */ false, colRigidEndOffsets,
+        /* enforceReleasedZeros */ false, colRigidEndOffsets, manualJointOverrides,
       );
     } catch {
       return [] as FrameResult[];
     }
-  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets]);
+  }, [analyzed, frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets, manualJointOverrides]);
 
   // Global Frame results for comparison
   const frameResultsGF = useMemo(() => {
@@ -1259,12 +1263,12 @@ const Index = () => {
       // 3D Legacy: نقل أحمال البلاطات إلى الجسور بنفس طريقة محرك 2D
       // (التوزيع الهندسي عبر buildSlabEdgeLoads + computeBeamLoadProfile — نظرية خط الانهيار/المساحة الرافدة)
       // وليس عبر FEM، لضمان تطابق الأحمال المنقولة بين 2D و 3D Legacy.
-      return getColumnLoads3D(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets);
+      return getColumnLoads3D(frames, beamsWithLoads, columns, mat, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, false, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets, manualJointOverrides);
     } catch {
       // Fallback to 2D if 3D fails
       return colLoadsBiaxial;
     }
-  }, [analyzed, frames, beamsWithLoads, columns, mat, colLoadsBiaxial, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets]);
+  }, [analyzed, frames, beamsWithLoads, columns, mat, colLoadsBiaxial, effectiveFrameEndReleases, autoDetectedConnections, slabs, slabProps, beamStiffnessFactor, colStiffnessFactor, colRigidEndOffsets, manualJointOverrides]);
 
   const jointConnectivity = useMemo(() => {
     if (!analyzed) return [] as JointConnectivityInfo[];
@@ -4726,7 +4730,23 @@ const Index = () => {
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm">تصميم الأعمدة (Bresler - ثنائي المحور)</CardTitle>
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="text-sm">تصميم الأعمدة (Bresler - ثنائي المحور)</CardTitle>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[11px] px-2 gap-1 shrink-0"
+                        onClick={() => setConnectionManagerOpen(true)}
+                        title="ربط الجسور بالأعمدة يدوياً عندما لا تتطابق الإحداثيات"
+                      >
+                        🔗 اتصالات يدوية
+                        {manualJointOverrides.length > 0 && (
+                          <Badge variant="secondary" className="text-[9px] h-4 px-1 mr-0.5 bg-blue-100 text-blue-700">
+                            {manualJointOverrides.length}
+                          </Badge>
+                        )}
+                      </Button>
+                    </div>
                     <p className="text-[10px] text-muted-foreground mt-1">
                       <span className="font-semibold text-foreground">Mx / My</span> = عزوم التحليل من النموذج ثلاثي الأبعاد (kN·m) ·
                       <span className="font-semibold text-foreground"> Mx* / My*</span> = عزوم التصميم المضخّمة (kN·m، تشمل δns للأعمدة النحيفة وفق ACI 318-19 §6.6.4.5)

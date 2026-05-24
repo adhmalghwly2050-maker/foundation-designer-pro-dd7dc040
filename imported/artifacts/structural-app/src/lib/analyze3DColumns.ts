@@ -8,7 +8,7 @@
  *   - nodeI = أسفل العمود (Bot), nodeJ = أعلى العمود (Top)
  */
 
-import type { Beam, Column, Frame, FrameResult, MatProps, BeamOnBeamConnection, Slab, SlabProps } from '@/lib/structuralEngine';
+import type { Beam, Column, Frame, FrameResult, MatProps, BeamOnBeamConnection, Slab, SlabProps, ManualJointOverride } from '@/lib/structuralEngine';
 import { analyze3DFrame, analyze3DFrameMultiLoad, type Node3D, type Element3D, type Model3D, type LoadCase3D } from '@/lib/solver3D';
 import { computeFEMSlabProfiles } from '@/lib/femLoadBridge';
 import { buildSlabEdgeLoads, computeBeamLoadProfile } from '@/lib/slabLoadTransfer';
@@ -81,6 +81,7 @@ function build3DModelWithPatternLoading(
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
   colRigidEndOffsets?: Record<string, boolean>,
+  manualJointOverrides?: ManualJointOverride[],
 ): { model: Model3D; patternCases: LoadCase3D[]; primaryBeamSplitIds: Map<string, string>; serviceCaseIndex: number } {
   const beamsMap = new Map(beams.map(b => [b.id, b]));
   const E = 4700 * Math.sqrt(mat.fc) * 1000; // MPa → kPa (kN/m²) — consistent with kN/m loads
@@ -284,8 +285,27 @@ function build3DModelWithPatternLoading(
       // Apply column rigid-zone snap: if a beam endpoint falls within a
       // column's cross-sectional footprint, snap it to the column centreline
       // so the beam shares the column's DOF node (ETABS rigid-zone behaviour).
-      const [sx1, sy1] = snapToColumnCenter(x1Mm, y1Mm, zMm);
-      const [sx2, sy2] = snapToColumnCenter(x2Mm, y2Mm, zMm);
+      let [sx1, sy1] = snapToColumnCenter(x1Mm, y1Mm, zMm);
+      let [sx2, sy2] = snapToColumnCenter(x2Mm, y2Mm, zMm);
+
+      // Manual joint overrides: user-specified beam→column connections.
+      // Force-snaps the nearest beam endpoint to the column centreline
+      // regardless of whether it falls inside the column bounding box.
+      if (manualJointOverrides) {
+        for (const override of manualJointOverrides) {
+          if (override.beamId !== beamId) continue;
+          const oc = columns.find(c => !c.isRemoved && c.id === override.columnId);
+          if (!oc) continue;
+          const ocx  = oc.x * 1000;
+          const ocy  = oc.y * 1000;
+          const ozTop = oc.zTop ?? ((oc.zBottom ?? 0) + oc.L);
+          if (Math.abs(zMm - ozTop) > 200) continue;
+          const d1sq = (x1Mm - ocx) ** 2 + (y1Mm - ocy) ** 2;
+          const d2sq = (x2Mm - ocx) ** 2 + (y2Mm - ocy) ** 2;
+          if (d1sq <= d2sq) { sx1 = ocx; sy1 = ocy; }
+          else               { sx2 = ocx; sy2 = ocy; }
+        }
+      }
       const isHorizBeam = Math.abs(x2Mm - x1Mm) >= Math.abs(y2Mm - y1Mm);
 
       // Probe with NO restraints — registry OR-merges so any column-bottom
@@ -818,6 +838,7 @@ function runPatternEnvelope3D(
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
   colRigidEndOffsets?: Record<string, boolean>,
+  manualJointOverrides?: ManualJointOverride[],
 ): {
   beamEnvelope: Map<string, BeamEnvelope3D>;
   colEnvelope: Map<string, ColumnEnvelope3D>;
@@ -827,7 +848,7 @@ function runPatternEnvelope3D(
   const { model, patternCases, primaryBeamSplitIds, serviceCaseIndex } = build3DModelWithPatternLoading(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
-    colRigidEndOffsets,
+    colRigidEndOffsets, manualJointOverrides,
   );
   const beamEnvelope = new Map<string, BeamEnvelope3D>();
   const colEnvelope  = new Map<string, ColumnEnvelope3D>();
@@ -945,11 +966,12 @@ export function getColumnLoads3D(
   beamStiffnessFactor: number = 0.35,
   colStiffnessFactor: number = 0.65,
   colRigidEndOffsets?: Record<string, boolean>,
+  manualJointOverrides?: ManualJointOverride[],
 ): Map<string, ColumnLoads3D> {
   const { colEnvelope, serviceColAxial } = runPatternEnvelope3D(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
-    colRigidEndOffsets,
+    colRigidEndOffsets, manualJointOverrides,
   );
 
   const result = new Map<string, ColumnLoads3D>();
@@ -1005,13 +1027,14 @@ export function getFrameResults3D(
    */
   enforceReleasedZeros: boolean = false,
   colRigidEndOffsets?: Record<string, boolean>,
+  manualJointOverrides?: ManualJointOverride[],
 ): FrameResult[] {
   const beamsMap = new Map(beams.map(b => [b.id, b]));
   const ENDPOINT_COLUMN_TOL = 0.05; // m
   const { beamEnvelope, primaryBeamSplitIds } = runPatternEnvelope3D(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
-    colRigidEndOffsets,
+    colRigidEndOffsets, manualJointOverrides,
   );
 
   // ── Build release lookup from explicit input-tab releases only ─────────
