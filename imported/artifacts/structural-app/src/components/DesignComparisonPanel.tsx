@@ -63,6 +63,8 @@ interface Props {
   columns?: Column[];
   colDesigns?: ColDesignEntry[];
   etabsColumnResults?: ETABSColumnResult[];
+  /** خريطة من معرّف الجسر الأساسي (مثل "67") إلى قائمة الأجزاء ("67-1","67-2","67-3") */
+  splitBeamGroups?: Record<string, string[]>;
 }
 
 function formatRebar(bars: number, dia: number): string {
@@ -109,6 +111,7 @@ export default function DesignComparisonPanel({
   columns = [],
   colDesigns = [],
   etabsColumnResults = [],
+  splitBeamGroups = {},
 }: Props) {
   const [activeTab, setActiveTab] = useState<'beams' | 'columns'>('beams');
 
@@ -116,21 +119,61 @@ export default function DesignComparisonPanel({
   const beamComparisons = useMemo<BeamDesignRow[]>(() => {
     const rows: BeamDesignRow[] = [];
 
+    // Build set of all split-part IDs so we can skip them when iterating frameResults
+    const splitPartIds = new Set<string>();
+    for (const parts of Object.values(splitBeamGroups)) {
+      for (const p of parts) splitPartIds.add(p);
+    }
+
+    // Build canonical beam IDs:
+    //  - From frameResults: skip split-part IDs, add base IDs instead
+    //  - From etabsAnalysisData: add as-is
     const allBeamIds = new Set<string>();
-    frameResults.forEach(fr => fr.beams.forEach(b => allBeamIds.add(b.beamId)));
+    frameResults.forEach(fr => fr.beams.forEach(b => {
+      if (splitPartIds.has(b.beamId)) {
+        // Find the canonical base ID for this part
+        const base = Object.entries(splitBeamGroups).find(([, parts]) => parts.includes(b.beamId))?.[0];
+        if (base) allBeamIds.add(base);
+      } else {
+        allBeamIds.add(b.beamId);
+      }
+    }));
     etabsAnalysisData.forEach(ed => allBeamIds.add(ed.beamId));
 
     for (const beamId of allBeamIds) {
-      const beam = beams.find(b => b.id === beamId);
+      // The canonical beam: could be the merged base or a regular beam
+      // Parts IDs in splitBeamGroups[beamId] (if it's a split group)
+      const partIds = splitBeamGroups[beamId] || [beamId];
+
+      // Representative beam object: try canonical ID first, then first part
+      const beam = beams.find(b => b.id === beamId) || beams.find(b => partIds.includes(b.id));
       const storyObj = beam ? stories.find(s => s.id === beam.storyId) : null;
       const storyLabel = storyObj?.label || '—';
 
-      // ── App result ──
+      // ── App result (aggregate across all parts) ──
       let appRow: BeamDesignRow['app'] = null;
-      for (const fr of frameResults) {
-        const br = fr.beams.find(b => b.beamId === beamId);
-        if (br && beam) {
-          const span = br.span || beam.length / 1000 || 1;
+      if (beam) {
+        let bestMleft = 0, bestMmid = 0, bestMright = 0, bestVu = 0;
+        let found = false;
+        for (const pid of partIds) {
+          for (const fr of frameResults) {
+            const br = fr.beams.find(b => b.beamId === pid);
+            if (br) {
+              bestMleft = Math.max(bestMleft, Math.abs(br.Mleft));
+              bestMmid = Math.max(bestMmid, br.Mmid);
+              bestMright = Math.max(bestMright, Math.abs(br.Mright));
+              const vu = Math.max(Math.abs(br.Rleft || 0), Math.abs(br.Rright || 0));
+              bestVu = Math.max(bestVu, vu);
+              found = true;
+            }
+          }
+        }
+        if (found) {
+          const totalLen = partIds.reduce((sum, pid) => {
+            const pb = beams.find(b => b.id === pid) || beam;
+            return sum + (pb.length / 1000 || 1);
+          }, 0);
+          const span = totalLen || beam.length / 1000 || 1;
           const hasSlabs = beam.slabs.length > 0;
           let efbw = 0;
           if (hasSlabs) {
@@ -141,17 +184,15 @@ export default function DesignComparisonPanel({
             }
             efbw = Math.min(span * 1000 / 4, beam.b + 16 * slabProps.thickness, widths.reduce((a, b) => a + b, 0) * 1000);
           }
-          const fl = designFlexure(Math.abs(br.Mleft), beam.b, beam.h, mat.fc, mat.fy);
-          const fm = designFlexure(br.Mmid, beam.b, beam.h, mat.fc, mat.fy, 40, hasSlabs, slabProps.thickness, efbw, 4);
-          const fr2 = designFlexure(Math.abs(br.Mright), beam.b, beam.h, mat.fc, mat.fy);
-          const Vu = Math.max(Math.abs(br.Rleft || 0), Math.abs(br.Rright || 0));
+          const fl = designFlexure(bestMleft, beam.b, beam.h, mat.fc, mat.fy);
+          const fm = designFlexure(bestMmid, beam.b, beam.h, mat.fc, mat.fy, 40, hasSlabs, slabProps.thickness, efbw, 4);
+          const fr2 = designFlexure(bestMright, beam.b, beam.h, mat.fc, mat.fy);
           appRow = {
             topLeft: formatRebar(fl.bars, fl.dia),
             bottom: formatRebar(fm.bars, fm.dia),
             topRight: formatRebar(fr2.bars, fr2.dia),
-            Vu,
+            Vu: bestVu,
           };
-          break;
         }
       }
 
@@ -190,7 +231,7 @@ export default function DesignComparisonPanel({
     }
 
     return rows.sort((a, b) => a.storyLabel.localeCompare(b.storyLabel) || a.beamId.localeCompare(b.beamId));
-  }, [beams, slabs, slabProps, mat, stories, frameResults, etabsAnalysisData]);
+  }, [beams, slabs, slabProps, mat, stories, frameResults, etabsAnalysisData, splitBeamGroups]);
 
   // ── Column comparisons ────────────────────────────────────────────────────
   const colComparisons = useMemo<ColCompareRow[]>(() => {

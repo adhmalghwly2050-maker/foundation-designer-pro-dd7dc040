@@ -150,6 +150,8 @@ const Index = () => {
   const [mainTab, setMainTab] = React.useState<MainTab>('inputs');
   const [releaseEditorBeamId, setReleaseEditorBeamId] = React.useState<string | null>(null);
   const [releaseEditorData, setReleaseEditorData] = React.useState<BeamEndReleaseState>(createEmptyBeamEndReleases);
+  const [releaseEditorDims, setReleaseEditorDims] = React.useState<{ b: number; h: number }>({ b: 200, h: 400 });
+  const [releaseEditorApplyOtherFloors, setReleaseEditorApplyOtherFloors] = React.useState(false);
 
   // Duplicate check state
   const [dupCheckResult, setDupCheckResult] = React.useState<{ message: string; count: number; items: string[] } | null>(null);
@@ -319,15 +321,25 @@ const Index = () => {
     if (etabsImportMode) {
       return extraColumns.map(c => {
         const ov = colOverrides[c.id];
+        const cx = ov?.x ?? c.x;
+        const cy = ov?.y ?? c.y;
+        const zBot = c.zBottom ?? 0;
+        // Apply supportRestraints for ETABS columns (same key format as regular mode)
+        const supportKey = `${cx.toFixed(2)}_${cy.toFixed(2)}_${zBot}`;
+        const sr = supportRestraints?.[supportKey];
+        const bottomEnd: 'F' | 'P' = sr
+          ? ((sr.ux && sr.uy && sr.uz && sr.rx && sr.ry && sr.rz) ? 'F' : 'P')
+          : (c.bottomEndCondition ?? 'F');
         return {
           ...c,
           b: ov?.b ?? c.b,
           h: ov?.h ?? c.h,
           L: ov?.L ?? c.L,
-          x: ov?.x ?? c.x,
-          y: ov?.y ?? c.y,
-          zBottom: c.zBottom ?? 0,
-          zTop: c.zTop ?? (c.L || 0),
+          x: cx,
+          y: cy,
+          zBottom: zBot,
+          zTop: c.zTop ?? (zBot + ((ov?.L ?? c.L) || 0)),
+          bottomEndCondition: bottomEnd,
         };
       });
     }
@@ -683,6 +695,8 @@ const Index = () => {
     // محرر تبويب الإدخال يقرأ ويكتب على `frameEndReleases` الدائم فقط
     setReleaseEditorBeamId(beam.id);
     setReleaseEditorData(getPersistentBeamReleaseState(beam));
+    setReleaseEditorDims({ b: beam.b, h: beam.h });
+    setReleaseEditorApplyOtherFloors(false);
   }, [getPersistentBeamReleaseState]);
 
   const handleEditBeamProperties = useCallback((beamId: string) => {
@@ -715,9 +729,27 @@ const Index = () => {
       nodeIRestraints: releaseEditorData.nodeI,
       nodeJRestraints: releaseEditorData.nodeJ,
     });
+
+    // Save dimensions if changed
+    const dimsChanged = releaseEditorDims.b !== beam.b || releaseEditorDims.h !== beam.h;
+    if (dimsChanged) {
+      if (releaseEditorApplyOtherFloors) {
+        // Apply to all beams at same x1,y1,x2,y2 position (different floors)
+        const samePosBeans = beams.filter(b =>
+          Math.abs(b.x1 - beam.x1) < 0.01 && Math.abs(b.y1 - beam.y1) < 0.01 &&
+          Math.abs(b.x2 - beam.x2) < 0.01 && Math.abs(b.y2 - beam.y2) < 0.01
+        );
+        for (const b of samePosBeans) {
+          dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: b.id, override: { b: releaseEditorDims.b, h: releaseEditorDims.h } });
+        }
+      } else {
+        dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: beam.id, override: { b: releaseEditorDims.b, h: releaseEditorDims.h } });
+      }
+    }
+
     dispatch({ type: 'RESET_ANALYSIS' });
     setReleaseEditorBeamId(null);
-  }, [releaseEditorBeamId, beams, releaseEditorData, getBeamReleaseKey]);
+  }, [releaseEditorBeamId, beams, releaseEditorData, getBeamReleaseKey, releaseEditorDims, releaseEditorApplyOtherFloors]);
 
   const releaseEditorBeam = useMemo(
     () => beams.find(beam => beam.id === releaseEditorBeamId) || null,
@@ -1078,6 +1110,18 @@ const Index = () => {
 
     return designs;
   }, [frameResults, beamsWithLoads, mat, analyzed, bobConnections, slabs, slabProps, designSource, designExecuted, etabsAnalysisData]);
+
+  // Map of canonical beamId → merged part IDs (for split beams like 67 → [67-1, 67-2, 67-3])
+  const splitBeamGroups = useMemo<Record<string, string[]>>(() => {
+    const groups: Record<string, string[]> = {};
+    for (const d of beamDesigns) {
+      const mids = (d as any).mergedCarrierIds as string[] | undefined;
+      if (mids && mids.length >= 2) {
+        groups[d.beamId] = mids;
+      }
+    }
+    return groups;
+  }, [beamDesigns]);
 
   // Beam diagnostics - detailed ACI 318-19 compliance check
   const beamDiagnostics = useMemo<Map<string, BeamDiagnostic>>(() => {
@@ -4365,6 +4409,7 @@ const Index = () => {
                   columns={columns}
                   colDesigns={colDesigns}
                   etabsColumnResults={etabsColumnResults}
+                  splitBeamGroups={splitBeamGroups}
                 />
               )}
 
@@ -5079,37 +5124,55 @@ const Index = () => {
 
           {releaseEditorBeam && (
             <div className="space-y-4">
-              <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2 text-xs">
-                <div className="font-semibold text-foreground text-sm mb-1">معلومات الجسر</div>
-                <div className="grid grid-cols-2 gap-2 text-muted-foreground">
-                  <div>البداية (X1, Y1): <span className="font-mono text-foreground">({releaseEditorBeam.x1.toFixed(2)}, {releaseEditorBeam.y1.toFixed(2)})</span></div>
-                  <div>النهاية (X2, Y2): <span className="font-mono text-foreground">({releaseEditorBeam.x2.toFixed(2)}, {releaseEditorBeam.y2.toFixed(2)})</span></div>
-                  <div>المنسوب Z: <span className="font-mono text-foreground">{((releaseEditorBeam.z ?? 0) / 1000).toFixed(2)} م</span></div>
+              {/* ── أبعاد الجسر (قابلة للتعديل) ── */}
+              <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-3">
+                <div className="font-semibold text-foreground text-sm">أبعاد الجسر</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">العرض b (مم)</label>
+                    <input
+                      type="number"
+                      value={releaseEditorDims.b}
+                      onChange={e => setReleaseEditorDims(prev => ({ ...prev, b: Number(e.target.value) }))}
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">الارتفاع h (مم)</label>
+                    <input
+                      type="number"
+                      value={releaseEditorDims.h}
+                      onChange={e => setReleaseEditorDims(prev => ({ ...prev, h: Number(e.target.value) }))}
+                      className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                  <div>البداية: <span className="font-mono text-foreground">({releaseEditorBeam.x1.toFixed(2)}, {releaseEditorBeam.y1.toFixed(2)})</span></div>
+                  <div>النهاية: <span className="font-mono text-foreground">({releaseEditorBeam.x2.toFixed(2)}, {releaseEditorBeam.y2.toFixed(2)})</span></div>
                   <div>الطول: <span className="font-mono text-foreground">{releaseEditorBeam.length.toFixed(2)} م</span></div>
-                  <div>العرض b: <span className="font-mono text-foreground">{releaseEditorBeam.b} مم</span></div>
-                  <div>الارتفاع h: <span className="font-mono text-foreground">{releaseEditorBeam.h} مم</span></div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {/* ── درجات حرية الأطراف (أفقي) ── */}
+              <div className="space-y-2">
+                <div className="font-semibold text-foreground text-sm">درجات حرية الأطراف</div>
+                <p className="text-[10px] text-muted-foreground">✓ محدد = محرر (Released) • غير محدد = مقيد (Restrained)</p>
                 {([
-                  { key: 'nodeI' as const, title: 'الطرف I (بداية الجسر)' },
-                  { key: 'nodeJ' as const, title: 'الطرف J (نهاية الجسر)' },
+                  { key: 'nodeI' as const, title: 'الطرف I — بداية الجسر' },
+                  { key: 'nodeJ' as const, title: 'الطرف J — نهاية الجسر' },
                 ]).map(({ key, title }) => (
-                  <div key={key} className="space-y-3 rounded-lg border border-border bg-card p-4">
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="text-sm font-semibold text-foreground">{title}</h4>
-                      <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" onClick={() => resetReleaseEditorEnd(key)}>
-                        تصفير الطرف
+                  <div key={key} className="rounded-lg border border-border bg-card p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-medium text-foreground">{title}</span>
+                      <Button type="button" variant="ghost" size="sm" className="h-6 text-[10px] px-2" onClick={() => resetReleaseEditorEnd(key)}>
+                        تصفير
                       </Button>
                     </div>
-                    <div className="space-y-2">
-                      {RELEASE_DOF_META.map(({ key: dof, etabs, desc }) => (
-                        <label key={`${key}-${dof}`} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
-                          <div className="space-y-0.5">
-                            <div className="font-mono text-xs text-foreground">{etabs}</div>
-                            <div className="text-[11px] text-muted-foreground">{desc}</div>
-                          </div>
+                    <div className="grid grid-cols-6 gap-1">
+                      {RELEASE_DOF_META.map(({ key: dof, etabs }) => (
+                        <label key={`${key}-${dof}`} className="flex flex-col items-center gap-1 cursor-pointer">
+                          <span className="font-mono text-[10px] text-muted-foreground">{etabs}</span>
                           <Checkbox
                             checked={releaseEditorData[key][dof]}
                             onCheckedChange={(checked) => handleReleaseEditorToggle(key, dof, checked === true)}
@@ -5128,6 +5191,18 @@ const Index = () => {
                   ))}
                 </div>
               )}
+
+              {/* ── تطبيق على أدوار أخرى ── */}
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2">
+                <Checkbox
+                  id="apply-other-floors"
+                  checked={releaseEditorApplyOtherFloors}
+                  onCheckedChange={v => setReleaseEditorApplyOtherFloors(!!v)}
+                />
+                <label htmlFor="apply-other-floors" className="text-xs cursor-pointer">
+                  تطبيق تغييرات الأبعاد على الجسور بنفس الإحداثيات في الأدوار الأخرى
+                </label>
+              </div>
             </div>
           )}
 
