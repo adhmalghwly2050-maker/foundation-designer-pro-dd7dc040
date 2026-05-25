@@ -413,7 +413,7 @@ function coreReducer(state: AppState, action: AppAction): AppState {
     case 'SET_BEAM_OVERRIDE':
       return { ...state, beamOverrides: { ...state.beamOverrides, [action.beamId]: { ...state.beamOverrides[action.beamId], ...action.override } }, analyzed: false };
     case 'SET_COL_OVERRIDE':
-      return { ...state, colOverrides: { ...state.colOverrides, [action.colId]: { ...state.colOverrides[action.colId], ...action.override } } };
+      return { ...state, colOverrides: { ...state.colOverrides, [action.colId]: { ...state.colOverrides[action.colId], ...action.override } }, analyzed: false };
     case 'SET_EXTRA_BEAMS':
       return { ...state, extraBeams: action.beams, analyzed: false };
     case 'ADD_EXTRA_BEAM':

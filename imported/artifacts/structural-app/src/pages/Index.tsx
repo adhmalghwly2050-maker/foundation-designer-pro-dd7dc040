@@ -4406,6 +4406,8 @@ const Index = () => {
                               }
                               if (justRotated.size > 0) {
                                 setRotatedColIds(prev => new Set([...prev, ...justRotated]));
+                                // أعد التحليل تلقائياً بعد تغيير أبعاد الأعمدة
+                                setTimeout(() => runAnalysis(), 50);
                               }
                               setBiaxialSelectedCols(new Set());
                             }}
@@ -4446,7 +4448,13 @@ const Index = () => {
                               const Pu = loads?.Pu ?? 0;
                               const maxMx = Math.max(Math.abs(loads?.MxTop || 0), Math.abs(loads?.MxBot || 0));
                               const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
-                              const needsRotation = maxMy > maxMx && c.b !== c.h;
+                              // يحتاج تدويراً فقط إذا كان البُعد الأكبر يواجه المحور الضعيف:
+                              // My > Mx → نريد b ≥ h (Iy أكبر) → مشكلة إذا b < h
+                              // Mx > My → نريد h ≥ b (Ix أكبر) → مشكلة إذا h < b
+                              const needsRotation = c.b !== c.h && (
+                                (maxMy > maxMx && c.b < c.h) ||
+                                (maxMx > maxMy && c.h < c.b)
+                              );
                               const isSelected = biaxialSelectedCols.has(c.id);
                               const wasRotated = rotatedColIds.has(c.id);
                               return (
@@ -4531,8 +4539,8 @@ const Index = () => {
                       </Table>
                       <p className="text-[10px] text-muted-foreground mt-2 leading-relaxed">
                         ⓘ Pu مُستخرج مباشرةً من التحليل ثلاثي الأبعاد لكل عمود — يشمل تلقائياً تراكم الأحمال من جميع الأدوار العلوية دون ضرب يدوي.
-                        الأعمدة المظللة باللون البرتقالي: My &gt; Mx مع مقطع غير مربع — تدوير المقطع 90° يُحسّن الكفاءة الإنشائية.
-                        بعد التدوير الجماعي يُعاد التحليل تلقائياً عند الضغط على "تشغيل التحليل".
+                        الأعمدة المظللة باللون البرتقالي: البُعد الأكبر يواجه المحور الضعيف — تدوير المقطع 90° يُحسّن الكفاءة (My&gt;Mx فيجب b≥h، أو Mx&gt;My فيجب h≥b).
+                        بعد الضغط على "تدوير" يُعاد التحليل تلقائياً بالأبعاد الجديدة.
                       </p>
                     </CardContent>
                   </Card>
