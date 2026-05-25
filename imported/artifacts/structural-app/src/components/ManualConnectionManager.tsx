@@ -10,6 +10,9 @@
  *  - ⚫ بعيد: أكثر من 500mm
  *
  * عند تفعيل التبديل → يُضاف ManualJointOverride → يُعاد التحليل تلقائياً
+ *
+ * الإصلاح: يُراعي منسوب Z عند تحديد الجسور المرتبطة بالعمود
+ *   (جسور الدور الثاني لا تظهر ضمن جسور عمود الدور الأول)
  */
 
 import { useState, useMemo, useEffect } from 'react';
@@ -23,12 +26,13 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { X } from 'lucide-react';
 import type { Column, Beam, Story } from '@/lib/structuralEngine';
 import type { ManualJointOverride } from '@/pages/indexReducer';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Distance (mm) from the nearest beam endpoint to the column centre. */
+/** Distance (mm) from the nearest beam endpoint to the column centre (XY only). */
 function beamToColDist(beam: Beam, col: Column): number {
   const cx = col.x, cy = col.y;
   const d1 = Math.sqrt((beam.x1 - cx) ** 2 + (beam.y1 - cy) ** 2) * 1000;
@@ -36,8 +40,33 @@ function beamToColDist(beam: Beam, col: Column): number {
   return Math.min(d1, d2);
 }
 
-/** True when a beam endpoint falls inside the column cross-section bounding box. */
+/**
+ * Check whether a beam belongs to the same floor level as a column.
+ *
+ * Priority:
+ *   1. storyId match (most reliable)
+ *   2. Z coordinate: beam.z should be near column.zTop (±300 mm tolerance)
+ *   3. No Z info available → include (legacy models)
+ */
+function isSameFloor(beam: Beam, col: Column): boolean {
+  // 1. Story ID match
+  if (col.storyId && beam.storyId) {
+    return col.storyId === beam.storyId;
+  }
+  // 2. Z coordinate match — beam z should be at or near column top
+  if (col.zTop !== undefined && beam.z !== undefined) {
+    return Math.abs(beam.z - col.zTop) <= 300; // ±300 mm tolerance
+  }
+  // 3. Fallback: no Z info, include beam
+  return true;
+}
+
+/** True when a beam endpoint falls inside the column cross-section bounding box
+ *  AND the beam is at the same floor level as the column (checks Z / storyId). */
 function isAutoConnected(beam: Beam, col: Column): boolean {
+  // First: floor-level check — prevent cross-floor false positives
+  if (!isSameFloor(beam, col)) return false;
+
   const bH = col.b / 2 + 1;   // +1mm float tolerance
   const hH = col.h / 2 + 1;
   const cx = col.x * 1000, cy = col.y * 1000;
@@ -53,6 +82,7 @@ interface BeamRow {
   dist: number;
   auto: boolean;
   manual: boolean;
+  wrongFloor: boolean; // beam is at a different floor level
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -99,21 +129,29 @@ export default function ManualConnectionManager({
   const selectedColumn = storyColumns.find(c => c.id === selectedColId);
 
   // Compute beam rows for selected column
+  // ─ Only include beams at the SAME floor level (Z / storyId filter) ─
   const beamRows = useMemo<BeamRow[]>(() => {
     if (!selectedColumn) return [];
-    const rows = beams
+
+    return beams
       .filter(b => !b.isRemoved)
-      .map(b => ({
-        beam: b,
-        dist: beamToColDist(b, selectedColumn),
-        auto: isAutoConnected(b, selectedColumn),
-        manual: manualJointOverrides.some(
-          o => o.beamId === b.id && o.columnId === selectedColId,
-        ),
-      }))
+      .map(b => {
+        const wrongFloor = !isSameFloor(b, selectedColumn);
+        return {
+          beam: b,
+          dist: beamToColDist(b, selectedColumn),
+          auto: isAutoConnected(b, selectedColumn),
+          manual: manualJointOverrides.some(
+            o => o.beamId === b.id && o.columnId === selectedColId,
+          ),
+          wrongFloor,
+        };
+      })
+      // Exclude beams from other floors — they share X,Y but different Z
+      .filter(r => !r.wrongFloor)
+      // Then apply distance filter
       .filter(r => r.dist <= (showFar ? 5000 : 1000))
       .sort((a, b) => a.dist - b.dist);
-    return rows;
   }, [selectedColumn, beams, manualJointOverrides, selectedColId, showFar]);
 
   const autoCount   = beamRows.filter(r => r.auto).length;
@@ -153,40 +191,75 @@ export default function ManualConnectionManager({
 
   const story = stories.find(s => s.id === selectedStoryId);
 
+  // Z info for selected column (for display)
+  const colZInfo = selectedColumn?.zTop !== undefined
+    ? `z=${selectedColumn.zTop.toFixed(0)}mm`
+    : selectedColumn?.storyId
+      ? `دور ${selectedColumn.storyId}`
+      : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-md max-h-[88vh] flex flex-col gap-0 p-0 overflow-hidden"
+        className={[
+          // Mobile: full screen, no rounded corners, full height
+          'w-full max-w-full rounded-none',
+          // Tablet+: constrained width, rounded, limited height
+          'sm:max-w-md sm:rounded-lg',
+          // Height: full on mobile, 88vh on larger screens
+          'h-[100dvh] sm:h-auto sm:max-h-[88vh]',
+          'flex flex-col gap-0 p-0 overflow-hidden',
+        ].join(' ')}
         dir="rtl"
+        // Hide the default DialogContent close button — we add our own below
+        onOpenAutoFocus={e => e.preventDefault()}
       >
         {/* ── Header ─────────────────────────────────────────────── */}
-        <DialogHeader className="px-4 pt-4 pb-2 border-b">
-          <DialogTitle className="text-sm flex items-center gap-1.5">
-            🔗 مدير الاتصالات اليدوية
-          </DialogTitle>
-          <DialogDescription className="text-[11px] text-muted-foreground">
-            {story?.label ?? selectedStoryId} ·{' '}
-            <span className="text-green-600 font-medium">{autoCount} تلقائي</span>
-            {manualCount > 0 && <> · <span className="text-blue-600 font-medium">{manualCount} يدوي</span></>}
-            {nearCount > 0  && <> · <span className="text-yellow-700 font-medium">{nearCount} قابل للربط</span></>}
-          </DialogDescription>
+        <DialogHeader className="px-4 pt-4 pb-2 border-b shrink-0">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <DialogTitle className="text-sm flex items-center gap-1.5">
+                🔗 مدير الاتصالات اليدوية
+              </DialogTitle>
+              <DialogDescription className="text-[11px] text-muted-foreground mt-0.5">
+                {story?.label ?? selectedStoryId}
+                {colZInfo && <span className="text-muted-foreground/70 mr-1">· {colZInfo}</span>}
+                {' · '}
+                <span className="text-green-600 font-medium">{autoCount} تلقائي</span>
+                {manualCount > 0 && <> · <span className="text-blue-600 font-medium">{manualCount} يدوي</span></>}
+                {nearCount > 0  && <> · <span className="text-yellow-700 font-medium">{nearCount} قابل للربط</span></>}
+              </DialogDescription>
+            </div>
+
+            {/* Explicit close button — always visible on mobile */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 rounded-full"
+              onClick={() => onOpenChange(false)}
+              aria-label="إغلاق"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </DialogHeader>
 
         {/* ── Column Selector ────────────────────────────────────── */}
-        <div className="px-4 py-3 border-b bg-muted/20">
+        <div className="px-4 py-3 border-b bg-muted/20 shrink-0">
           <p className="text-[10px] text-muted-foreground mb-1.5 font-medium">اختر العمود</p>
           <Select value={selectedColId} onValueChange={setSelectedColId}>
-            <SelectTrigger className="h-8 text-xs">
+            <SelectTrigger className="h-9 text-xs">
               <SelectValue placeholder="اختر عموداً..." />
             </SelectTrigger>
             <SelectContent>
               {storyColumns.map(col => {
                 const manCount = manualJointOverrides.filter(o => o.columnId === col.id).length;
+                const zLabel = col.zTop !== undefined ? ` · z=${col.zTop.toFixed(0)}` : '';
                 return (
                   <SelectItem key={col.id} value={col.id} className="text-xs">
                     <span className="font-mono font-semibold">{col.id}</span>
                     <span className="text-muted-foreground mr-1">
-                      ({col.x.toFixed(1)}, {col.y.toFixed(1)})m · {col.b}×{col.h}mm
+                      ({col.x.toFixed(1)}, {col.y.toFixed(1)})m{zLabel} · {col.b}×{col.h}mm
                     </span>
                     {manCount > 0 && (
                       <span className="mr-1 text-blue-600">🔵 {manCount}</span>
@@ -199,7 +272,7 @@ export default function ManualConnectionManager({
         </div>
 
         {/* ── Legend ────────────────────────────────────────────── */}
-        <div className="px-4 py-2 flex gap-2 flex-wrap border-b text-[9px]">
+        <div className="px-4 py-2 flex gap-2 flex-wrap border-b text-[9px] shrink-0">
           <span>🟢 تلقائي (داخل المقطع)</span>
           <span>🔵 يدوي (مفعَّل)</span>
           <span>🟡 ≤50mm</span>
@@ -212,29 +285,37 @@ export default function ManualConnectionManager({
           {beamRows.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground text-xs">
               {selectedColumn
-                ? 'لا توجد جسور ضمن 1000mm من هذا العمود'
+                ? 'لا توجد جسور ضمن 1000mm من هذا العمود في نفس الدور'
                 : 'اختر عموداً لعرض الجسور القريبة'}
             </div>
           ) : (
             <div className="space-y-1.5">
               {beamRows.map(r => {
                 const { icon, cls } = rowStyle(r);
+                const beamZ = r.beam.z !== undefined ? `z=${r.beam.z.toFixed(0)}` : r.beam.storyId ?? '';
                 return (
                   <div
                     key={r.beam.id}
-                    className={`flex items-center justify-between rounded-lg px-3 py-2 text-xs border transition-colors ${cls}`}
+                    className={`flex items-center justify-between rounded-lg px-3 py-2.5 text-xs border transition-colors ${cls}`}
                   >
                     {/* Left: icon + beam info */}
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-sm shrink-0">{icon}</span>
                       <div className="min-w-0">
-                        <span className="font-mono font-semibold">{r.beam.id}</span>
-                        <span className="text-muted-foreground text-[10px] mr-1">
-                          {r.beam.b}×{r.beam.h}mm
-                        </span>
-                        <span className="text-muted-foreground text-[10px]">
-                          ({r.beam.direction === 'horizontal' ? 'أفقي' : 'رأسي'})
-                        </span>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <span className="font-mono font-semibold">{r.beam.id}</span>
+                          <span className="text-muted-foreground text-[10px]">
+                            {r.beam.b}×{r.beam.h}mm
+                          </span>
+                          <span className="text-muted-foreground text-[10px]">
+                            ({r.beam.direction === 'horizontal' ? 'أفقي' : 'رأسي'})
+                          </span>
+                        </div>
+                        {beamZ && (
+                          <div className="text-[9px] text-muted-foreground/60 mt-0.5">
+                            {beamZ}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -282,19 +363,29 @@ export default function ManualConnectionManager({
         </ScrollArea>
 
         {/* ── Footer ────────────────────────────────────────────── */}
-        <div className="px-4 py-3 border-t bg-muted/20 flex items-center justify-between gap-3">
+        <div className="px-4 py-3 border-t bg-muted/20 flex items-center justify-between gap-3 shrink-0">
           <p className="text-[10px] text-muted-foreground leading-tight">
             💡 فعّل التبديل لربط جسر بهذا العمود يدوياً، ثم أعد التحليل.
           </p>
-          {onRequestReanalyze && (
+          <div className="flex items-center gap-2 shrink-0">
+            {onRequestReanalyze && (
+              <Button
+                size="sm"
+                className="text-xs h-8 px-3"
+                onClick={() => { onRequestReanalyze(); onOpenChange(false); }}
+              >
+                🔄 إعادة التحليل
+              </Button>
+            )}
             <Button
+              variant="outline"
               size="sm"
-              className="text-xs h-7 px-3 shrink-0"
-              onClick={() => { onRequestReanalyze(); onOpenChange(false); }}
+              className="text-xs h-8 px-3 sm:hidden"
+              onClick={() => onOpenChange(false)}
             >
-              🔄 إعادة التحليل
+              إغلاق
             </Button>
-          )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>
