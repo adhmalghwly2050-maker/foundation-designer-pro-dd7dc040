@@ -1404,9 +1404,26 @@ const Index = () => {
   const handleElemPropsSave = useCallback((data: any) => {
     if (data.frameId != null) {
       modelManager.updateFrameSection(data.frameId, data.b, data.h);
-      if (data.nodeIRestraints) {
-        const frame = modelManager.getFrame(data.frameId);
-        if (frame) {
+      const frame = modelManager.getFrame(data.frameId);
+      if (frame) {
+        // Persist beam dimensions to React state so they survive model rebuilds
+        if (frame.type === 'beam' && data.b != null && data.h != null) {
+          const nodeI = modelManager.getNode(frame.nodeI);
+          const nodeJ = modelManager.getNode(frame.nodeJ);
+          if (nodeI && nodeJ) {
+            const EPS = 0.005;
+            const matchingBeam = beams.find(b =>
+              (Math.abs(b.x1 - nodeI.x) < EPS && Math.abs(b.y1 - nodeI.y) < EPS &&
+               Math.abs(b.x2 - nodeJ.x) < EPS && Math.abs(b.y2 - nodeJ.y) < EPS) ||
+              (Math.abs(b.x1 - nodeJ.x) < EPS && Math.abs(b.y1 - nodeJ.y) < EPS &&
+               Math.abs(b.x2 - nodeI.x) < EPS && Math.abs(b.y2 - nodeI.y) < EPS)
+            );
+            if (matchingBeam) {
+              dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: matchingBeam.id, override: { b: Number(data.b), h: Number(data.h) } });
+            }
+          }
+        }
+        if (data.nodeIRestraints) {
           modelManager.setNodeRestraints(frame.nodeI, data.nodeIRestraints);
           modelManager.setNodeRestraints(frame.nodeJ, data.nodeJRestraints);
           // Persist end releases in state keyed by node positions so they survive model rebuilds
@@ -1437,7 +1454,7 @@ const Index = () => {
     }
     dispatch({ type: 'INC_MODEL_VERSION' });
     dispatch({ type: 'RESET_ANALYSIS' });
-  }, []);
+  }, [beams]);
 
   const handleLevelElementDelete = useCallback((type: 'beam' | 'column' | 'slab', id: string) => {
     if (type === 'beam') {

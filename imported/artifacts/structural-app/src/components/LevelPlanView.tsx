@@ -249,6 +249,8 @@ export default function LevelPlanView({
         // For beams: open the full release editor via parent callback
         if (onEditBeamProperties) {
           onEditBeamProperties(id);
+          // Release editor handles everything for beams — skip onElementLongPress
+          return;
         }
       } else if (type === 'column') {
         const col = colsAtLevel.find(c => c.id === id);
