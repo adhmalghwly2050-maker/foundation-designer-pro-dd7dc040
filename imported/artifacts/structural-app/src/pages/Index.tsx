@@ -9,7 +9,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Badge } from "@/components/ui/badge";
 import {
   Slab, Column, Beam, Frame, MatProps, SlabProps, FrameResult,
-  generateColumns, generateBeams, generateFrames,
+  generateColumns, generateBeams, generateFrames, snapBeamsToEccentricColumns,
   calculateBeamLoads, analyzeFrame, designFlexure, designShear,
   designColumnETABS, designSlab, calculateColumnLoads, FlexureResult, ShearResult,
   detectBeamOnBeam, analyzeWithBeamOnBeam, BeamOnBeamConnection, ColumnResult,
@@ -563,7 +563,7 @@ const Index = () => {
   }, [beams, columns, removedColumnIds, removedBeamIds]);
   const beamsWithLoads = useMemo(() => {
     const activeBeams = beams.filter(b => !removedBeamIds.includes(b.id));
-    return activeBeams.map(b => {
+    const beamsWithLoadValues = activeBeams.map(b => {
       // Pass the active beams for the same story so adjacent-slab merging works correctly
       const storyActiveBeams = b.storyId
         ? activeBeams.filter(ab => ab.storyId === b.storyId)
@@ -572,7 +572,10 @@ const Index = () => {
       const wallLoad = beamOverrides[b.id]?.wallLoad || b.wallLoad || 0;
       return { ...b, deadLoad: loads.deadLoad + wallLoad, liveLoad: loads.liveLoad, wallLoad };
     });
-  }, [beams, slabs, slabProps, mat, beamOverrides, removedBeamIds]);
+    // Detect eccentricities: beams whose endpoints fall within a column footprint
+    // but are offset from its centroid (ETABS rigid-end-offset equivalent).
+    return snapBeamsToEccentricColumns(beamsWithLoadValues, columns);
+  }, [beams, slabs, slabProps, mat, beamOverrides, removedBeamIds, columns]);
 
   const frames = useMemo(() => generateFrames(beamsWithLoads), [beamsWithLoads]);
 

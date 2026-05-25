@@ -43,6 +43,18 @@ export interface Beam {
   slabs: string[];
   storyId?: string;
   mergedFrom?: string[]; // IDs of original beams that were merged into this one
+  /**
+   * Signed eccentricity (mm) from column centroid at the start (fromCol) end.
+   * For horizontal beams: e > 0 → beam is above column centroid.
+   * For vertical beams:   e > 0 → beam is to the right of column centroid.
+   * ETABS equivalent: rigid end offset / joint eccentricity.
+   * This adds ΔM = V × e to the column moment at that joint.
+   */
+  eccFromCol?: number;
+  /**
+   * Signed eccentricity (mm) from column centroid at the end (toCol) end.
+   */
+  eccToCol?: number;
 }
 export interface Frame {
   id: string; beamIds: string[]; direction: 'horizontal' | 'vertical';
@@ -669,6 +681,92 @@ export function generateFrames(beams: Beam[]): Frame[] {
     frames.push({ id: `F${fid++}`, beamIds: cur.map(b => b.id), direction: cur[0].direction, storyId: cur[0].storyId });
   }
   return frames;
+}
+
+// ===================== ECCENTRICITY DETECTION =====================
+/**
+ * Detect and record eccentricities for beams whose endpoints fall within the
+ * physical footprint of a column but are offset from its centroid.
+ *
+ * ETABS equivalent: "End Offset" / rigid body joint eccentricity.
+ * When a beam's centerline passes through a column's cross-section but NOT
+ * through the column centroid, the offset "e" transfers an additional moment
+ * to the column:   ΔM_col = V_beam × e   (rigid body transformation)
+ *
+ * This function:
+ *   1. For beams with no fromCol/toCol, searches columns whose physical
+ *      footprint (±b/2, ±h/2) contains the beam endpoint and assigns the
+ *      closest one as fromCol/toCol.
+ *   2. For beams already linked to a column, records the eccentricity if
+ *      the beam's centerline is offset from the column centroid.
+ *
+ * Returns new beam objects (does not mutate input).
+ */
+export function snapBeamsToEccentricColumns(beams: Beam[], columns: Column[]): Beam[] {
+  const MARGIN_M    = 0.005; // m  — extra margin beyond b/2 or h/2 for footprint check
+  const ECC_MIN_MM  = 5;     // mm — ignore eccentricities smaller than 5 mm (rounding noise)
+
+  const activeColumns = columns.filter(c => !c.isRemoved);
+
+  return beams.map(beam => {
+    let updated = { ...beam };
+    const isHoriz = beam.direction === 'horizontal';
+
+    // ── Helper: compute signed eccentricity (mm) for one beam endpoint ──
+    const computeEcc = (px: number, py: number, col: Column): number =>
+      isHoriz ? (py - col.y) * 1000 : (px - col.x) * 1000;
+
+    // ── Helper: check if (px,py) falls in column's physical footprint ──
+    const inFootprint = (px: number, py: number, col: Column): boolean => {
+      const halfB = col.b / 2000 + MARGIN_M;
+      const halfH = col.h / 2000 + MARGIN_M;
+      return Math.abs(px - col.x) <= halfB && Math.abs(py - col.y) <= halfH;
+    };
+
+    // ── fromCol (start endpoint: x1, y1) ──
+    const startCol = activeColumns.find(c => c.id === beam.fromCol);
+    if (!startCol) {
+      // No column assigned — search footprint of all columns
+      let bestCol: Column | undefined;
+      let bestDist = Infinity;
+      for (const col of activeColumns) {
+        if (!inFootprint(beam.x1, beam.y1, col)) continue;
+        const d = Math.hypot(beam.x1 - col.x, beam.y1 - col.y);
+        if (d < bestDist) { bestDist = d; bestCol = col; }
+      }
+      if (bestCol) {
+        updated.fromCol = bestCol.id;
+        const ecc = computeEcc(beam.x1, beam.y1, bestCol);
+        if (Math.abs(ecc) >= ECC_MIN_MM) updated.eccFromCol = ecc;
+      }
+    } else {
+      // Column assigned — detect eccentricity from centroid
+      const ecc = computeEcc(beam.x1, beam.y1, startCol);
+      if (Math.abs(ecc) >= ECC_MIN_MM) updated.eccFromCol = ecc;
+    }
+
+    // ── toCol (end endpoint: x2, y2) ──
+    const endCol = activeColumns.find(c => c.id === beam.toCol);
+    if (!endCol) {
+      let bestCol: Column | undefined;
+      let bestDist = Infinity;
+      for (const col of activeColumns) {
+        if (!inFootprint(beam.x2, beam.y2, col)) continue;
+        const d = Math.hypot(beam.x2 - col.x, beam.y2 - col.y);
+        if (d < bestDist) { bestDist = d; bestCol = col; }
+      }
+      if (bestCol) {
+        updated.toCol = bestCol.id;
+        const ecc = computeEcc(beam.x2, beam.y2, bestCol);
+        if (Math.abs(ecc) >= ECC_MIN_MM) updated.eccToCol = ecc;
+      }
+    } else {
+      const ecc = computeEcc(beam.x2, beam.y2, endCol);
+      if (Math.abs(ecc) >= ECC_MIN_MM) updated.eccToCol = ecc;
+    }
+
+    return updated;
+  });
 }
 
 // ===================== LOADS =====================
@@ -2717,15 +2815,18 @@ export function calculateColumnLoadsBiaxial(
       };
 
       // Left end of beam
+      // Apply rigid-offset eccentricity correction: ΔM = V × e (ETABS End Offset equivalent)
       if (fromCol) {
         const jointInfo = getJointInfo(fromCol, beamZ);
-        assignMomentAtJoint(fromCol, br.Mleft, Vleft, jointInfo);
+        const eccL = (beam.eccFromCol ?? 0) / 1000; // mm → m
+        assignMomentAtJoint(fromCol, br.Mleft + Vleft * eccL, Vleft, jointInfo);
       }
 
       // Right end of beam
       if (toCol) {
         const jointInfo = getJointInfo(toCol, beamZ);
-        assignMomentAtJoint(toCol, br.Mright, Vright, jointInfo);
+        const eccR = (beam.eccToCol ?? 0) / 1000; // mm → m
+        assignMomentAtJoint(toCol, br.Mright + Vright * eccR, Vright, jointInfo);
       }
     }
   }
