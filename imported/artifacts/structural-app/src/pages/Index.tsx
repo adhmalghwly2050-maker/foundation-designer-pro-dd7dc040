@@ -3482,6 +3482,8 @@ const Index = () => {
               <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
                   يفحص: العقد المكررة، العناصر الصفرية الطول، الاتصالية، الاستقرار، والعقد المعلقة.
+                  الفحص يأخذ بالاعتبار الجسور المرتبطة بالأعمدة تلقائياً (داخل المقطع) واليدوياً.
+                  إذا ظهر النموذج غير متصل، استخدم زر <span className="font-semibold text-blue-600">إدارة الاتصالات</span> لربط الجسور بالأعمدة يدوياً.
                 </p>
                 {validationReport && (
                   <div className={`rounded-lg p-3 text-xs space-y-2 ${
@@ -3612,29 +3614,79 @@ const Index = () => {
                     ))}
                   </div>
                 )}
+                {/* ── زر مدير الاتصالات اليدوية ── */}
+                <Button
+                  variant="outline"
+                  className="w-full min-h-[36px] border-blue-300 text-blue-700 hover:bg-blue-50 dark:text-blue-400 dark:border-blue-700 dark:hover:bg-blue-950 text-xs"
+                  onClick={() => setConnectionManagerOpen(true)}
+                >
+                  🔗 إدارة اتصالات الجسور والأعمدة
+                  {manualJointOverrides.length > 0 && (
+                    <Badge variant="secondary" className="mr-1.5 text-[9px] h-4 px-1 bg-blue-100 text-blue-700">
+                      {manualJointOverrides.length} يدوي
+                    </Badge>
+                  )}
+                </Button>
+
                 <Button
                   onClick={() => {
                     setValidationRunning(true);
                     import('@/core/validation/preAnalysisValidator').then(({ runPreAnalysisChecks }) => {
-                      const vNodes = [];
-                      const vElements = [];
+                      const vNodes: { id: string; x: number; y: number; z: number; restraints: [boolean,boolean,boolean,boolean,boolean,boolean] }[] = [];
+                      const vElements: { id: string; nodeI: string; nodeJ: string; type: 'beam' | 'column' }[] = [];
+                      const activeColumns = columns.filter(cc => !cc.isRemoved);
+                      const colMap = new Map(activeColumns.map(c => [c.id, c]));
+
                       // Build validation nodes from columns
-                      for (const c of columns.filter(cc => !cc.isRemoved)) {
+                      for (const c of activeColumns) {
                         const zBot = c.zBottom ?? 0;
                         const zTop = c.zTop ?? (zBot + c.L);
-                        vNodes.push({ id: `${c.id}_bot`, x: c.x * 1000, y: c.y * 1000, z: zBot, restraints: [true, true, true, true, true, true] as [boolean,boolean,boolean,boolean,boolean,boolean] });
-                        vNodes.push({ id: `${c.id}_top`, x: c.x * 1000, y: c.y * 1000, z: zTop, restraints: [false, false, false, false, false, false] as [boolean,boolean,boolean,boolean,boolean,boolean] });
-                        vElements.push({ id: `col_${c.id}`, nodeI: `${c.id}_bot`, nodeJ: `${c.id}_top`, type: 'column' as const });
+                        vNodes.push({ id: `${c.id}_bot`, x: c.x * 1000, y: c.y * 1000, z: zBot, restraints: [true, true, true, true, true, true] });
+                        vNodes.push({ id: `${c.id}_top`, x: c.x * 1000, y: c.y * 1000, z: zTop, restraints: [false, false, false, false, false, false] });
+                        vElements.push({ id: `col_${c.id}`, nodeI: `${c.id}_bot`, nodeJ: `${c.id}_top`, type: 'column' });
                       }
-                      // Build validation elements from beams
-                      for (const b of beams.filter(bb => !removedBeamIds.includes(bb.id))) {
+
+                      // Build validation elements from beams using beamsWithLoads
+                      // (which has eccFromCol/eccToCol and snapped fromCol/toCol).
+                      // For connectivity, place beam nodes at the COLUMN CENTROID
+                      // position when the beam is connected via eccentricity or
+                      // manual override — matching analyze3DColumns.ts snap logic.
+                      for (const b of beamsWithLoads) {
                         const zMm = b.z ?? 0;
                         const niId = `beam_${b.id}_I`;
                         const njId = `beam_${b.id}_J`;
-                        vNodes.push({ id: niId, x: b.x1 * 1000, y: b.y1 * 1000, z: zMm, restraints: [false, false, false, false, false, false] as [boolean,boolean,boolean,boolean,boolean,boolean] });
-                        vNodes.push({ id: njId, x: b.x2 * 1000, y: b.y2 * 1000, z: zMm, restraints: [false, false, false, false, false, false] as [boolean,boolean,boolean,boolean,boolean,boolean] });
-                        vElements.push({ id: `beam_${b.id}`, nodeI: niId, nodeJ: njId, type: 'beam' as const });
+
+                        // Resolve connected column for each endpoint
+                        let x1mm = b.x1 * 1000, y1mm = b.y1 * 1000;
+                        let x2mm = b.x2 * 1000, y2mm = b.y2 * 1000;
+
+                        // --- Auto eccentricity snap ---
+                        const fromCol = b.fromCol ? colMap.get(b.fromCol) : undefined;
+                        const toCol   = b.toCol   ? colMap.get(b.toCol)   : undefined;
+                        if (fromCol && (b.eccFromCol != null || true)) {
+                          x1mm = fromCol.x * 1000; y1mm = fromCol.y * 1000;
+                        }
+                        if (toCol && (b.eccToCol != null || true)) {
+                          x2mm = toCol.x * 1000; y2mm = toCol.y * 1000;
+                        }
+
+                        // --- Manual override snap ---
+                        for (const ov of manualJointOverrides) {
+                          if (ov.beamId !== b.id) continue;
+                          const oc = colMap.get(ov.columnId);
+                          if (!oc) continue;
+                          const ocx = oc.x * 1000, ocy = oc.y * 1000;
+                          const d1sq = (b.x1*1000 - ocx)**2 + (b.y1*1000 - ocy)**2;
+                          const d2sq = (b.x2*1000 - ocx)**2 + (b.y2*1000 - ocy)**2;
+                          if (d1sq <= d2sq) { x1mm = ocx; y1mm = ocy; }
+                          else               { x2mm = ocx; y2mm = ocy; }
+                        }
+
+                        vNodes.push({ id: niId, x: x1mm, y: y1mm, z: zMm, restraints: [false, false, false, false, false, false] });
+                        vNodes.push({ id: njId, x: x2mm, y: y2mm, z: zMm, restraints: [false, false, false, false, false, false] });
+                        vElements.push({ id: `beam_${b.id}`, nodeI: niId, nodeJ: njId, type: 'beam' });
                       }
+
                       const result = runPreAnalysisChecks(vNodes, vElements);
                       setValidationReport(result.report);
                       setValidationRunning(false);
