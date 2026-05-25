@@ -1316,12 +1316,92 @@ const Index = () => {
     for (const conn of detectedConnections) {
       for (const id of conn.secondaryBeamIds) secBeamIds.add(id);
     }
+
+    // Build reverse map: partId → canonicalId  (e.g. "67-1" → "67")
+    // This is used to detect frames whose beams are ALL parts of one carrier beam group
+    const partToCanonical = new Map<string, string>();
+    for (const [canonicalId, partIds] of Object.entries(splitBeamGroups)) {
+      for (const pid of partIds) partToCanonical.set(pid, canonicalId);
+    }
+
     return frames.map(f => {
       const fr = frameResults.find(r => r.frameId === f.id);
       if (!fr) return null;
+
+      // Check whether ALL beams in this frame belong to the SAME carrier-beam split group
+      const mappedCanonicals = f.beamIds.map(id => partToCanonical.get(id));
+      const uniqueCanonicals = new Set(mappedCanonicals.filter(Boolean));
+      const allAreSameCarrier =
+        uniqueCanonicals.size === 1 &&
+        mappedCanonicals.every(c => c !== undefined);
+
+      if (allAreSameCarrier) {
+        // ── الجسر الحامل المقسّم: نعامله كجسر واحد ──────────────────────────────
+        // e.g. frame [67-1, 67-2, 67-3] → single beam "67" spanning the full length
+        const canonicalId = [...uniqueCanonicals][0]!;
+
+        // Sort parts left→right (or bottom→top) by physical position
+        const partData = fr.beams.map(br => {
+          const beam = bMap.get(br.beamId);
+          const posMin = beam
+            ? (beam.direction === 'horizontal'
+                ? Math.min(beam.x1, beam.x2)
+                : Math.min(beam.y1, beam.y2))
+            : 0;
+          return { br, beam, posMin };
+        }).sort((a, b) => a.posMin - b.posMin);
+
+        if (partData.length === 0) return null;
+
+        const leftPart  = partData[0];
+        const rightPart = partData[partData.length - 1];
+        const totalSpan = partData.reduce((s, p) => s + p.br.span, 0);
+
+        // Reference beam: largest cross-section (matches beamDesigns grouping logic)
+        const refBeam = partData.reduce<typeof partData[0]['beam']>((best, p) => {
+          if (!p.beam) return best;
+          if (!best) return p.beam;
+          return p.beam.b * p.beam.h >= best.b * best.h ? p.beam : best;
+        }, undefined);
+        if (!refBeam) return null;
+
+        // Synthetic beam object with canonical ID and total span
+        const syntheticBeam = { ...refBeam, id: canonicalId, length: totalSpan * 1000 };
+        const synBMap = new Map(bMap);
+        synBMap.set(canonicalId, syntheticBeam);
+
+        // Synthetic single-span frame (no intermediate supports)
+        const synFrame: Frame = {
+          id: f.id,
+          beamIds: [canonicalId],
+          direction: f.direction,
+          storyId: f.storyId,
+        };
+
+        // Synthetic frame result: end moments from outer parts, Mmid = max across all
+        const synFr: FrameResult = {
+          frameId: f.id,
+          beams: [{
+            beamId: canonicalId,
+            span: totalSpan,
+            Mleft:  leftPart.br.Mleft,
+            Mmid:   Math.max(...partData.map(p => p.br.Mmid)),
+            Mright: rightPart.br.Mright,
+            Vu:     Math.max(...partData.flatMap(p => [
+              Math.abs(p.br.Rleft ?? 0),
+              Math.abs(p.br.Rright ?? 0),
+            ])),
+            Rleft:  leftPart.br.Rleft  ?? 0,
+            Rright: rightPart.br.Rright ?? 0,
+          }],
+        };
+
+        return calculateFrameBentUp(synFrame, synBMap, synFr, mat, frames, secBeamIds);
+      }
+
       return calculateFrameBentUp(f, bMap, fr, mat, frames, secBeamIds);
     }).filter(Boolean) as FrameBentUpResult[];
-  }, [analyzed, frames, beamsWithLoads, frameResults, mat, detectedConnections]);
+  }, [analyzed, frames, beamsWithLoads, frameResults, mat, detectedConnections, splitBeamGroups]);
 
   const slabDesigns = useMemo(() =>
     slabs.map(s => ({ ...s, design: designSlab(s, slabProps, mat, slabs, columns) })),
@@ -5125,7 +5205,10 @@ const Index = () => {
                 <div className="mt-6 space-y-4">
                   <h3 className="text-sm font-semibold text-foreground">تفاصيل تسليح الجسور</h3>
                   {beamDesigns.map(d => {
-                    const beam = beamsWithLoads.find(b => b.id === d.beamId);
+                    let beam = beamsWithLoads.find(b => b.id === d.beamId);
+                    if (!beam && (d as any).mergedCarrierIds) {
+                      beam = beamsWithLoads.find(b => (d as any).mergedCarrierIds.includes(b.id));
+                    }
                     if (!beam) return null;
                     const bent = getBentUpData(d.beamId);
                     return (

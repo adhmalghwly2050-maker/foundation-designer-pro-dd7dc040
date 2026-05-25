@@ -124,7 +124,14 @@ export default function ExportPanel({
         const filtBeamIds = new Set(filtBeams.map(b => b.id));
         const filtColIds = new Set(filtCols.map(c => c.id));
         const filtSlabIds = new Set(filtSlabs.map(s => s.id));
-        const filtBeamDesigns = beamDesigns.filter((d: any) => filtBeamIds.has(d.beamId));
+        const filtBeamDesigns = beamDesigns.filter((d: any) => {
+          if (filtBeamIds.has(d.beamId)) return true;
+          // Support merged carrier beams (e.g. "67" whose parts "67-1","67-2","67-3" are the actual beams)
+          if (d.mergedCarrierIds) {
+            return (d.mergedCarrierIds as string[]).some((id: string) => filtBeamIds.has(id));
+          }
+          return false;
+        });
         const filtColDesigns = colDesigns.filter((c: any) => filtColIds.has(c.id));
         const filtSlabDesigns = slabDesigns.filter((s: any) => filtSlabIds.has(s.id));
 

@@ -26,8 +26,14 @@ type ETABSBeamResult = {
 interface BeamDesignRow {
   beamId: string;
   storyLabel: string;
-  app: { topLeft: string; bottom: string; topRight: string; Vu: number } | null;
-  etabs: { topLeft: string; bottom: string; topRight: string; Vu: number } | null;
+  app: {
+    topLeft: string; bottom: string; topRight: string; Vu: number;
+    AsLeft: number; AsMid: number; AsRight: number;
+  } | null;
+  etabs: {
+    topLeft: string; bottom: string; topRight: string; Vu: number;
+    AsLeft: number; AsMid: number; AsRight: number;
+  } | null;
 }
 
 interface ColCompareRow {
@@ -73,7 +79,9 @@ function formatRebar(bars: number, dia: number): string {
 
 function diffBadge(appVal: number, etabsVal: number) {
   const diff = appVal - etabsVal;
-  if (Math.abs(diff) < 0.5) return <Minus size={12} className="text-muted-foreground" />;
+  // Use a relative tolerance of 5% for As (mm²) comparison
+  const tolerance = Math.max(etabsVal * 0.05, 10);
+  if (Math.abs(diff) <= tolerance) return <Minus size={12} className="text-muted-foreground" />;
   if (diff > 0) return <TrendingUp size={12} className="text-red-500" />;
   return <TrendingDown size={12} className="text-green-500" />;
 }
@@ -192,6 +200,9 @@ export default function DesignComparisonPanel({
             bottom: formatRebar(fm.bars, fm.dia),
             topRight: formatRebar(fr2.bars, fr2.dia),
             Vu: bestVu,
+            AsLeft: fl.As,
+            AsMid: fm.As,
+            AsRight: fr2.As,
           };
         }
       }
@@ -222,6 +233,9 @@ export default function DesignComparisonPanel({
           bottom: formatRebar(fm.bars, fm.dia),
           topRight: formatRebar(fr2.bars, fr2.dia),
           Vu: ed.Vu,
+          AsLeft: fl.As,
+          AsMid: fm.As,
+          AsRight: fr2.As,
         };
       }
 
@@ -382,8 +396,8 @@ export default function DesignComparisonPanel({
                         <div className="flex items-center gap-0.5">
                           {row.app ? row.app.topLeft : <span className="text-muted-foreground">—</span>}
                           {row.app && row.etabs && diffBadge(
-                            parseInt(row.app.topLeft) || 0,
-                            parseInt(row.etabs.topLeft) || 0
+                            row.app.AsLeft,
+                            row.etabs.AsLeft
                           )}
                         </div>
                       </TableCell>
@@ -395,8 +409,8 @@ export default function DesignComparisonPanel({
                         <div className="flex items-center gap-0.5">
                           {row.app ? row.app.bottom : <span className="text-muted-foreground">—</span>}
                           {row.app && row.etabs && diffBadge(
-                            parseInt(row.app.bottom) || 0,
-                            parseInt(row.etabs.bottom) || 0
+                            row.app.AsMid,
+                            row.etabs.AsMid
                           )}
                         </div>
                       </TableCell>
@@ -408,8 +422,8 @@ export default function DesignComparisonPanel({
                         <div className="flex items-center gap-0.5">
                           {row.app ? row.app.topRight : <span className="text-muted-foreground">—</span>}
                           {row.app && row.etabs && diffBadge(
-                            parseInt(row.app.topRight) || 0,
-                            parseInt(row.etabs.topRight) || 0
+                            row.app.AsRight,
+                            row.etabs.AsRight
                           )}
                         </div>
                       </TableCell>
@@ -427,10 +441,10 @@ export default function DesignComparisonPanel({
             let higherCount = 0, lowerCount = 0, equalCount = 0;
             for (const row of beamComparisons) {
               if (!row.app || !row.etabs) continue;
-              const appBars = (parseInt(row.app.topLeft) || 0) + (parseInt(row.app.bottom) || 0) + (parseInt(row.app.topRight) || 0);
-              const etabsBars = (parseInt(row.etabs.topLeft) || 0) + (parseInt(row.etabs.bottom) || 0) + (parseInt(row.etabs.topRight) || 0);
-              if (appBars > etabsBars) higherCount++;
-              else if (appBars < etabsBars) lowerCount++;
+              const appAs    = (row.app.AsLeft   || 0) + (row.app.AsMid   || 0) + (row.app.AsRight   || 0);
+              const etabsAs  = (row.etabs.AsLeft  || 0) + (row.etabs.AsMid  || 0) + (row.etabs.AsRight  || 0);
+              if (appAs > etabsAs + 1) higherCount++;
+              else if (appAs < etabsAs - 1) lowerCount++;
               else equalCount++;
             }
             return (
