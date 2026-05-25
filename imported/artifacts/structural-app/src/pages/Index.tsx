@@ -1287,7 +1287,7 @@ const Index = () => {
         const My = etabsData?.M3 ?? 0;
         return {
           ...c, Pu, Mx, My, Mu: Math.max(Mx, My),
-          design: designColumnBiaxial(Pu, Mx, My, c.b, c.h, mat.fc, mat.fy, c.L),
+          design: designColumnBiaxial(Pu, Mx, My, c.b, c.h, mat.fc, mat.fy, c.L, undefined, undefined, undefined, undefined, undefined, undefined, false, c.orientAngle),
         };
       });
     }
@@ -1300,6 +1300,7 @@ const Index = () => {
           loads.Pu, loads.Mx, loads.My, c.b, c.h, mat.fc, mat.fy, c.L,
           undefined, undefined,
           loads.MxTop, loads.MxBot, loads.MyTop, loads.MyBot,
+          false, c.orientAngle,
         ),
       };
     });

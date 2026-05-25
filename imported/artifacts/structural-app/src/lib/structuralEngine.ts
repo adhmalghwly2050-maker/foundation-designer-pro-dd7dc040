@@ -2682,11 +2682,13 @@ export function calculateColumnLoadsBiaxial(
             colLoads.Pu += Math.abs(V);
             const Mcol = Mbeam * distBot; // j-end: same sign as beam moment
             if (beam.direction === 'horizontal') {
-              colLoads.Mx = pickMax(colLoads.Mx, Math.abs(Mcol));
-              colLoads.MxTop = pickMax(colLoads.MxTop, Mcol);
-            } else {
+              // X-direction beams → bending about Global Y → My (moment about local Z at α=0°)
               colLoads.My = pickMax(colLoads.My, Math.abs(Mcol));
               colLoads.MyTop = pickMax(colLoads.MyTop, Mcol);
+            } else {
+              // Y-direction beams → bending about Global X → Mx (moment about local Y at α=0°)
+              colLoads.Mx = pickMax(colLoads.Mx, Math.abs(Mcol));
+              colLoads.MxTop = pickMax(colLoads.MxTop, Mcol);
             }
           }
         }
@@ -2702,11 +2704,13 @@ export function calculateColumnLoadsBiaxial(
             }
             const Mcol = -Mbeam * distTop; // i-end: negated
             if (beam.direction === 'horizontal') {
-              colLoads.Mx = pickMax(colLoads.Mx, Math.abs(Mcol));
-              colLoads.MxBot = pickMax(colLoads.MxBot, Mcol);
-            } else {
+              // X-direction beams → bending about Global Y → My (moment about local Z at α=0°)
               colLoads.My = pickMax(colLoads.My, Math.abs(Mcol));
               colLoads.MyBot = pickMax(colLoads.MyBot, Mcol);
+            } else {
+              // Y-direction beams → bending about Global X → Mx (moment about local Y at α=0°)
+              colLoads.Mx = pickMax(colLoads.Mx, Math.abs(Mcol));
+              colLoads.MxBot = pickMax(colLoads.MxBot, Mcol);
             }
           }
         }
@@ -2895,9 +2899,14 @@ function suggestSafeDimensions(
 // ===================== BIAXIAL COLUMN DESIGN (Bresler Reciprocal Method) =====================
 
 /**
- * ACI 318-19 Biaxial column design using Bresler Reciprocal Load Method.
- * 1/Pn = 1/Pnx + 1/Pny - 1/P0
+ * ACI 318-19 Biaxial column design using the Bresler Load Contour Method:
+ * (Mx/φMnx)^α + (My/φMny)^α ≤ 1.0   (α = 1.24)
+ * where φMnx and φMny are the uniaxial moment capacities at the given Pu.
  * Also performs slenderness check in both X and Y directions.
+ *
+ * Mx convention (LOCAL axes, matching ETABS M2/M3):
+ *   Mx = moment about the column's local Y axis (bisects h) — strong axis when h > b
+ *   My = moment about the column's local Z axis (bisects b) — weak axis when h > b
  */
 export interface BiaxialColumnResult extends ColumnResult {
   Mx: number;
@@ -2951,14 +2960,19 @@ export function designColumnBiaxial(
   beamStiffnessY?: { EIL1: number; EIL2: number },
   MxTop?: number, MxBot?: number, MyTop?: number, MyBot?: number,
   isSeismic: boolean = false,
+  orientAngle?: number,
 ): BiaxialColumnResult {
   const originalB = b;
   const originalH = h;
 
   // Phase 2: Auto-rotation - place larger dimension to face larger moment
+  // Skip when orientAngle is explicitly set: the 3D solver already computed Mx/My
+  // in LOCAL column axes (accounting for the rotation), so the section orientation
+  // is already correct — forcing another rotation here would be wrong.
   let wasRotated = false;
   let rotationReason = '';
-  if (b !== h) {
+  const skipAutoRotation = orientAngle !== undefined && orientAngle !== 0;
+  if (b !== h && !skipAutoRotation) {
     const maxDim = Math.max(b, h);
     const minDim = Math.min(b, h);
     if (Mx > My && h < b) {
@@ -3164,21 +3178,14 @@ export function designColumnBiaxial(
       const phiPnx = checkX.phiPn > 0 ? checkX.phiPn : phiP0;
       const phiPny = checkY.phiPn > 0 ? checkY.phiPn : phiP0;
 
-      let breslerRatio: number;
-      if (Pu < 0.1 * phiP0) {
-        const alpha = 1.24;
-        const mxRatio = checkX.phiMn > 0 ? MxMagnified / checkX.phiMn : 0;
-        const myRatio = checkY.phiMn > 0 ? MyMagnified / checkY.phiMn : 0;
-        breslerRatio = Math.pow(mxRatio, alpha) + Math.pow(myRatio, alpha);
-      } else {
-        if (phiPnx > 0 && phiPny > 0 && phiP0 > 0) {
-          const reciprocal = 1 / phiPnx + 1 / phiPny - 1 / phiP0;
-          const phiPnBiaxial = reciprocal > 0 ? 1 / reciprocal : 0;
-          breslerRatio = phiPnBiaxial > 0 ? Pu / phiPnBiaxial : 999;
-        } else {
-          breslerRatio = 999;
-        }
-      }
+      // ACI 318-19 §R22.4.3.2 — Bresler Load Contour Method (biaxial interaction)
+      // (Mx/φMnx)^α + (My/φMny)^α ≤ 1.0,  α = 1.24 (rectangular sections)
+      // φMnx and φMny are the uniaxial moment capacities at the given Pu,
+      // already interpolated from the PM diagram above.
+      const alpha = 1.24;
+      const mxRatio = checkX.phiMn > 0 ? MxMagnified / checkX.phiMn : (MxMagnified > 0 ? 999 : 0);
+      const myRatio = checkY.phiMn > 0 ? MyMagnified / checkY.phiMn : (MyMagnified > 0 ? 999 : 0);
+      const breslerRatio = Math.pow(mxRatio, alpha) + Math.pow(myRatio, alpha);
 
       const biaxialAdequate = breslerRatio <= 1.0;
 
@@ -3242,8 +3249,11 @@ export function designColumnBiaxial(
       const phiP0fb = 0.65 * 0.80 * P0fb;
       const phiPnxFb = checkX.phiPn > 0 ? checkX.phiPn : phiP0fb;
       const phiPnyFb = checkY.phiPn > 0 ? checkY.phiPn : phiP0fb;
-      const recip = 1 / phiPnxFb + 1 / phiPnyFb - 1 / phiP0fb;
-      const breslerFb = recip > 0 ? Pu / (1 / recip) : 999;
+      // Bresler Load Contour Method (same as main loop)
+      const alphaFb = 1.24;
+      const mxRatioFb = checkX.phiMn > 0 ? MxMagnified / checkX.phiMn : (MxMagnified > 0 ? 999 : 0);
+      const myRatioFb = checkY.phiMn > 0 ? MyMagnified / checkY.phiMn : (MyMagnified > 0 ? 999 : 0);
+      const breslerFb = Math.pow(mxRatioFb, alphaFb) + Math.pow(myRatioFb, alphaFb);
       if (breslerFb <= 1.0 || dia === 30) {
         const rhoActualFb = nBarsEven * aBar / Ag;
         const stirrupSpacingFb = Math.min(sConfinement, 16 * dia, Math.min(b, h), 300);
@@ -3297,8 +3307,11 @@ export function designColumnBiaxial(
     const phiP0 = 0.65 * 0.80 * P0;
     const phiPnx = checkX.phiPn > 0 ? checkX.phiPn : phiP0;
     const phiPny = checkY.phiPn > 0 ? checkY.phiPn : phiP0;
-    const reciprocal = 1 / phiPnx + 1 / phiPny - 1 / phiP0;
-    const breslerRatio = reciprocal > 0 ? Pu / (1 / reciprocal) : 999;
+    // Bresler Load Contour Method (same as main loop)
+    const alphaFinal = 1.24;
+    const mxRatioFinal = checkX.phiMn > 0 ? MxMagnified / checkX.phiMn : (MxMagnified > 0 ? 999 : 0);
+    const myRatioFinal = checkY.phiMn > 0 ? MyMagnified / checkY.phiMn : (MyMagnified > 0 ? 999 : 0);
+    const breslerRatio = Math.pow(mxRatioFinal, alphaFinal) + Math.pow(myRatioFinal, alphaFinal);
     const rhoActual = nBarsEven * aBar / Ag;
     const stirrupSpacing = Math.min(sConfinement, 16 * dia, Math.min(b, h), 300);
 
