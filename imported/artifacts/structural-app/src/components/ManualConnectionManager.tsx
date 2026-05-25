@@ -202,16 +202,15 @@ export default function ManualConnectionManager({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={[
-          // Mobile: full screen, no rounded corners, full height
-          'w-full max-w-full rounded-none',
-          // Tablet+: constrained width, rounded, limited height
-          'sm:max-w-md sm:rounded-lg',
-          // Height: full on mobile, 88vh on larger screens
-          'h-[100dvh] sm:h-auto sm:max-h-[88vh]',
+          // Mobile: full width, slight margin from edges, rounded
+          'w-[calc(100%-16px)] max-w-full rounded-xl mx-auto',
+          // Height: limited on mobile so footer stays visible
+          'max-h-[82dvh]',
+          // Tablet+: constrained width
+          'sm:max-w-md sm:max-h-[88vh]',
           'flex flex-col gap-0 p-0 overflow-hidden',
         ].join(' ')}
         dir="rtl"
-        // Hide the default DialogContent close button — we add our own below
         onOpenAutoFocus={e => e.preventDefault()}
       >
         {/* ── Header ─────────────────────────────────────────────── */}
