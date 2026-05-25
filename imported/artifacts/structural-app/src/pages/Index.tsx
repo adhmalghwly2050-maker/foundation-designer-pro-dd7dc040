@@ -5521,6 +5521,19 @@ const Index = () => {
         data={diagramData}
       />
 
+      {/* Manual Connection Manager Dialog */}
+      <ManualConnectionManager
+        open={connectionManagerOpen}
+        onOpenChange={setConnectionManagerOpen}
+        columns={columns}
+        beams={beams.filter(b => !removedBeamIds.includes(b.id))}
+        stories={stories}
+        selectedStoryId={selectedStoryId}
+        manualJointOverrides={manualJointOverrides}
+        onOverridesChange={(overrides) => dispatch({ type: 'SET_MANUAL_JOINT_OVERRIDES', overrides })}
+        onRequestReanalyze={runAnalysis}
+      />
+
       {/* Bottom Navigation */}
       <BottomNav 
         activeTab={mainTab} 
