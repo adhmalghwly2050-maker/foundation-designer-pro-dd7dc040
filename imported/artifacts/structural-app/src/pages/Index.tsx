@@ -1808,6 +1808,7 @@ const Index = () => {
       applyToUpperFloors?: boolean;
       topEnd?: 'F' | 'P'; bottomEnd?: 'F' | 'P';
       releaseI?: any; releaseJ?: any;
+      orientAngle?: number;
     }
   ) => {
     const EPS = 0.01;
@@ -1818,7 +1819,9 @@ const Index = () => {
           ? columns.filter(c => Math.abs(c.x - col.x) < EPS && Math.abs(c.y - col.y) < EPS)
           : [col];
         for (const c of colsToUpdate) {
-          dispatch({ type: 'SET_COL_OVERRIDE', colId: c.id, override: { b: Number(props.b), h: Number(props.h) } });
+          const override: { b: number; h: number; orientAngle?: number } = { b: Number(props.b), h: Number(props.h) };
+          if (props.orientAngle != null) override.orientAngle = props.orientAngle;
+          dispatch({ type: 'SET_COL_OVERRIDE', colId: c.id, override });
         }
       }
     } else if (type === 'beam' && props.b != null && props.h != null) {

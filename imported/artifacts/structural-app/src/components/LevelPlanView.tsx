@@ -57,6 +57,7 @@ interface ElementEditDialog {
   y: number;
   releaseI: EndReleaseDOF;
   releaseJ: EndReleaseDOF;
+  orientAngle: number;
 }
 
 interface SupportDialogState {
@@ -77,6 +78,7 @@ export default function LevelPlanView({
     applyToUpperFloors?: boolean;
     topEnd?: 'F' | 'P'; bottomEnd?: 'F' | 'P';
     releaseI?: EndReleaseDOF; releaseJ?: EndReleaseDOF;
+    orientAngle?: number;
   }) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -89,6 +91,7 @@ export default function LevelPlanView({
     open: false, type: '', id: '', label: '', b: 200, h: 400, length: 0,
     thickness: 160, topEnd: 'F', bottomEnd: 'F', x: 0, y: 0,
     releaseI: { ...defaultRelease }, releaseJ: { ...defaultRelease },
+    orientAngle: 0,
   });
   const [applyToUpperFloors, setApplyToUpperFloors] = useState(false);
   const [supportDialog, setSupportDialog] = useState<SupportDialogState>({
@@ -284,6 +287,7 @@ export default function LevelPlanView({
               bottomEnd: col.bottomEndCondition || 'F',
               x: col.x, y: col.y,
               releaseI: { ...defaultRelease }, releaseJ: { ...defaultRelease },
+              orientAngle: col.orientAngle ?? 0,
             });
           }
         }
@@ -297,6 +301,7 @@ export default function LevelPlanView({
             topEnd: 'F', bottomEnd: 'F',
             x: (slab.x1 + slab.x2) / 2, y: (slab.y1 + slab.y2) / 2,
             releaseI: { ...defaultRelease }, releaseJ: { ...defaultRelease },
+            orientAngle: 0,
           });
         }
       }
@@ -359,7 +364,6 @@ export default function LevelPlanView({
   };
 
   const handleEditSave = () => {
-    // Save element properties via the dedicated callback (direct save, no second dialog)
     if (editDialog.type === 'column' || editDialog.type === 'beam') {
       onSaveElementProps?.(editDialog.type, editDialog.id, {
         b: editDialog.b,
@@ -369,6 +373,7 @@ export default function LevelPlanView({
         bottomEnd: editDialog.type === 'column' ? editDialog.bottomEnd : undefined,
         releaseI: editDialog.releaseI,
         releaseJ: editDialog.releaseJ,
+        orientAngle: editDialog.type === 'column' ? editDialog.orientAngle : undefined,
       });
     } else if (editDialog.type === 'slab') {
       onSaveElementProps?.('slab', editDialog.id, { thickness: editDialog.thickness });
@@ -755,6 +760,28 @@ export default function LevelPlanView({
                 {editDialog.type === 'beam' && (
                   <div className="text-xs text-muted-foreground">
                     الطول: <span className="font-mono">{editDialog.length.toFixed(2)} م</span>
+                  </div>
+                )}
+                {editDialog.type === 'column' && editDialog.b !== editDialog.h && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      className={`w-full flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors min-h-[40px] ${
+                        (((editDialog.orientAngle % 360) + 360) % 360) >= 45 && (((editDialog.orientAngle % 360) + 360) % 360) < 135
+                          ? 'border-orange-400 bg-orange-500 text-white hover:bg-orange-600'
+                          : 'border-border hover:bg-accent/30'
+                      }`}
+                      onClick={() => {
+                        const cur = editDialog.orientAngle ?? 0;
+                        const isNow90 = (((cur % 360) + 360) % 360) >= 45 && (((cur % 360) + 360) % 360) < 135;
+                        setEditDialog(prev => ({ ...prev, orientAngle: isNow90 ? 0 : 90 }));
+                      }}
+                    >
+                      🔄 {(((editDialog.orientAngle % 360) + 360) % 360) >= 45 && (((editDialog.orientAngle % 360) + 360) % 360) < 135
+                        ? `مدوَّر 90° — اضغط للإلغاء (فعلي: ${editDialog.h}×${editDialog.b} مم)`
+                        : `تدوير العمود 90° (فعلي: ${editDialog.b}×${editDialog.h} مم)`
+                      }
+                    </button>
                   </div>
                 )}
                 {editDialog.type === 'column' && stories.length > 1 && (
