@@ -702,8 +702,8 @@ export default function LevelPlanView({
 
       {/* Element properties dialog */}
       <Dialog open={editDialog.open} onOpenChange={handleEditDialogClose}>
-        <DialogContent className="max-w-sm" dir="rtl">
-          <DialogHeader>
+        <DialogContent className="max-w-sm w-[calc(100%-16px)] max-h-[82dvh] flex flex-col overflow-hidden" dir="rtl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>
               خصائص {editDialog.type === 'beam' ? 'الجسر' : editDialog.type === 'column' ? 'العمود' : 'البلاطة'} {editDialog.label}
             </DialogTitle>
@@ -711,7 +711,7 @@ export default function LevelPlanView({
               تعديل خصائص وأبعاد العنصر
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 py-2">
+          <div className="space-y-3 py-2 overflow-y-auto flex-1 min-h-0">
             {(editDialog.type === 'beam' || editDialog.type === 'column') && (
               <>
                 <div className="text-sm font-semibold">الأبعاد (مم)</div>
@@ -837,7 +837,7 @@ export default function LevelPlanView({
               <p className="text-xs text-muted-foreground text-center mt-1">اضغط زر الحذف مرة أخرى للتأكيد</p>
             </div>
           )}
-          <DialogFooter className="flex-col gap-2">
+          <DialogFooter className="flex-col gap-2 shrink-0 border-t pt-3 mt-1">
             {onDeleteElement && (
               <Button
                 variant={confirmDelete ? 'destructive' : 'outline'}
@@ -849,10 +849,10 @@ export default function LevelPlanView({
               </Button>
             )}
             <div className="flex gap-2 w-full">
-              <Button variant="outline" size="sm" className="flex-1 min-h-[40px]" onClick={() => { setConfirmDelete(false); setEditDialog(prev => ({ ...prev, open: false })); }}>
+              <Button variant="outline" size="sm" className="flex-1 min-h-[44px]" onClick={() => { setConfirmDelete(false); setEditDialog(prev => ({ ...prev, open: false })); }}>
                 إلغاء
               </Button>
-              <Button size="sm" className="flex-1 min-h-[40px]" onClick={handleEditSave}>
+              <Button size="sm" className="flex-1 min-h-[44px]" onClick={handleEditSave}>
                 حفظ التغييرات
               </Button>
             </div>
@@ -862,14 +862,14 @@ export default function LevelPlanView({
 
       {/* Support change dialog (ground level) */}
       <Dialog open={supportDialog.open} onOpenChange={open => setSupportDialog(prev => ({ ...prev, open }))}>
-        <DialogContent className="max-w-sm" dir="rtl">
-          <DialogHeader>
+        <DialogContent className="max-w-sm w-[calc(100%-16px)] max-h-[82dvh] flex flex-col overflow-hidden" dir="rtl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>خصائص الركيزة - {supportDialog.colLabel}</DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
               الموقع ({supportDialog.x.toFixed(1)}, {supportDialog.y.toFixed(1)}) - تعديل درجات الحرية
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
+          <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
             {/* Quick presets */}
             <div className="flex gap-2">
               <Button size="sm" variant="outline" className="flex-1 text-xs h-9"
@@ -937,11 +937,11 @@ export default function LevelPlanView({
               </div>
             </div>
           </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" size="sm" onClick={() => setSupportDialog(prev => ({ ...prev, open: false }))}>
+          <DialogFooter className="gap-2 shrink-0 border-t pt-3 mt-1">
+            <Button variant="outline" size="sm" className="flex-1 min-h-[44px]" onClick={() => setSupportDialog(prev => ({ ...prev, open: false }))}>
               إلغاء
             </Button>
-            <Button size="sm" onClick={handleSupportSave}>
+            <Button size="sm" className="flex-1 min-h-[44px]" onClick={handleSupportSave}>
               حفظ
             </Button>
           </DialogFooter>
