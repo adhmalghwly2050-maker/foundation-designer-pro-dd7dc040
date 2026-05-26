@@ -3066,31 +3066,19 @@ export function designColumnBiaxial(
   const originalB = b;
   const originalH = h;
 
-  // Phase 2: Auto-rotation - place larger dimension to face larger moment
-  // Skip when orientAngle is explicitly set: the 3D solver already computed Mx/My
-  // in LOCAL column axes (accounting for the rotation), so the section orientation
-  // is already correct — forcing another rotation here would be wrong.
+  // Phase 2: Apply physical rotation via orientAngle only.
+  // When orientAngle ≈ 90°, the section is physically rotated 90° in plan:
+  // swap b and h INTERNALLY for calculations — stored values remain unchanged.
+  // Auto-swapping b/h based on moment magnitudes has been removed; rotation must
+  // be explicitly requested by the user.
   let wasRotated = false;
   let rotationReason = '';
-  const skipAutoRotation = orientAngle !== undefined && orientAngle !== 0;
-  if (b !== h && !skipAutoRotation) {
-    const maxDim = Math.max(b, h);
-    const minDim = Math.min(b, h);
-    if (Mx > My && h < b) {
-      // When bending is stronger about X-axis, orient h as the larger dimension
-      [b, h] = [minDim, maxDim];
-      wasRotated = true;
-      rotationReason = `تدوير تلقائي: البعد الأكبر (${maxDim}mm) يواجه Mx=${Mx.toFixed(1)} الأكبر`;
-    } else if (My > Mx && b < h) {
-      // When bending is stronger about Y-axis, orient b as the larger dimension
-      [b, h] = [maxDim, minDim];
-      wasRotated = true;
-      rotationReason = `تدوير تلقائي: البعد الأكبر (${maxDim}mm) يواجه My=${My.toFixed(1)} الأكبر`;
-    } else if (Mx > My && h >= b) {
-      rotationReason = 'الوضع الحالي مثالي';
-    } else if (My > Mx && b >= h) {
-      rotationReason = 'الوضع الحالي مثالي';
-    }
+  const normalizedAngle = (((orientAngle ?? 0) % 360) + 360) % 360;
+  const isPhysicallyRotated = normalizedAngle >= 45 && normalizedAngle < 135;
+  if (isPhysicallyRotated) {
+    [b, h] = [h, b]; // swap for calculation only — stored b and h values unchanged
+    wasRotated = true;
+    rotationReason = `تدوير 90°: البُعد الأكبر (${Math.max(originalB, originalH)}mm) يواجه المحور الرئيسي`;
   }
 
   // Phase 1: Enhanced K-factor via ψ (stiffness ratio)

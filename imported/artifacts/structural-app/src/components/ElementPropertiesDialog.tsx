@@ -30,11 +30,13 @@ interface ElementPropertiesDialogProps {
   nodeJ?: StructuralNode | null;
   slabProps?: SlabPropsData | null;
   hasMultipleStories?: boolean;
+  columnOrientAngle?: number;
   onSave: (data: {
     frameId?: number;
     areaId?: number;
     b?: number;
     h?: number;
+    orientAngle?: number;
     thickness?: number;
     finishLoad?: number;
     liveLoad?: number;
@@ -47,10 +49,11 @@ interface ElementPropertiesDialogProps {
 }
 
 export default function ElementPropertiesDialog({
-  open, onClose, frame, area, nodeI, nodeJ, slabProps, onSave, onDelete, hasMultipleStories
+  open, onClose, frame, area, nodeI, nodeJ, slabProps, onSave, onDelete, hasMultipleStories, columnOrientAngle
 }: ElementPropertiesDialogProps) {
   const [b, setB] = useState(0);
   const [h, setH] = useState(0);
+  const [orientAngle, setOrientAngle] = useState(0);
   const [thickness, setThickness] = useState(0);
   const [finishLoad, setFinishLoad] = useState(0);
   const [liveLoad, setLiveLoad] = useState(0);
@@ -66,6 +69,7 @@ export default function ElementPropertiesDialog({
     if (frame) {
       setB(frame.b || 200);
       setH(frame.h || 400);
+      setOrientAngle(columnOrientAngle ?? 0);
     }
     if (area) {
       setThickness(area.thickness);
@@ -78,13 +82,14 @@ export default function ElementPropertiesDialog({
     }
     if (nodeI) setReleaseI({ ...nodeI.restraints });
     if (nodeJ) setReleaseJ({ ...nodeJ.restraints });
-  }, [frame, area, nodeI, nodeJ, slabProps]);
+  }, [frame, area, nodeI, nodeJ, slabProps, columnOrientAngle]);
 
   const handleSave = () => {
     if (frame) {
       onSave({
         frameId: frame.id,
         b, h,
+        orientAngle: isColumn ? orientAngle : undefined,
         nodeIRestraints: releaseI,
         nodeJRestraints: releaseJ,
         applyToUpperFloors: isColumn ? applyToUpperFloors : undefined,
@@ -93,6 +98,12 @@ export default function ElementPropertiesDialog({
       onSave({ areaId: area.id, thickness, finishLoad, liveLoad, cover });
     }
     onClose();
+  };
+
+  const handleRotate90 = () => {
+    const normalized = ((orientAngle % 360) + 360) % 360;
+    const newAngle = (normalized >= 45 && normalized < 135) ? 0 : 90;
+    setOrientAngle(newAngle);
   };
 
   const handleDelete = () => {
@@ -160,6 +171,32 @@ export default function ElementPropertiesDialog({
                   <span className="font-mono">
                     {nodeI && nodeJ ? Math.sqrt((nodeJ.x - nodeI.x) ** 2 + (nodeJ.y - nodeI.y) ** 2 + (nodeJ.z - nodeI.z) ** 2).toFixed(3) : '—'} م
                   </span>
+                </div>
+              )}
+              {isColumn && (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRotate90}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                      (((orientAngle % 360) + 360) % 360) >= 45 && (((orientAngle % 360) + 360) % 360) < 135
+                        ? 'bg-orange-500 text-white border-orange-500 hover:bg-orange-600'
+                        : 'border-border hover:bg-accent/30'
+                    }`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                      <path d="M3 3v5h5"/>
+                    </svg>
+                    {(((orientAngle % 360) + 360) % 360) >= 45 && (((orientAngle % 360) + 360) % 360) < 135
+                      ? 'مدوَّر 90° — اضغط للإلغاء'
+                      : 'تدوير العمود 90°'}
+                  </button>
+                  {(((orientAngle % 360) + 360) % 360) >= 45 && (((orientAngle % 360) + 360) % 360) < 135 && (
+                    <span className="text-[10px] text-orange-600 dark:text-orange-400 font-mono">
+                      b_فعلي={b > h ? b : h} × h_فعلي={b > h ? h : b} مم
+                    </span>
+                  )}
                 </div>
               )}
               {isColumn && hasMultipleStories && (

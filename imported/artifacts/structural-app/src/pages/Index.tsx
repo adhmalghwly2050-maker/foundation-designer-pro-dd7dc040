@@ -1517,7 +1517,7 @@ const Index = () => {
           }
         }
         // Persist column dimensions to React state so they survive model rebuilds
-        if (frame.type === 'column' && data.b != null && data.h != null) {
+        if (frame.type === 'column' && (data.b != null || data.orientAngle != null)) {
           // Use the top node (nodeJ) x,y to locate the column in the React state
           const topNode = modelManager.getNode(frame.nodeJ);
           if (topNode) {
@@ -1532,7 +1532,11 @@ const Index = () => {
                   ? samePositionCols.filter(c => c.storyId === selectedStoryId)
                   : samePositionCols.slice(0, 1));
             for (const col of colsToUpdate) {
-              dispatch({ type: 'SET_COL_OVERRIDE', colId: col.id, override: { b: Number(data.b), h: Number(data.h) } });
+              const override: Record<string, number> = {};
+              if (data.b != null) override.b = Number(data.b);
+              if (data.h != null) override.h = Number(data.h);
+              if (data.orientAngle != null) override.orientAngle = Number(data.orientAngle);
+              dispatch({ type: 'SET_COL_OVERRIDE', colId: col.id, override });
             }
           }
         }
@@ -4396,7 +4400,10 @@ const Index = () => {
                                 const loads = colLoads3D.get(c.id);
                                 const maxMx = Math.max(Math.abs(loads?.MxTop || 0), Math.abs(loads?.MxBot || 0));
                                 const maxMy = Math.max(Math.abs(loads?.MyTop || 0), Math.abs(loads?.MyBot || 0));
-                                if (maxMy > maxMx && c.b !== c.h) needRotation.add(c.id);
+                                const r90 = c.orientAngle != null && (((c.orientAngle % 360) + 360) % 360) >= 45 && (((c.orientAngle % 360) + 360) % 360) < 135;
+                                const eB = r90 ? c.h : c.b;
+                                const eH = r90 ? c.b : c.h;
+                                if (eB !== eH && ((maxMy > maxMx && eB < eH) || (maxMx > maxMy && eH < eB))) needRotation.add(c.id);
                               }
                             }
                             setBiaxialSelectedCols(needRotation);
@@ -4524,9 +4531,13 @@ const Index = () => {
                               // يحتاج تدويراً فقط إذا كان البُعد الأكبر يواجه المحور الضعيف:
                               // My > Mx → نريد b ≥ h (Iy أكبر) → مشكلة إذا b < h
                               // Mx > My → نريد h ≥ b (Ix أكبر) → مشكلة إذا h < b
-                              const needsRotation = c.b !== c.h && (
-                                (maxMy > maxMx && c.b < c.h) ||
-                                (maxMx > maxMy && c.h < c.b)
+                              // Account for orientAngle: if column is rotated 90°, effective b/h are swapped
+                              const colIsRotated90 = c.orientAngle != null && (((c.orientAngle % 360) + 360) % 360) >= 45 && (((c.orientAngle % 360) + 360) % 360) < 135;
+                              const effB = colIsRotated90 ? c.h : c.b;
+                              const effH = colIsRotated90 ? c.b : c.h;
+                              const needsRotation = effB !== effH && (
+                                (maxMy > maxMx && effB < effH) ||
+                                (maxMx > maxMy && effH < effB)
                               );
                               const isSelected = biaxialSelectedCols.has(c.id);
                               const wasRotated = rotatedColIds.has(c.id);
@@ -5592,6 +5603,16 @@ const Index = () => {
         nodeJ={elemPropsFrameId != null ? (() => { const f = currentFrames.find(fr => fr.id === elemPropsFrameId); return f ? currentNodes.find(n => n.id === f.nodeJ) : null; })() : null}
         slabProps={elemPropsAreaId != null ? { ...slabProps, ...(slabPropsOverrides[elemPropsAreaId] || {}) } : null}
         hasMultipleStories={stories.length > 1}
+        columnOrientAngle={(() => {
+          if (elemPropsFrameId == null) return 0;
+          const f = currentFrames.find(fr => fr.id === elemPropsFrameId);
+          if (!f || f.type !== 'column') return 0;
+          const topNode = currentNodes.find(n => n.id === f.nodeJ);
+          if (!topNode) return 0;
+          const EPS = 0.01;
+          const col = columns.find(c => Math.abs(c.x - topNode.x) < EPS && Math.abs(c.y - topNode.y) < EPS);
+          return col?.orientAngle ?? 0;
+        })()}
         onSave={handleElemPropsSave}
         onDelete={handleElemPropsDelete}
       />
