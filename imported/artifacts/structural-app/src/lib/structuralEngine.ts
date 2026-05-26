@@ -1,4 +1,13 @@
 import { buildSlabEdgeLoads, computeBeamLoadProfile } from './slabLoadTransfer';
+import {
+  resolveJointStiffnessForFrame,
+  runJointValidationTests,
+  type JointDebugInfo,
+  type ValidationTestResult,
+} from '../core/joints/rotationalRestraint';
+
+export type { JointDebugInfo, ValidationTestResult };
+export { runJointValidationTests };
 
 // ===================== TYPES =====================
 export interface Story {
@@ -1096,6 +1105,14 @@ export function analyzeFrame(
   beamStiffnessFactor: number = 0.35,
   /** معامل تخفيض جساءة الأعمدة (الافتراضي 0.70·Ig حسب ACI 318-19 §6.6.3.1.1) */
   colStiffnessFactor: number = 0.70,
+  /**
+   * ALL beams in the building (across all frames).  When provided, the
+   * rotational restraint engine uses perpendicular beams' torsional
+   * stiffness as additional joint rotational restraint — producing
+   * ETABS-like behaviour where moment transfer emerges from relative
+   * member stiffness rather than hardcoded fixed/pinned flags.
+   */
+  allBeams?: Map<string, Beam>,
 ): FrameResult {
   const frameBeams = frame.beamIds.map(id => beamsMap.get(id)!);
   const n = frameBeams.length;
@@ -1135,43 +1152,46 @@ export function analyzeFrame(
 
     if (col && !isRemovedCol) {
       const Ec = 4700 * Math.sqrt(mat.fc) * 1000;
-      const frameDir = frame.direction;
-      const colBm = col.b / 1000;
-      const colHm = col.h / 1000;
 
-      // Principal moments of inertia (about local Y and local Z axes at orientAngle=0):
-      //   Ip1 = b × h³/12  → resists bending induced by Y-direction beams (about Global X)
-      //   Ip2 = h × b³/12  → resists bending induced by X-direction beams (about Global Y)
-      // For a rotated section (orientAngle α), use the Mohr's circle transformation:
-      //   I_about_GlobalX = Ip1·cos²(α) + Ip2·sin²(α)
-      //   I_about_GlobalY = Ip1·sin²(α) + Ip2·cos²(α)
-      const Ip1 = colBm * Math.pow(colHm, 3) / 12;  // b × h³/12
-      const Ip2 = colHm * Math.pow(colBm, 3) / 12;  // h × b³/12
-      const colAlpha = ((col.orientAngle ?? 0) * Math.PI) / 180;
-      const c2 = Math.pow(Math.cos(colAlpha), 2);
-      const s2 = Math.pow(Math.sin(colAlpha), 2);
-      // X-frame (horizontal, along Global X) → column bends about Global Y → Ip1·sin²+Ip2·cos²
-      // Y-frame (vertical,   along Global Y) → column bends about Global X → Ip1·cos²+Ip2·sin²
-      const Ic_below = frameDir === 'horizontal'
-        ? Ip1 * s2 + Ip2 * c2
-        : Ip1 * c2 + Ip2 * s2;
-      const Lc_below = col.L / 1000;
-      const farEndFactorBelow = col.bottomEndCondition === 'P' ? 3 : 4;
-      colStiffnessBelow = farEndFactorBelow * Ec * (colStiffnessFactor * Ic_below) / Lc_below;
+      // ── ROTATIONAL RESTRAINT ENGINE ────────────────────────────────────────
+      // Replaces the former hardcoded C=4/3 column stiffness block.
+      // Joint fixity now emerges from RELATIVE member stiffness, not flags:
+      //   K = C × Ec × I_eff / L  where C is derived from structural context
+      //   + torsional contribution from perpendicular beams (GJ/L per beam)
+      //
+      // This produces ETABS-like behavior:
+      //   • Exterior column → smaller negative moments (lower restraint)
+      //   • Interior column → larger negative moments (higher restraint)
+      //   • Columns with perpendicular beams → additional torsional locking
+      // ──────────────────────────────────────────────────────────────────────
 
-      // Column above stiffness (if exists)
-      if (col.LBelow && col.LBelow > 0) {
-        const bAbove = (col.bBelow || col.b) / 1000;
-        const hAbove = (col.hBelow || col.h) / 1000;
-        const Ip1a = bAbove * Math.pow(hAbove, 3) / 12;
-        const Ip2a = hAbove * Math.pow(bAbove, 3) / 12;
-        const Ic_above = frameDir === 'horizontal'
-          ? Ip1a * s2 + Ip2a * c2
-          : Ip1a * c2 + Ip2a * s2;
-        const Lc_above = col.LBelow / 1000;
-        const farEndFactorAbove = col.topEndCondition === 'P' ? 3 : 4;
-        colStiffnessAbove = farEndFactorAbove * Ec * (colStiffnessFactor * Ic_above) / Lc_above;
+      // Find beams in the PERPENDICULAR direction that frame into this column.
+      // These contribute torsional rotational restraint to the joint.
+      const perpDir = frame.direction === 'horizontal' ? 'vertical' : 'horizontal';
+      const perpBeamsAtCol: Beam[] = [];
+      if (allBeams) {
+        for (const [, beam] of allBeams) {
+          if (beam.direction !== perpDir) continue;
+          if (beam.fromCol === colId || beam.toCol === colId) {
+            perpBeamsAtCol.push(beam);
+          }
+        }
       }
+
+      const isExteriorNode = (i === 0 || i === n);
+      const { colStiffnessBelow: resolvedBelow, colStiffnessAbove: resolvedAbove } =
+        resolveJointStiffnessForFrame(
+          col,
+          frame.direction,
+          Ec,
+          colStiffnessFactor,
+          beamStiffnessFactor,
+          perpBeamsAtCol,
+          isExteriorNode,
+        );
+
+      colStiffnessBelow = resolvedBelow;
+      colStiffnessAbove = resolvedAbove;
     }
 
     const x = i === 0 ? 0 : nodes[i - 1].x + frameBeams[i - 1].length;
@@ -1472,7 +1492,7 @@ export function analyzeWithBeamOnBeam(
   const secondaryBeamHinges: Map<string, 'I' | 'J' | 'BOTH'> = userDefinedHinges ?? new Map();
 
   let currentResults: FrameResult[] = frames.map(f =>
-    analyzeFrame(f, beamsMap, columns, mat, removedColumnIds, undefined, secondaryBeamHinges, connections, beamStiffnessFactor, colStiffnessFactor)
+    analyzeFrame(f, beamsMap, columns, mat, removedColumnIds, undefined, secondaryBeamHinges, connections, beamStiffnessFactor, colStiffnessFactor, beamsMap)
   );
   
   let prevReactions = new Map<string, number>();
@@ -1577,7 +1597,7 @@ export function analyzeWithBeamOnBeam(
     // The point load from the carried beam is just a concentrated force on it
     currentResults = frames.map(f => {
       const hasPointLoads = f.beamIds.some(id => pointLoadsMap.has(id));
-      return analyzeFrame(f, beamsMap, columns, mat, removedColumnIds, hasPointLoads ? pointLoadsMap : undefined, secondaryBeamHinges, updatedConnections, beamStiffnessFactor, colStiffnessFactor);
+      return analyzeFrame(f, beamsMap, columns, mat, removedColumnIds, hasPointLoads ? pointLoadsMap : undefined, secondaryBeamHinges, updatedConnections, beamStiffnessFactor, colStiffnessFactor, beamsMap);
     });
   }
 
@@ -1608,7 +1628,7 @@ export function analyzeWithBeamOnBeam(
     const finalResults: FrameResult[] = frames.map(f => {
       const hasPointLoads = f.beamIds.some(id => pointLoadsMap.has(id));
       return hasPointLoads
-        ? analyzeFrame(f, beamsMap, columns, mat, removedColumnIds, pointLoadsMap, secondaryBeamHinges, updatedConnections, beamStiffnessFactor, colStiffnessFactor)
+        ? analyzeFrame(f, beamsMap, columns, mat, removedColumnIds, pointLoadsMap, secondaryBeamHinges, updatedConnections, beamStiffnessFactor, colStiffnessFactor, beamsMap)
         : currentResults[frames.indexOf(f)];
     });
 
