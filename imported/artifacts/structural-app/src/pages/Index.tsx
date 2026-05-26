@@ -344,6 +344,7 @@ const Index = () => {
           zBottom: zBot,
           zTop: c.zTop ?? (zBot + ((ov?.L ?? c.L) || 0)),
           bottomEndCondition: bottomEnd,
+          orientAngle: ov?.orientAngle ?? (c as any).orientAngle,
         };
       });
     }
@@ -365,7 +366,14 @@ const Index = () => {
       for (const c of baseCols) {
         const colId = `C${colSeq}`;
         const legacyId = stories.length > 1 ? `${c.id}_${story.id}` : c.id;
-        const ov = colOverrides[c.id] || colOverrides[legacyId] || colOverrides[colId];
+        // Merge all three possible override keys so that orientAngle from colId
+        // (sequential, used by biaxial-rotate dispatch) is never shadowed by a
+        // prior b/h override stored under c.id (base ID).  Later keys win.
+        const _ov0 = colOverrides[c.id] ?? {};
+        const _ov1 = colOverrides[legacyId] ?? {};
+        const _ov2 = colOverrides[colId] ?? {};
+        const _merged = { ..._ov0, ..._ov1, ..._ov2 };
+        const ov = Object.keys(_merged).length > 0 ? _merged : undefined;
         const colHeight = ov?.L ?? storyHeight;
         // Derive bottom end condition from per-support DOF restraints
         const supportKey = `${c.x.toFixed(2)}_${c.y.toFixed(2)}_${storyElev}`;
@@ -1839,7 +1847,10 @@ const Index = () => {
     }
     dispatch({ type: 'INC_MODEL_VERSION' });
     dispatch({ type: 'RESET_ANALYSIS' });
-  }, [columns, beams, currentAreas]);
+    if (type === 'column' && props.orientAngle != null) {
+      setTimeout(() => runAnalysis(), 80);
+    }
+  }, [columns, beams, currentAreas, runAnalysis]);
 
   const handleLevelElementLongPress = useCallback((type: 'beam' | 'column' | 'slab', id: string) => {
     if (type === 'slab') {

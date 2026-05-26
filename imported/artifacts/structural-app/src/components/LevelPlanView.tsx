@@ -622,6 +622,21 @@ export default function LevelPlanView({
                 {col.b ?? 300}×{col.h ?? 400}
               </text>
 
+              {/* Orange rotation indicator — shows when column is physically rotated 90° */}
+              {!isGroundLevel && isRotated && (
+                <>
+                  <rect
+                    x={col.x - colW / 2 - 0.03} y={ny - colHt / 2 - 0.03}
+                    width={colW + 0.06} height={colHt + 0.06}
+                    fill="none" stroke="hsl(25 95% 53%)" strokeWidth={0.035} rx={0.03}
+                  />
+                  <text x={col.x + colW / 2 + 0.05} y={ny - colHt / 2 - 0.02}
+                    fill="hsl(25 95% 53%)" fontSize={0.13} fontFamily="sans-serif" fontWeight="bold">
+                    ↻
+                  </text>
+                </>
+              )}
+
               {isGroundLevel && (
                 <text x={col.x} y={ny + colHt / 2 + (isFixed ? 0.28 : 0.32)} textAnchor="middle"
                   fill={isFixed ? 'hsl(217 91% 60%)' : 'hsl(38 92% 50%)'} fontSize={0.14} fontFamily="sans-serif">
