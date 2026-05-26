@@ -1795,6 +1795,45 @@ const Index = () => {
 
   // Handle long-press from LevelPlanView (maps string element IDs to frame/area numeric IDs)
   // Uses coordinate-based matching for beams (handles multi-story where UI beam IDs differ from modelManager frame IDs)
+  // Handler for saving element properties from LevelPlanView's local dialog
+  const handleLevelElementPropsSave = useCallback((
+    type: 'beam' | 'column' | 'slab',
+    id: string,
+    props: {
+      b?: number; h?: number; thickness?: number;
+      applyToUpperFloors?: boolean;
+      topEnd?: 'F' | 'P'; bottomEnd?: 'F' | 'P';
+      releaseI?: any; releaseJ?: any;
+    }
+  ) => {
+    const EPS = 0.01;
+    if (type === 'column' && props.b != null && props.h != null) {
+      const col = columns.find(c => c.id === id);
+      if (col) {
+        const colsToUpdate = props.applyToUpperFloors
+          ? columns.filter(c => Math.abs(c.x - col.x) < EPS && Math.abs(c.y - col.y) < EPS)
+          : [col];
+        for (const c of colsToUpdate) {
+          dispatch({ type: 'SET_COL_OVERRIDE', colId: c.id, override: { b: Number(props.b), h: Number(props.h) } });
+        }
+      }
+    } else if (type === 'beam' && props.b != null && props.h != null) {
+      const beam = beams.find(b => b.id === id);
+      if (beam) {
+        dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: beam.id, override: { b: Number(props.b), h: Number(props.h) } });
+      }
+    } else if (type === 'slab' && props.thickness != null) {
+      // Find the slab and update thickness via modelManager + override
+      const area = currentAreas.find(a => a.label === id || `A${a.id}` === id);
+      if (area) {
+        modelManager.updateAreaThickness(area.id, props.thickness);
+        dispatch({ type: 'SET_SLAB_PROPS_OVERRIDE', areaId: area.id, override: { thickness: props.thickness } });
+      }
+    }
+    dispatch({ type: 'INC_MODEL_VERSION' });
+    dispatch({ type: 'RESET_ANALYSIS' });
+  }, [columns, beams, currentAreas]);
+
   const handleLevelElementLongPress = useCallback((type: 'beam' | 'column' | 'slab', id: string) => {
     if (type === 'slab') {
       const area = currentAreas.find(a => a.label === id || `A${a.id}` === id);
@@ -2107,6 +2146,7 @@ const Index = () => {
                     onSupportRestraintsChange={handleSupportRestraintsChange}
                     supportRestraints={supportRestraints}
                     onElementLongPress={handleLevelElementLongPress}
+                    onSaveElementProps={handleLevelElementPropsSave}
                     onEditBeamProperties={handleEditBeamProperties}
                     onDeleteElement={handleLevelElementDelete}
                   />
@@ -4429,7 +4469,11 @@ const Index = () => {
                               for (const colId of biaxialSelectedCols) {
                                 const col = columns.find(c => c.id === colId);
                                 if (col && col.b !== col.h) {
-                                  dispatch({ type: 'SET_COL_OVERRIDE', colId, override: { b: col.h, h: col.b } });
+                                  // ETABS-style rotation: toggle orientAngle between 0 and 90
+                                  // This physically rotates the section without swapping b/h labels
+                                  const currentAngle = col.orientAngle ?? 0;
+                                  const newAngle = Math.round(currentAngle % 180) === 0 ? 90 : 0;
+                                  dispatch({ type: 'SET_COL_OVERRIDE', colId, override: { orientAngle: newAngle } });
                                   justRotated.add(colId);
                                 }
                               }

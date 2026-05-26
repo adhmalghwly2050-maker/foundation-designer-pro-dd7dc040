@@ -70,8 +70,15 @@ interface SupportDialogState {
 }
 
 export default function LevelPlanView({
-  columns, beams, slabs, stories, selectedElevation, onColumnSupportChange, onSupportRestraintsChange, supportRestraints, onElementLongPress, onEditBeamProperties, onDeleteElement,
-}: LevelPlanViewProps) {
+  columns, beams, slabs, stories, selectedElevation, onColumnSupportChange, onSupportRestraintsChange, supportRestraints, onElementLongPress, onEditBeamProperties, onDeleteElement, onSaveElementProps,
+}: LevelPlanViewProps & {
+  onSaveElementProps?: (type: 'beam' | 'column' | 'slab', id: string, props: {
+    b?: number; h?: number; thickness?: number;
+    applyToUpperFloors?: boolean;
+    topEnd?: 'F' | 'P'; bottomEnd?: 'F' | 'P';
+    releaseI?: EndReleaseDOF; releaseJ?: EndReleaseDOF;
+  }) => void;
+}) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [viewBox, setViewBox] = useState({ x: -2, y: -2, w: 16, h: 18 });
   const [isPanning, setIsPanning] = useState(false);
@@ -83,6 +90,7 @@ export default function LevelPlanView({
     thickness: 160, topEnd: 'F', bottomEnd: 'F', x: 0, y: 0,
     releaseI: { ...defaultRelease }, releaseJ: { ...defaultRelease },
   });
+  const [applyToUpperFloors, setApplyToUpperFloors] = useState(false);
   const [supportDialog, setSupportDialog] = useState<SupportDialogState>({
     open: false, colId: '', colLabel: '', x: 0, y: 0,
     restraints: { ux: true, uy: true, uz: true, rx: true, ry: true, rz: true },
@@ -267,6 +275,7 @@ export default function LevelPlanView({
               restraints: { ...cur }, applyToAll: false,
             });
           } else {
+            setApplyToUpperFloors(false);
             setEditDialog({
               open: true, type: 'column', id, label: id,
               b: col.b ?? 300, h: col.h ?? 400, length: col.L ?? 0,
@@ -291,8 +300,9 @@ export default function LevelPlanView({
           });
         }
       }
-      // Also notify parent
-      onElementLongPress?.(type, id);
+      // For beams: onEditBeamProperties already called above with return
+      // For columns/slabs: local dialog handles everything — do NOT call onElementLongPress
+      // which would open a second conflicting dialog
     }, 500);
   }, [beamsAtLevel, colsAtLevel, slabsAtLevel, onElementLongPress]);
 
@@ -349,9 +359,19 @@ export default function LevelPlanView({
   };
 
   const handleEditSave = () => {
-    // Notify parent via long press handler for actual save
-    if (editDialog.type && onElementLongPress) {
-      onElementLongPress(editDialog.type as 'beam' | 'column' | 'slab', editDialog.id);
+    // Save element properties via the dedicated callback (direct save, no second dialog)
+    if (editDialog.type === 'column' || editDialog.type === 'beam') {
+      onSaveElementProps?.(editDialog.type, editDialog.id, {
+        b: editDialog.b,
+        h: editDialog.h,
+        applyToUpperFloors: editDialog.type === 'column' ? applyToUpperFloors : undefined,
+        topEnd: editDialog.type === 'column' ? editDialog.topEnd : undefined,
+        bottomEnd: editDialog.type === 'column' ? editDialog.bottomEnd : undefined,
+        releaseI: editDialog.releaseI,
+        releaseJ: editDialog.releaseJ,
+      });
+    } else if (editDialog.type === 'slab') {
+      onSaveElementProps?.('slab', editDialog.id, { thickness: editDialog.thickness });
     }
     setConfirmDelete(false);
     setEditDialog(prev => ({ ...prev, open: false }));
@@ -514,8 +534,11 @@ export default function LevelPlanView({
           const isFixed = endCond === 'F';
           const isSelected = selectedElement?.type === 'column' && selectedElement.id === col.id;
           // Use actual column dimensions (in meters) for display
-          const colBm = (col.b ?? 300) / 1000; // mm to m
-          const colHm = (col.h ?? 400) / 1000;
+          // orientAngle: 0=default (b→X, h→Y), 90=rotated (h→X, b→Y)
+          const angle = col.orientAngle ?? 0;
+          const isRotated = Math.round(Math.abs(angle) % 180) >= 45 && Math.round(Math.abs(angle) % 180) < 135;
+          const colBm = ((isRotated ? col.h : col.b) ?? 300) / 1000; // mm to m
+          const colHm = ((isRotated ? col.b : col.h) ?? 400) / 1000;
           const colW = Math.max(colBm, 0.15); // minimum display size
           const colHt = Math.max(colHm, 0.15);
           const ny = -col.y;
@@ -732,6 +755,18 @@ export default function LevelPlanView({
                 {editDialog.type === 'beam' && (
                   <div className="text-xs text-muted-foreground">
                     الطول: <span className="font-mono">{editDialog.length.toFixed(2)} م</span>
+                  </div>
+                )}
+                {editDialog.type === 'column' && stories.length > 1 && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Checkbox
+                      id="applyToUpperFloors"
+                      checked={applyToUpperFloors}
+                      onCheckedChange={v => setApplyToUpperFloors(!!v)}
+                    />
+                    <label htmlFor="applyToUpperFloors" className="text-xs text-muted-foreground cursor-pointer">
+                      تطبيق الأبعاد على نفس الموقع في جميع الأدوار
+                    </label>
                   </div>
                 )}
               </>
