@@ -437,38 +437,56 @@ function generateSheetHTML(
   titleBlockConfig: Partial<TitleBlockConfig>,
   extraSvgBottom?: string,
 ): string {
-  // Auto-fit drawing to full page width; tables go on a follow-up sheet.
+  // Arabic structural drawing convention:
+  // Plan (مسقط) occupies left 62% of sheet; rebar schedule table sits on the RIGHT 36% — same sheet, landscape.
+  // If there is no table, the plan expands to full width.
   const sheetW = _SHEET_W;
   const sheetH = _SHEET_H;
   const titleBlockH = 135 + 36 + 10;
-  const drawZoneW = sheetW - 90;       // full content width inside borders
   const contentH = sheetH - 45 - titleBlockH;
+  const innerW = sheetW - 90;   // full content zone width (between borders)
 
-  const drawingPage = `
+  const hasTable = tableContent && tableContent.trim().length > 0;
+
+  // Widths: plan 62%, divider 2%, table 36%  (of innerW)
+  const planW  = hasTable ? Math.round(innerW * 0.62) : innerW;
+  const tableW = hasTable ? Math.round(innerW * 0.36) : 0;
+  const tableLeft = 45 + planW + Math.round(innerW * 0.02);  // left position of table zone
+
+  // Vertical separator between plan and table
+  const separatorX = 45 + planW + Math.round(innerW * 0.01);
+  const separator = hasTable
+    ? `<div style="position:absolute; top:45px; left:${separatorX}px; width:1px; height:${contentH}px; background:#ccc;"></div>`
+    : '';
+
+  // Right-side table label (rotated — appears as vertical heading on separator)
+  const tableLabel = hasTable
+    ? `<div style="position:absolute; top:${45 + contentH / 2 - 60}px; left:${separatorX + 3}px; width:12px; height:120px; display:flex; align-items:center; justify-content:center;">
+         <span style="writing-mode:vertical-lr; font-size:7px; color:#888; font-family:Arial; letter-spacing:1px; transform:rotate(180deg);">جدول التسليح</span>
+       </div>`
+    : '';
+
+  const combinedPage = `
   <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     ${htmlSheetBorder()}
-    <div style="position:absolute; top:45px; left:45px; width:${drawZoneW}px; height:${contentH}px; overflow:hidden; border:0.5px solid #ccc;">
-      <svg viewBox="0 0 ${svgDrawW} ${svgDrawH}" width="${drawZoneW}" height="${contentH}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+    <!-- Plan zone (right-to-left: plan is the main content on the left) -->
+    <div style="position:absolute; top:45px; left:45px; width:${planW}px; height:${contentH}px; overflow:hidden; border:0.5px solid #ccc;">
+      <svg viewBox="0 0 ${svgDrawW} ${svgDrawH}" width="${planW}" height="${contentH}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
         ${svgDrawingZone}
       </svg>
     </div>
+    ${separator}
+    ${tableLabel}
+    ${hasTable ? `
+    <!-- Schedule table zone (right side — Arabic drawing standard) -->
+    <div style="position:absolute; top:45px; left:${tableLeft}px; width:${tableW}px; height:${contentH}px; overflow:hidden; direction:rtl; padding:5px 4px;">
+      ${tableContent}
+    </div>` : ''}
     ${extraSvgBottom || ''}
     ${htmlTitleBlock(titleBlockConfig)}
   </div>`;
 
-  const hasTable = tableContent && tableContent.trim().length > 0;
-  if (!hasTable) return drawingPage;
-
-  const tablePage = `
-  <div class="sheet-page" style="position:relative; width:${sheetW}px; height:${sheetH}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
-    ${htmlSheetBorder()}
-    <div style="position:absolute; top:45px; left:45px; right:45px; height:${contentH}px; overflow:hidden; direction:rtl; padding:6px;">
-      ${tableContent}
-    </div>
-    ${htmlTitleBlock({ ...titleBlockConfig, drawingSubTitle: (titleBlockConfig.drawingSubTitle || '') + ' — Schedule' })}
-  </div>`;
-
-  return drawingPage + tablePage;
+  return combinedPage;
 }
 
 // ─── Beam Elevation Sheet (HTML/SVG) ───

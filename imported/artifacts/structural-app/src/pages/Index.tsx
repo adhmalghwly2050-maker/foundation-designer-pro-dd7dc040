@@ -176,6 +176,12 @@ const Index = () => {
   const [validationRunning, setValidationRunning] = React.useState(false);
   const [showViewMoments, setShowViewMoments] = React.useState(false);
   const [viewMomentEngine, setViewMomentEngine] = React.useState<'active' | '2d' | '3d' | 'gf'>('active');
+  const [viewStoryId, setViewStoryId] = React.useState<string>('__ALL__');
+
+  // Input tab search states
+  const [beamSearch, setBeamSearch] = React.useState('');
+  const [colSearch, setColSearch] = React.useState('');
+  const [slabSearch, setSlabSearch] = React.useState('');
 
   // Modeler elevation filter state
   const [modelerElevation, setModelerElevation] = React.useState<number>(0);
@@ -235,7 +241,7 @@ const Index = () => {
     isAllStories ? slabs : slabs.filter(s => s.storyId === selectedStoryId),
     [slabs, selectedStoryId, isAllStories]
   );
-  
+
   // Get story label for an element
   const getStoryLabel = useCallback((storyId?: string) => {
     if (!storyId) return stories[0]?.label || 'الدور 1';
@@ -586,6 +592,11 @@ const Index = () => {
   }, [beams, slabs, slabProps, mat, beamOverrides, removedBeamIds, columns]);
 
   const frames = useMemo(() => generateFrames(beamsWithLoads), [beamsWithLoads]);
+
+  // View tab story filter (placed here — after columns, slabs, beamsWithLoads are all defined)
+  const viewIsAll = viewStoryId === '__ALL__';
+  const viewFilteredSlabs = useMemo(() => viewIsAll ? slabs : slabs.filter(s => s.storyId === viewStoryId), [slabs, viewStoryId, viewIsAll]);
+  const viewFilteredCols = useMemo(() => viewIsAll ? columns : columns.filter(c => c.storyId === viewStoryId), [columns, viewStoryId, viewIsAll]);
 
   const detectedConnections = useMemo(() => {
     if (removedColumnIds.length === 0) return [];
@@ -2311,12 +2322,15 @@ const Index = () => {
           {/* SLABS / INPUT TAB - with sub-tabs for original + generative + ai-assistant */}
           <TabsContent value="slabs" className="flex-1 overflow-hidden mt-0">
             <Tabs defaultValue="slabs-main" className="h-full flex flex-col">
-              <TabsList className="w-full justify-start rounded-none border-b border-border bg-muted/30 px-2 shrink-0 h-auto">
-                <TabsTrigger value="slabs-main" className="text-[11px] gap-1 min-h-[36px]"><Layers size={12} />الإدخال</TabsTrigger>
-                <TabsTrigger value="slabs-generative" className="text-[11px] gap-1 min-h-[36px] text-accent"><Zap size={12} />تصميم توليدي</TabsTrigger>
-                <TabsTrigger value="slabs-ai" className="text-[11px] gap-1 min-h-[36px] text-accent"><Bot size={12} />المساعد الذكي</TabsTrigger>
-                <TabsTrigger value="slabs-etabs-import" className="text-[11px] gap-1 min-h-[36px] text-orange-600 dark:text-orange-400"><Upload size={12} />ETABS (جداول Excel)</TabsTrigger>
-                <TabsTrigger value="slabs-edb-import" className="text-[11px] gap-1 min-h-[36px] text-blue-600 dark:text-blue-400"><Upload size={12} />ETABS (ملف .e2k)</TabsTrigger>
+              <TabsList className="w-full justify-start rounded-none border-b border-border bg-muted/30 px-2 shrink-0 h-auto overflow-x-auto flex-nowrap">
+                <TabsTrigger value="slabs-main" className="text-[11px] gap-1 min-h-[36px] shrink-0"><Layers size={12} />الإدخال</TabsTrigger>
+                <TabsTrigger value="slabs-beams-tab" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-blue-600 dark:text-blue-400"><Settings2 size={12} />جسور</TabsTrigger>
+                <TabsTrigger value="slabs-cols-tab" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-emerald-600 dark:text-emerald-400"><Settings2 size={12} />أعمدة</TabsTrigger>
+                <TabsTrigger value="slabs-slabs-tab" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-violet-600 dark:text-violet-400"><Layers size={12} />بلاطات</TabsTrigger>
+                <TabsTrigger value="slabs-generative" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-accent"><Zap size={12} />تصميم توليدي</TabsTrigger>
+                <TabsTrigger value="slabs-ai" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-accent"><Bot size={12} />المساعد الذكي</TabsTrigger>
+                <TabsTrigger value="slabs-etabs-import" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-orange-600 dark:text-orange-400"><Upload size={12} />ETABS (جداول Excel)</TabsTrigger>
+                <TabsTrigger value="slabs-edb-import" className="text-[11px] gap-1 min-h-[36px] shrink-0 text-blue-600 dark:text-blue-400"><Upload size={12} />ETABS (ملف .e2k)</TabsTrigger>
               </TabsList>
               <TabsContent value="slabs-main" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
                 <div className="space-y-4 max-w-5xl">
@@ -2937,6 +2951,170 @@ const Index = () => {
                   </Card>
                 </div>
               </TabsContent>
+              {/* ── جسور tab ── */}
+              <TabsContent value="slabs-beams-tab" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
+                <div className="space-y-3 max-w-5xl">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="بحث في الجسور (رقم الجسر، الدور...)"
+                      value={beamSearch}
+                      onChange={e => setBeamSearch(e.target.value)}
+                      className="h-8 text-xs max-w-xs"
+                    />
+                    {beamSearch && (
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setBeamSearch('')}>مسح</Button>
+                    )}
+                    <span className="text-[11px] text-muted-foreground">
+                      {beams.filter(b => !removedBeamIds.includes(b.id) && (!beamSearch || b.id.toLowerCase().includes(beamSearch.toLowerCase()) || getStoryLabel(b.storyId).includes(beamSearch))).length} جسر
+                    </span>
+                  </div>
+                  <Card>
+                    <CardContent className="overflow-x-auto pt-3">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {['الجسر','X1','Y1','X2','Y2','الدور','الطول','العرض','الارتفاع','حمل جدار (kN/m)'].map(h => (
+                              <TableHead key={h} className="text-xs">{h}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {beams.filter(b =>
+                            !removedBeamIds.includes(b.id) &&
+                            (!beamSearch || b.id.toLowerCase().includes(beamSearch.toLowerCase()) || getStoryLabel(b.storyId).includes(beamSearch))
+                          ).map(b => {
+                            const isExtra = extraBeams.some(eb => eb.id === b.id);
+                            const wallLoad = beamOverrides[b.id]?.wallLoad || b.wallLoad || 0;
+                            return (
+                              <TableRow key={b.id}>
+                                <TableCell className="font-mono text-xs font-bold">{b.id}</TableCell>
+                                <TableCell><Input type="number" value={b.x1} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{x1:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{x1:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={b.y1} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{y1:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{y1:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={b.x2} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{x2:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{x2:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={b.y2} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{y2:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{y2:val}}); }} /></TableCell>
+                                <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{getStoryLabel(b.storyId)}</TableCell>
+                                <TableCell className="font-mono text-xs">{b.length.toFixed(2)}</TableCell>
+                                <TableCell><Input type="number" value={b.b} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{b:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{b:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={b.h} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{h:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{h:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={wallLoad} className="h-8 w-20 font-mono text-xs" placeholder="0" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_BEAM',id:b.id,updates:{wallLoad:val}}); else dispatch({type:'SET_BEAM_OVERRIDE',beamId:b.id,override:{wallLoad:val}}); }} /></TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              {/* ── أعمدة tab ── */}
+              <TabsContent value="slabs-cols-tab" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
+                <div className="space-y-3 max-w-5xl">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="بحث في الأعمدة (رقم العمود، الدور...)"
+                      value={colSearch}
+                      onChange={e => setColSearch(e.target.value)}
+                      className="h-8 text-xs max-w-xs"
+                    />
+                    {colSearch && (
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setColSearch('')}>مسح</Button>
+                    )}
+                    <span className="text-[11px] text-muted-foreground">
+                      {columns.filter(c => !c.isRemoved && (!colSearch || c.id.toLowerCase().includes(colSearch.toLowerCase()) || getStoryLabel(c.storyId).includes(colSearch))).length} عمود
+                    </span>
+                  </div>
+                  <Card>
+                    <CardContent className="overflow-x-auto pt-3">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {['العمود','X','Y','الدور','العرض (مم)','العمق (مم)','الارتفاع (مم)','الزاوية (°)','الحالة'].map(h => (
+                              <TableHead key={h} className="text-xs">{h}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {columns.filter(c =>
+                            !c.isRemoved &&
+                            (!colSearch || c.id.toLowerCase().includes(colSearch.toLowerCase()) || getStoryLabel(c.storyId).includes(colSearch))
+                          ).map(c => {
+                            const isExtra = extraColumns.some(ec => ec.id === c.id);
+                            return (
+                              <TableRow key={c.id}>
+                                <TableCell className="font-mono text-xs font-bold">{c.id}</TableCell>
+                                <TableCell><Input type="number" value={c.x} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_COLUMN',id:c.id,updates:{x:val}}); else dispatch({type:'SET_COL_OVERRIDE',colId:c.id,override:{x:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={c.y} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_COLUMN',id:c.id,updates:{y:val}}); else dispatch({type:'SET_COL_OVERRIDE',colId:c.id,override:{y:val}}); }} /></TableCell>
+                                <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{getStoryLabel(c.storyId)}</TableCell>
+                                <TableCell><Input type="number" value={c.b} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_COLUMN',id:c.id,updates:{b:val}}); else dispatch({type:'SET_COL_OVERRIDE',colId:c.id,override:{b:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={c.h} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_COLUMN',id:c.id,updates:{h:val}}); else dispatch({type:'SET_COL_OVERRIDE',colId:c.id,override:{h:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={c.L} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_COLUMN',id:c.id,updates:{L:val}}); else dispatch({type:'SET_COL_OVERRIDE',colId:c.id,override:{L:val}}); }} /></TableCell>
+                                <TableCell><Input type="number" value={c.orientAngle??0} className="h-8 w-16 font-mono text-xs" onChange={e => { const val = parseFloat(e.target.value)||0; if(isExtra) dispatch({type:'UPDATE_EXTRA_COLUMN',id:c.id,updates:{orientAngle:val}}); else dispatch({type:'SET_COL_OVERRIDE',colId:c.id,override:{orientAngle:val}}); }} /></TableCell>
+                                <TableCell><Badge variant="default" className="text-[10px]">فعال</Badge></TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              {/* ── بلاطات tab ── */}
+              <TabsContent value="slabs-slabs-tab" className="flex-1 overflow-y-auto p-3 md:p-4 mt-0 pb-20 md:pb-4">
+                <div className="space-y-3 max-w-5xl">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="بحث في البلاطات (رقم البلاطة، الدور...)"
+                      value={slabSearch}
+                      onChange={e => setSlabSearch(e.target.value)}
+                      className="h-8 text-xs max-w-xs"
+                    />
+                    {slabSearch && (
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSlabSearch('')}>مسح</Button>
+                    )}
+                    <span className="text-[11px] text-muted-foreground">
+                      {slabs.filter(s => !slabSearch || s.id.toLowerCase().includes(slabSearch.toLowerCase()) || getStoryLabel(s.storyId).includes(slabSearch)).length} بلاطة
+                    </span>
+                  </div>
+                  <Card>
+                    <CardContent className="overflow-x-auto pt-3">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {['البلاطة','X1','Y1','X2','Y2','الدور','Lx (م)','Ly (م)','النوع'].map(h => (
+                              <TableHead key={h} className="text-xs">{h}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {slabs.filter(s =>
+                            !slabSearch || s.id.toLowerCase().includes(slabSearch.toLowerCase()) || getStoryLabel(s.storyId).includes(slabSearch)
+                          ).map(s => {
+                            const i = slabs.indexOf(s);
+                            const sd = slabDesigns.find(sd => sd.id === s.id)?.design;
+                            return (
+                              <TableRow key={`${s.storyId}-${s.id}`}>
+                                <TableCell><Input value={s.id} onChange={e => dispatch({type:'UPDATE_SLAB',index:i,key:'id',value:e.target.value})} className="h-8 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" value={s.x1} onChange={e => dispatch({type:'UPDATE_SLAB',index:i,key:'x1',value:e.target.value})} className="h-8 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" value={s.y1} onChange={e => dispatch({type:'UPDATE_SLAB',index:i,key:'y1',value:e.target.value})} className="h-8 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" value={s.x2} onChange={e => dispatch({type:'UPDATE_SLAB',index:i,key:'x2',value:e.target.value})} className="h-8 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell><Input type="number" step="any" value={s.y2} onChange={e => dispatch({type:'UPDATE_SLAB',index:i,key:'y2',value:e.target.value})} className="h-8 w-16 font-mono text-xs" /></TableCell>
+                                <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{getStoryLabel(s.storyId)}</TableCell>
+                                <TableCell className="font-mono text-xs">{sd?.lx.toFixed(1) ?? '—'}</TableCell>
+                                <TableCell className="font-mono text-xs">{sd?.ly.toFixed(1) ?? '—'}</TableCell>
+                                <TableCell className="text-xs">{sd?.isOneWay ? 'اتجاه واحد' : sd ? 'اتجاهين' : '—'}</TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
               <TabsContent value="slabs-generative" className="flex-1 overflow-hidden mt-0">
                 <GenerativeDesignDashboard
                   onApplyOption={(ev: EvaluatedOption) => {
@@ -3223,37 +3401,53 @@ const Index = () => {
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <CardTitle className="text-sm">العرض ثنائي الأبعاد</CardTitle>
-                  {analyzed && (
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={showViewMoments}
-                          onChange={e => setShowViewMoments(e.target.checked)}
-                          className="rounded"
-                        />
-                        <span className="text-[11px]">عرض العزوم</span>
-                      </label>
-                      {showViewMoments && (
-                        <select
-                          className="h-7 rounded border border-input bg-background px-2 text-[11px] min-w-[140px]"
-                          value={viewMomentEngine}
-                          onChange={e => setViewMomentEngine(e.target.value as 'active' | '2d' | '3d' | 'gf')}
-                        >
-                          <option value="active">المحرك النشط ({ENGINE_LABELS[selectedEngine]})</option>
-                          <option value="2d">2D — صلابة المصفوفة</option>
-                          <option value="3d">3D — إطارات ثلاثية</option>
-                          <option value="gf">Global Frame — إطار عام</option>
-                        </select>
-                      )}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {/* Story / level filter — mirrors the modeler tab filter */}
+                    <div className="flex items-center gap-1.5">
+                      <Layers size={13} className="text-muted-foreground" />
+                      <select
+                        className="h-7 rounded border border-input bg-background px-2 text-[11px] min-w-[130px]"
+                        value={viewStoryId}
+                        onChange={e => setViewStoryId(e.target.value)}
+                      >
+                        <option value="__ALL__">جميع الأدوار</option>
+                        {stories.map(s => (
+                          <option key={s.id} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
                     </div>
-                  )}
+                    {analyzed && (
+                      <>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={showViewMoments}
+                            onChange={e => setShowViewMoments(e.target.checked)}
+                            className="rounded"
+                          />
+                          <span className="text-[11px]">عرض العزوم</span>
+                        </label>
+                        {showViewMoments && (
+                          <select
+                            className="h-7 rounded border border-input bg-background px-2 text-[11px] min-w-[140px]"
+                            value={viewMomentEngine}
+                            onChange={e => setViewMomentEngine(e.target.value as 'active' | '2d' | '3d' | 'gf')}
+                          >
+                            <option value="active">المحرك النشط ({ENGINE_LABELS[selectedEngine]})</option>
+                            <option value="2d">2D — صلابة المصفوفة</option>
+                            <option value="3d">3D — إطارات ثلاثية</option>
+                            <option value="gf">Global Frame — إطار عام</option>
+                          </select>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
                 {!analyzed && <Button onClick={runAnalysis} className="mb-3 min-h-[44px]">تشغيل التحليل</Button>}
                 <BuildingView
-                  slabs={slabs} beams={beamsWithLoads} columns={columns}
+                  slabs={viewFilteredSlabs} beams={viewIsAll ? beamsWithLoads : beamsWithLoads.filter(b => b.storyId === viewStoryId)} columns={viewFilteredCols}
                   analyzed={analyzed}
                   frameResults={
                     !showViewMoments ? frameResults :
