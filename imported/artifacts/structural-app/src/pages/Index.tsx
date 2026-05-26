@@ -1490,20 +1490,49 @@ const Index = () => {
       modelManager.updateFrameSection(data.frameId, data.b, data.h);
       const frame = modelManager.getFrame(data.frameId);
       if (frame) {
+        const EPS = 0.01;
         // Persist beam dimensions to React state so they survive model rebuilds
         if (frame.type === 'beam' && data.b != null && data.h != null) {
           const nodeI = modelManager.getNode(frame.nodeI);
           const nodeJ = modelManager.getNode(frame.nodeJ);
           if (nodeI && nodeJ) {
-            const EPS = 0.005;
-            const matchingBeam = beams.find(b =>
-              (Math.abs(b.x1 - nodeI.x) < EPS && Math.abs(b.y1 - nodeI.y) < EPS &&
-               Math.abs(b.x2 - nodeJ.x) < EPS && Math.abs(b.y2 - nodeJ.y) < EPS) ||
-              (Math.abs(b.x1 - nodeJ.x) < EPS && Math.abs(b.y1 - nodeJ.y) < EPS &&
-               Math.abs(b.x2 - nodeI.x) < EPS && Math.abs(b.y2 - nodeI.y) < EPS)
-            );
+            // Match first by selectedStory so multi-story works correctly, then fallback
+            const matchingBeam =
+              beams.find(b =>
+                b.storyId === selectedStoryId &&
+                ((Math.abs(b.x1 - nodeI.x) < EPS && Math.abs(b.y1 - nodeI.y) < EPS &&
+                  Math.abs(b.x2 - nodeJ.x) < EPS && Math.abs(b.y2 - nodeJ.y) < EPS) ||
+                 (Math.abs(b.x1 - nodeJ.x) < EPS && Math.abs(b.y1 - nodeJ.y) < EPS &&
+                  Math.abs(b.x2 - nodeI.x) < EPS && Math.abs(b.y2 - nodeI.y) < EPS))
+              ) ??
+              beams.find(b =>
+                (Math.abs(b.x1 - nodeI.x) < EPS && Math.abs(b.y1 - nodeI.y) < EPS &&
+                 Math.abs(b.x2 - nodeJ.x) < EPS && Math.abs(b.y2 - nodeJ.y) < EPS) ||
+                (Math.abs(b.x1 - nodeJ.x) < EPS && Math.abs(b.y1 - nodeJ.y) < EPS &&
+                 Math.abs(b.x2 - nodeI.x) < EPS && Math.abs(b.y2 - nodeI.y) < EPS)
+              );
             if (matchingBeam) {
               dispatch({ type: 'SET_BEAM_OVERRIDE', beamId: matchingBeam.id, override: { b: Number(data.b), h: Number(data.h) } });
+            }
+          }
+        }
+        // Persist column dimensions to React state so they survive model rebuilds
+        if (frame.type === 'column' && data.b != null && data.h != null) {
+          // Use the top node (nodeJ) x,y to locate the column in the React state
+          const topNode = modelManager.getNode(frame.nodeJ);
+          if (topNode) {
+            // Columns sharing the same x,y position (same plan location, different stories)
+            const samePositionCols = columns.filter(c =>
+              Math.abs(c.x - topNode.x) < EPS && Math.abs(c.y - topNode.y) < EPS
+            );
+            // Determine which columns to update
+            const colsToUpdate = data.applyToUpperFloors
+              ? samePositionCols
+              : (samePositionCols.filter(c => c.storyId === selectedStoryId).length > 0
+                  ? samePositionCols.filter(c => c.storyId === selectedStoryId)
+                  : samePositionCols.slice(0, 1));
+            for (const col of colsToUpdate) {
+              dispatch({ type: 'SET_COL_OVERRIDE', colId: col.id, override: { b: Number(data.b), h: Number(data.h) } });
             }
           }
         }
@@ -1538,7 +1567,7 @@ const Index = () => {
     }
     dispatch({ type: 'INC_MODEL_VERSION' });
     dispatch({ type: 'RESET_ANALYSIS' });
-  }, [beams]);
+  }, [beams, columns, selectedStoryId]);
 
   const handleLevelElementDelete = useCallback((type: 'beam' | 'column' | 'slab', id: string) => {
     if (type === 'beam') {
@@ -5518,6 +5547,7 @@ const Index = () => {
         nodeI={elemPropsFrameId != null ? (() => { const f = currentFrames.find(fr => fr.id === elemPropsFrameId); return f ? currentNodes.find(n => n.id === f.nodeI) : null; })() : null}
         nodeJ={elemPropsFrameId != null ? (() => { const f = currentFrames.find(fr => fr.id === elemPropsFrameId); return f ? currentNodes.find(n => n.id === f.nodeJ) : null; })() : null}
         slabProps={elemPropsAreaId != null ? { ...slabProps, ...(slabPropsOverrides[elemPropsAreaId] || {}) } : null}
+        hasMultipleStories={stories.length > 1}
         onSave={handleElemPropsSave}
         onDelete={handleElemPropsDelete}
       />

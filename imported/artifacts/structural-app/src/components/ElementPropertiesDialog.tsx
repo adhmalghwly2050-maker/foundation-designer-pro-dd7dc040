@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import type { FrameElement, AreaElement, StructuralNode } from '@/structural/model/types';
 
 interface EndRelease {
@@ -28,6 +29,7 @@ interface ElementPropertiesDialogProps {
   nodeI?: StructuralNode | null;
   nodeJ?: StructuralNode | null;
   slabProps?: SlabPropsData | null;
+  hasMultipleStories?: boolean;
   onSave: (data: {
     frameId?: number;
     areaId?: number;
@@ -39,12 +41,13 @@ interface ElementPropertiesDialogProps {
     cover?: number;
     nodeIRestraints?: EndRelease;
     nodeJRestraints?: EndRelease;
+    applyToUpperFloors?: boolean;
   }) => void;
   onDelete?: (data: { frameId?: number; areaId?: number }) => void;
 }
 
 export default function ElementPropertiesDialog({
-  open, onClose, frame, area, nodeI, nodeJ, slabProps, onSave, onDelete
+  open, onClose, frame, area, nodeI, nodeJ, slabProps, onSave, onDelete, hasMultipleStories
 }: ElementPropertiesDialogProps) {
   const [b, setB] = useState(0);
   const [h, setH] = useState(0);
@@ -55,9 +58,11 @@ export default function ElementPropertiesDialog({
   const [releaseI, setReleaseI] = useState<EndRelease>({ ux: false, uy: false, uz: false, rx: false, ry: false, rz: false });
   const [releaseJ, setReleaseJ] = useState<EndRelease>({ ux: false, uy: false, uz: false, rx: false, ry: false, rz: false });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [applyToUpperFloors, setApplyToUpperFloors] = useState(false);
 
   useEffect(() => {
     setConfirmDelete(false);
+    setApplyToUpperFloors(false);
     if (frame) {
       setB(frame.b || 200);
       setH(frame.h || 400);
@@ -82,6 +87,7 @@ export default function ElementPropertiesDialog({
         b, h,
         nodeIRestraints: releaseI,
         nodeJRestraints: releaseJ,
+        applyToUpperFloors: isColumn ? applyToUpperFloors : undefined,
       });
     } else if (area) {
       onSave({ areaId: area.id, thickness, finishLoad, liveLoad, cover });
@@ -154,6 +160,18 @@ export default function ElementPropertiesDialog({
                   <span className="font-mono">
                     {nodeI && nodeJ ? Math.sqrt((nodeJ.x - nodeI.x) ** 2 + (nodeJ.y - nodeI.y) ** 2 + (nodeJ.z - nodeI.z) ** 2).toFixed(3) : '—'} م
                   </span>
+                </div>
+              )}
+              {isColumn && hasMultipleStories && (
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2">
+                  <Checkbox
+                    id="apply-upper-floors"
+                    checked={applyToUpperFloors}
+                    onCheckedChange={v => setApplyToUpperFloors(!!v)}
+                  />
+                  <label htmlFor="apply-upper-floors" className="text-xs cursor-pointer leading-tight">
+                    تطبيق الأبعاد على الأعمدة في نفس الموقع (الأدوار العلوية)
+                  </label>
                 </div>
               )}
             </div>
