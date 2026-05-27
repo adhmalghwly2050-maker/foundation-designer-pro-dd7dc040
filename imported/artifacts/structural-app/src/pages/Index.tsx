@@ -1152,8 +1152,19 @@ const Index = () => {
   const beamDiagnostics = useMemo<Map<string, BeamDiagnostic>>(() => {
     const map = new Map<string, BeamDiagnostic>();
     for (const d of beamDesigns) {
-      const beam = beamsWithLoads.find(b => b.id === d.beamId);
+      // For merged carrier beams (e.g. "67" whose segments are "67-1","67-2","67-3"),
+      // the canonical beamId isn't in beamsWithLoads — find the reference beam from merged segments.
+      let beam = beamsWithLoads.find(b => b.id === d.beamId);
+      const mergedIdsForDiag = (d as any).mergedCarrierIds as string[] | undefined;
+      if (!beam && mergedIdsForDiag && mergedIdsForDiag.length > 0) {
+        // Use the largest cross-section segment as the reference beam
+        const parts = mergedIdsForDiag.map(id => beamsWithLoads.find(b => b.id === id)).filter(Boolean) as typeof beamsWithLoads;
+        if (parts.length > 0) {
+          beam = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
+        }
+      }
       if (!beam) continue;
+
       // ACI 318-19: each section designed independently; Mu_max for reporting only
       const Mu_max = Math.max(Math.abs(d.Mleft), Math.abs(d.Mmid), Math.abs(d.Mright));
 
@@ -1186,7 +1197,7 @@ const Index = () => {
       map.set(d.beamId, diag);
     }
     return map;
-  }, [beamDesigns, beamsWithLoads, mat]);
+  }, [beamDesigns, beamsWithLoads, mat, slabs, slabProps]);
 
   const colLoads = useMemo(() => {
     if (!analyzed) return new Map<string, { Pu: number; Mu: number }>();
@@ -5045,7 +5056,12 @@ const Index = () => {
                             <TableCell className="font-mono text-xs">{d.deflection.deflectionRatio.toFixed(0)}</TableCell>
                             <TableCell className="font-mono text-xs">
                               {(() => {
-                                // Show total girder length if this is a carrier beam segment
+                                // For beams with mergedCarrierIds, d.span is already the total span (all segments merged)
+                                const mergedIds2 = (d as any).mergedCarrierIds as string[] | undefined;
+                                if (mergedIds2 && mergedIds2.length >= 2) {
+                                  return <span className="text-accent font-bold">{d.span.toFixed(2)}</span>;
+                                }
+                                // Legacy BOB connection logic for 2-segment beams
                                 const carrierConn2 = bobConnections.find(c => c.primaryBeamId === d.beamId);
                                 const contConn2 = bobConnections.find(c => c.continuationBeamId === d.beamId);
                                 if (carrierConn2 && carrierConn2.continuationBeamId) {
@@ -5070,9 +5086,41 @@ const Index = () => {
                               )}
                             </TableCell>
                           </TableRow>
-                          {diag && !diag.isAdequate && diag.failures.map((f, idx) => (
+                          {diag && !diag.isAdequate && diag.failures.map((f, idx) => {
+                            // Calculate deflection suggestion for deflection failures
+                            let deflSuggestion: { hRequired: number; note: string } | null = null;
+                            if (f.type === 'deflection') {
+                              const beamForDefl = beamsWithLoads.find(b => b.id === d.beamId)
+                                ?? ((d as any).mergedCarrierIds as string[] | undefined)?.map((id: string) => beamsWithLoads.find(b => b.id === id)).find(Boolean);
+                              if (beamForDefl) {
+                                // Binary-search / step-search for minimum h that satisfies deflection
+                                const bw = beamForDefl.b;
+                                const wD = beamForDefl.deadLoad;
+                                const wL = beamForDefl.liveLoad;
+                                const span = d.span;
+                                let hReq = beamForDefl.h;
+                                for (let hTry = beamForDefl.h + 25; hTry <= beamForDefl.h * 4 && hTry <= 2500; hTry += 25) {
+                                  const testAs = d.flexMid.As;
+                                  const testDefl = calculateDeflection(span, bw, hTry, mat.fc, wD, wL, testAs, 'both-ends', 'B', testAs * 0.3, 1.0, 60);
+                                  if (testDefl.isServiceable) { hReq = hTry; break; }
+                                }
+                                if (hReq > beamForDefl.h) {
+                                  // Also check if adding more steel helps (increase As by 50%)
+                                  const moreAs = d.flexMid.As * 1.5;
+                                  const testWithMoreSteel = calculateDeflection(span, bw, beamForDefl.h, mat.fc, wD, wL, moreAs, 'both-ends', 'B', moreAs * 0.35, 1.0, 60);
+                                  const steelHelps = testWithMoreSteel.isServiceable;
+                                  deflSuggestion = {
+                                    hRequired: hReq,
+                                    note: steelHelps
+                                      ? `أو زيادة التسليح السفلي (As) بنسبة ≥50% — زيادة As تصغّر Ie وتقلل الترخيم`
+                                      : `زيادة التسليح وحدها غير كافية — يجب تعديل الأبعاد`,
+                                  };
+                                }
+                              }
+                            }
+                            return (
                             <TableRow key={`${d.beamId}-fail-${idx}`} className="bg-destructive/5 border-0">
-                              <TableCell colSpan={9} className="py-1 px-4">
+                              <TableCell colSpan={10} className="py-1 px-4">
                                 <div className="flex flex-col gap-0.5 text-[11px]">
                                   <div className="flex items-start gap-2">
                                     <Badge variant="outline" className="text-[9px] shrink-0 border-destructive text-destructive">
@@ -5083,10 +5131,22 @@ const Index = () => {
                                   <div className="text-muted-foreground mr-2">
                                     💡 <strong>الحل:</strong> {f.solution}
                                   </div>
+                                  {deflSuggestion && (
+                                    <div className="mr-2 mt-0.5 flex flex-col gap-0.5">
+                                      <span className="text-blue-700 dark:text-blue-400 font-semibold">
+                                        📐 الارتفاع المقترح لتحقيق الترخيم: <strong>h = {deflSuggestion.hRequired} mm</strong>
+                                        {' '}(الحالي: {beamsWithLoads.find(b => b.id === d.beamId)?.h ?? '—'} mm)
+                                      </span>
+                                      <span className="text-muted-foreground text-[10px]">
+                                        ℹ️ {deflSuggestion.note}
+                                      </span>
+                                    </div>
+                                  )}
                                 </div>
                               </TableCell>
                             </TableRow>
-                          ))}
+                            );
+                          })}
                           </React.Fragment>
                           );
                           })

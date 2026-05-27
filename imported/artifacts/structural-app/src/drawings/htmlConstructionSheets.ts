@@ -15,6 +15,57 @@ interface BeamDesignData {
   flexMid: FlexureResult;
   flexRight: FlexureResult;
   shear: ShearResult;
+  /** IDs of the individual beam segments that were merged into this design (carrier/multi-segment beams) */
+  mergedCarrierIds?: string[];
+  /** Total design span in metres (for merged carrier beams this equals sum of all segments) */
+  span?: number;
+}
+
+// ─── Reinforcement group label helpers ───
+
+/** Build a map of beamId → Arabic group label (ج-1, ج-2, …) by identical reinforcement pattern */
+function buildBeamGroupLabels(beamDesigns: BeamDesignData[]): Map<string, string> {
+  const keyToLabel = new Map<string, string>();
+  const result = new Map<string, string>();
+  let counter = 1;
+  for (const d of beamDesigns) {
+    const key = `${d.flexLeft.bars}φ${d.flexLeft.dia}|${d.flexMid.bars}φ${d.flexMid.dia}|${d.flexRight.bars}φ${d.flexRight.dia}|${d.shear.stirrups}`;
+    if (!keyToLabel.has(key)) {
+      keyToLabel.set(key, `ج-${counter++}`);
+    }
+    result.set(d.beamId, keyToLabel.get(key)!);
+  }
+  return result;
+}
+
+/** Build a map of colId → Arabic group label (ع-1, ع-2, …) by identical reinforcement pattern */
+function buildColGroupLabels(colDesigns: ColDesignData[]): Map<string, string> {
+  const keyToLabel = new Map<string, string>();
+  const result = new Map<string, string>();
+  let counter = 1;
+  for (const c of colDesigns) {
+    const key = `${c.b}x${c.h}|${c.design.bars}φ${c.design.dia}|${c.design.stirrups}`;
+    if (!keyToLabel.has(key)) {
+      keyToLabel.set(key, `ع-${counter++}`);
+    }
+    result.set(c.id, keyToLabel.get(key)!);
+  }
+  return result;
+}
+
+/** Build a map of slabId → Arabic group label (ب-1, ب-2, …) by identical reinforcement pattern */
+function buildSlabGroupLabels(slabDesigns: SlabDesignData[]): Map<string, string> {
+  const keyToLabel = new Map<string, string>();
+  const result = new Map<string, string>();
+  let counter = 1;
+  for (const s of slabDesigns) {
+    const key = `h${s.design.hUsed}|${s.design.shortDir.bars}φ${s.design.shortDir.dia}@${s.design.shortDir.spacing}|${s.design.longDir.bars}φ${s.design.longDir.dia}@${s.design.longDir.spacing}`;
+    if (!keyToLabel.has(key)) {
+      keyToLabel.set(key, `ب-${counter++}`);
+    }
+    result.set(s.id, keyToLabel.get(key)!);
+  }
+  return result;
 }
 
 interface ColDesignData {
@@ -105,6 +156,7 @@ function svgColumns(
 function svgBeamsOnPlan(
   beams: Beam[], columns: Column[],
   tx: (x: number) => number, ty: (y: number) => number, mmPerM: number,
+  groupLabels?: Map<string, string>,
 ): string {
   let svg = '';
   for (const b of beams) {
@@ -134,10 +186,14 @@ function svgBeamsOnPlan(
     const mx = (bx1 + bx2) / 2;
     const my = (by1 + by2) / 2;
     const labelOffset = isHoriz ? -beamThickPx / 2 - 10 : beamThickPx / 2 + 5;
+    // Find the group label — prefer the canonical base ID (strip trailing -N suffix for segments)
+    const baseId = b.id.replace(/-\d+$/, '');
+    const groupLabel = groupLabels?.get(b.id) ?? groupLabels?.get(baseId);
+    const displayLabel = groupLabel ? `${groupLabel}(${b.id})` : b.id;
     if (isHoriz) {
-      svg += `<text x="${mx}" y="${my + labelOffset}" font-size="7" font-weight="bold" fill="#005000" font-family="Arial">${b.id}</text>`;
+      svg += `<text x="${mx}" y="${my + labelOffset}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
     } else {
-      svg += `<text x="${mx + labelOffset}" y="${my}" font-size="7" font-weight="bold" fill="#005000" font-family="Arial">${b.id}</text>`;
+      svg += `<text x="${mx + labelOffset}" y="${my}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial">${displayLabel}</text>`;
     }
   }
   return svg;
@@ -146,6 +202,7 @@ function svgBeamsOnPlan(
 function svgSlabsOnPlan(
   slabs: Slab[], slabDesigns: SlabDesignData[],
   tx: (x: number) => number, ty: (y: number) => number, mmPerM: number,
+  groupLabels?: Map<string, string>,
 ): string {
   let svg = '';
   for (const s of slabs) {
@@ -159,10 +216,17 @@ function svgSlabsOnPlan(
     
     const cx = tx((s.x1 + s.x2) / 2);
     const cy = ty((s.y1 + s.y2) / 2);
-    svg += `<text x="${cx}" y="${cy - 16}" text-anchor="middle" font-size="7" font-weight="bold" fill="#000078" font-family="Arial">${s.id}</text>`;
-    svg += `<text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">h=${sd.design.hUsed}</text>`;
-    svg += `<text x="${cx}" y="${cy + 8}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}</text>`;
-    svg += `<text x="${cx}" y="${cy + 18}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}</text>`;
+    const groupLabel = groupLabels?.get(s.id);
+    // Show group label prominently, then element ID below
+    if (groupLabel) {
+      svg += `<text x="${cx}" y="${cy - 20}" text-anchor="middle" font-size="8" font-weight="bold" fill="#004000" font-family="Arial">${groupLabel}</text>`;
+      svg += `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">(${s.id})</text>`;
+    } else {
+      svg += `<text x="${cx}" y="${cy - 14}" text-anchor="middle" font-size="7" font-weight="bold" fill="#000078" font-family="Arial">${s.id}</text>`;
+    }
+    svg += `<text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">h=${sd.design.hUsed}</text>`;
+    svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}</text>`;
+    svg += `<text x="${cx}" y="${cy + 20}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}</text>`;
   }
   return svg;
 }
@@ -261,22 +325,45 @@ function htmlSheetBorder(): string {
 function fmtRebar(bars: number, dia: number): string { return `${bars}Φ${dia}`; }
 
 function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): string {
+  const groupLabels = buildBeamGroupLabels(beamDesigns);
   let rows = '';
   for (const d of beamDesigns) {
-    const beam = beams.find(b => b.id === d.beamId);
-    const spanM = beam?.length ?? 999;
+    // Try to find beam directly, then via mergedCarrierIds for multi-segment carrier beams
+    let beam = beams.find(b => b.id === d.beamId);
+    let spanM: number;
+    let b_dim: number | undefined;
+    let h_dim: number | undefined;
+
+    if (!beam && d.mergedCarrierIds && d.mergedCarrierIds.length > 0) {
+      // Multi-segment carrier beam — reconstruct from its segments
+      const parts = d.mergedCarrierIds.map(id => beams.find(b => b.id === id)).filter((b): b is Beam => !!b);
+      if (parts.length > 0) {
+        spanM = d.span ?? parts.reduce((s, b) => s + b.length, 0);
+        const largest = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
+        b_dim = largest.b;
+        h_dim = largest.h;
+      } else {
+        spanM = d.span ?? 0;
+      }
+    } else {
+      spanM = d.span ?? beam?.length ?? 0;
+      b_dim = beam?.b;
+      h_dim = beam?.h;
+    }
+
     const totalBot = d.flexMid.bars;
-    // No curtailment for beams ≤ 2 m — all bottom bars run full span
     const isShort = spanM <= 2.0;
     const hasBent = !isShort && totalBot >= 4;
     const bentCount = hasBent ? Math.min(2, Math.floor(totalBot / 2)) : 0;
     const straightBot = totalBot - bentCount;
+    const groupLabel = groupLabels.get(d.beamId) ?? '';
 
     rows += `<tr>
+      <td style="background:#f0f8ff; font-weight:bold; color:#1a3a5c;">${groupLabel}</td>
       <td>${d.beamId}</td>
-      <td>${beam?.b ?? ''}</td>
-      <td>${beam?.h ?? ''}</td>
-      <td>${(spanM < 900 ? spanM.toFixed(2) : '—')}</td>
+      <td>${b_dim ?? ''}</td>
+      <td>${h_dim ?? ''}</td>
+      <td>${spanM > 0 ? spanM.toFixed(2) : '—'}</td>
       <td>${fmtRebar(straightBot, d.flexMid.dia)}</td>
       <td>${bentCount > 0 ? fmtRebar(bentCount, d.flexMid.dia) : '—'}</td>
       <td>${d.flexLeft.bars > 0 ? fmtRebar(d.flexLeft.bars, d.flexLeft.dia) : '—'}</td>
@@ -290,6 +377,7 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
   <table style="width:100%; border-collapse:collapse; font-size:8.5px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     <thead>
       <tr>
+        <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">رمز</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">الجسر</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">B</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">H</th>
@@ -307,13 +395,17 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div style="font-size:7.5px; color:#555; margin-top:3px;">* التكسيح للجسور L > 2.0 م فقط — الجسور القصيرة: حديد سفلي مستمر كامل الطول</div>`;
+  <div style="font-size:7.5px; color:#555; margin-top:3px;">* التكسيح للجسور L > 2.0 م فقط — الجسور القصيرة: حديد سفلي مستمر كامل الطول</div>
+  <div style="font-size:7.5px; color:#1a3a5c; margin-top:2px;">رمز: الجسور ذات نفس التسليح تحمل رمزاً واحداً (ج-1، ج-2، …)</div>`;
 }
 
 function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
+  const groupLabels = buildColGroupLabels(colDesigns);
   let rows = '';
   for (const c of colDesigns) {
+    const groupLabel = groupLabels.get(c.id) ?? '';
     rows += `<tr>
+      <td style="background:#fff8f0; font-weight:bold; color:#5c1a00;">${groupLabel}</td>
       <td>${c.id}</td>
       <td>${c.b}</td>
       <td>${c.h}</td>
@@ -327,6 +419,7 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
   <table style="width:100%; border-collapse:collapse; font-size:9px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     <thead>
       <tr>
+        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">رمز</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">العمود</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">B mm</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">H mm</th>
@@ -335,13 +428,17 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
       </tr>
     </thead>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table>
+  <div style="font-size:7.5px; color:#5c1a00; margin-top:2px;">رمز: الأعمدة ذات نفس التسليح تحمل رمزاً واحداً (ع-1، ع-2، …)</div>`;
 }
 
 function htmlSlabScheduleTable(slabDesigns: SlabDesignData[]): string {
+  const groupLabels = buildSlabGroupLabels(slabDesigns);
   let rows = '';
   for (const s of slabDesigns) {
+    const groupLabel = groupLabels.get(s.id) ?? '';
     rows += `<tr>
+      <td style="background:#f5fff5; font-weight:bold; color:#004000;">${groupLabel}</td>
       <td>${s.id}</td>
       <td>${s.design.lx.toFixed(1)}</td>
       <td>${s.design.ly.toFixed(1)}</td>
@@ -357,6 +454,7 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[]): string {
   <table style="width:100%; border-collapse:collapse; font-size:9px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     <thead>
       <tr>
+        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">رمز</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">البلاطة</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">Lx</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">Ly</th>
@@ -367,7 +465,8 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[]): string {
       </tr>
     </thead>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table>
+  <div style="font-size:7.5px; color:#004000; margin-top:2px;">رمز: البلاطات ذات نفس التسليح تحمل رمزاً واحداً (ب-1، ب-2، …)</div>`;
 }
 
 // ─── Column cross-section SVG ───
@@ -823,11 +922,25 @@ function htmlBeamElevationSheet(
   let sheets = '';
   let sheetNo = startSheetNo;
 
+  const elevGroupLabels = buildBeamGroupLabels(beamDesigns);
   for (let i = 0; i < beamDesigns.length; i++) {
     const d = beamDesigns[i];
-    const beam = beams.find(b => b.id === d.beamId);
+    let beam = beams.find(b => b.id === d.beamId);
+
+    // Handle merged carrier beams (e.g. "67" whose segments are "67-1","67-2","67-3")
+    if (!beam && d.mergedCarrierIds && d.mergedCarrierIds.length > 0) {
+      const parts = d.mergedCarrierIds.map(id => beams.find(b => b.id === id)).filter((b): b is Beam => !!b);
+      if (parts.length > 0) {
+        const largest = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
+        const totalLength = d.span ?? parts.reduce((s, b) => s + b.length, 0);
+        // Synthesise a single beam record spanning the full girder
+        beam = { ...largest, id: d.beamId, length: totalLength };
+      }
+    }
     if (!beam) continue;
 
+    const groupLabel = elevGroupLabels.get(d.beamId);
+    const titlePrefix = groupLabel ? `${groupLabel} — BEAM ${beam.id}` : `BEAM ${beam.id}`;
     const svgContent = svgBeamElevationDetailed(beam, d, 0, 0, sheetW - 90, contentH, devLengths, beams);
     const svgZone = `<svg viewBox="0 0 ${sheetW - 90} ${contentH}" width="${sheetW - 90}" height="${contentH}" xmlns="http://www.w3.org/2000/svg">${svgContent}</svg>`;
 
@@ -843,7 +956,7 @@ function htmlBeamElevationSheet(
       <span style="color:#dc6400;">━━</span> حديد مكسح &nbsp;
       <span style="color:#0000b4;">━━</span> كانات
     </div>
-    ${htmlTitleBlock({ ...tbBase, drawingTitle: `BEAM ${beam.id} — LONGITUDINAL SECTION`, drawingSubTitle: `${beam.b}×${beam.h}mm, Span ${beam.length.toFixed(2)}m`, drawingNumber: makeDrawingNumber(floorCode, 'SE', i + 1), sheetNo: sheetNo.toString(), scale: 'N.T.S.' })}
+    ${htmlTitleBlock({ ...tbBase, drawingTitle: `${titlePrefix} — LONGITUDINAL SECTION`, drawingSubTitle: `${beam.b}×${beam.h}mm, Span ${beam.length.toFixed(2)}m`, drawingNumber: makeDrawingNumber(floorCode, 'SE', i + 1), sheetNo: sheetNo.toString(), scale: 'N.T.S.' })}
   </div>`;
     sheetNo++;
   }
@@ -1078,13 +1191,16 @@ export function generateHTMLConstructionSheets(
   _SHEET_H = _paper.sheetH;
   _CSS_PAPER = _paper.cssSize;
 
-  // SVG viewbox matches full-width drawing zone of the chosen paper
+  // SVG viewbox for plan zone — the plan occupies 62% of the sheet width (rest is schedule table)
+  // We compute mmPerM based on the plan zone to ensure the drawing fills the available area.
   const titleBlockH = 135 + 36 + 10;
-  const svgW = _SHEET_W - 90;
+  const svgW = _SHEET_W - 90;   // full inner sheet width
   const svgH = _SHEET_H - 45 - titleBlockH;
-  const mmPerM = Math.min((svgW - 80) / modelW, (svgH - 80) / modelH) * 0.85;
-  const planOffsetX = 50 + ((svgW - 80) - modelW * mmPerM) / 2;
-  const planOffsetY = 40 + ((svgH - 80) - modelH * mmPerM) / 2;
+  // Plan display zone = 62% of inner width (matches generateSheetHTML planW calculation)
+  const planZoneW = Math.round(svgW * 0.62);
+  const mmPerM = Math.min((planZoneW - 60) / modelW, (svgH - 60) / modelH);
+  const planOffsetX = 30 + ((planZoneW - 60) - modelW * mmPerM) / 2;
+  const planOffsetY = 30 + ((svgH - 60) - modelH * mmPerM) / 2;
   const tx = (x: number) => (x - minX) * mmPerM + planOffsetX;
   const ty = (y: number) => (maxY - y) * mmPerM + planOffsetY;
 
@@ -1092,6 +1208,11 @@ export function generateHTMLConstructionSheets(
   const gridY = Array.from(new Set(allY)).sort((a, b) => a - b);
   const scaleVal = Math.round(1000 / mmPerM);
   const scaleText = `1:${scaleVal}`;
+
+  // Build group label maps for plan SVG labels
+  const beamGroupLabels = buildBeamGroupLabels(beamDesigns);
+  const colGroupLabels = buildColGroupLabels(colDesigns);
+  const slabGroupLabels = buildSlabGroupLabels(slabDesigns);
 
   const gridSvg = svgGridSystem(gridX, gridY, tx, ty, minX, maxX, minY, maxY);
 
@@ -1103,13 +1224,13 @@ export function generateHTMLConstructionSheets(
   const bsDwg = makeDrawingNumber(floorCode, 'BS', 1);
   const beamPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, false)
-    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM)
-    + svgScaleBar(svgW / 2 - 60, svgH - 35, scaleVal);
+    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM, beamGroupLabels)
+    + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
 
   sheetsHTML += generateSheetHTML(
     'beam-layout',
     beamPlanSvg,
-    svgW, svgH,
+    planZoneW, svgH,
     htmlBeamScheduleTable(beams, beamDesigns),
     {
       ...tbBase,
@@ -1127,7 +1248,7 @@ export function generateHTMLConstructionSheets(
   const csDwg = makeDrawingNumber(floorCode, 'CS', 1);
   const colPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, true)
-    + svgScaleBar(svgW / 2 - 60, svgH - 35, scaleVal);
+    + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
 
   // Column cross-sections SVG
   const colPatternMap = new Map<string, ColDesignData[]>();
@@ -1165,7 +1286,7 @@ export function generateHTMLConstructionSheets(
   sheetsHTML += generateSheetHTML(
     'column-layout',
     colPlanSvg,
-    svgW, svgH,
+    planZoneW, svgH,
     colTableAndSections,
     {
       ...tbBase,
@@ -1183,13 +1304,13 @@ export function generateHTMLConstructionSheets(
   const slDwg = makeDrawingNumber(floorCode, 'SL', 1);
   const slabPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, false)
-    + svgSlabsOnPlan(slabs, slabDesigns, tx, ty, mmPerM)
-    + svgScaleBar(svgW / 2 - 60, svgH - 35, scaleVal);
+    + svgSlabsOnPlan(slabs, slabDesigns, tx, ty, mmPerM, slabGroupLabels)
+    + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
 
   sheetsHTML += generateSheetHTML(
     'slab-plan',
     slabPlanSvg,
-    svgW, svgH,
+    planZoneW, svgH,
     htmlSlabScheduleTable(slabDesigns),
     {
       ...tbBase,
