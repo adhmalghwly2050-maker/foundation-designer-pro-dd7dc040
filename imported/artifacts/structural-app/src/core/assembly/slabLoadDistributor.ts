@@ -11,7 +11,14 @@
  *   edge load over the overlapping length only.
  */
 
-import { buildSlabEdgeLoads, computeBeamLoadProfile, computeLineProfileStats, type PlanarSlabGeometry } from '../../lib/slabLoadTransfer';
+import {
+  buildSlabEdgeLoads,
+  computeBeamLoadProfile,
+  computeLineProfileStats,
+  redistributeOrphanEdgeLoads,
+  type PlanarBeamGeometry,
+  type PlanarSlabGeometry,
+} from '../../lib/slabLoadTransfer';
 import type { StructuralModel } from '../model/types';
 
 export interface DistributedBeamLoad {
@@ -74,7 +81,21 @@ export function distributeSlabLoads(
     });
   }
 
-  const slabEdgeLoads = buildSlabEdgeLoads(slabRects, 0, 0);
+  const rawEdgeLoads = buildSlabEdgeLoads(slabRects, 0, 0);
+
+  // Build flat beam geometry list for orphan-edge detection
+  const beamGeoms: PlanarBeamGeometry[] = [];
+  for (const beam of beams) {
+    const nodeI = nodeMap.get(beam.nodeIds[0]);
+    const nodeJ = nodeMap.get(beam.nodeIds[1]);
+    if (!nodeI || !nodeJ) continue;
+    const len = Math.sqrt((nodeJ.x - nodeI.x) ** 2 + (nodeJ.y - nodeI.y) ** 2);
+    beamGeoms.push({ id: String(beam.id), x1: nodeI.x, y1: nodeI.y, x2: nodeJ.x, y2: nodeJ.y, length: len });
+  }
+
+  // Redistribute loads from free/shared edges (no beam) to the parallel supported edges.
+  // This is the correct treatment for L-shaped slabs decomposed into rectangular sub-slabs.
+  const slabEdgeLoads = redistributeOrphanEdgeLoads(rawEdgeLoads, beamGeoms);
 
   for (const beam of beams) {
     const nodeI = nodeMap.get(beam.nodeIds[0]);

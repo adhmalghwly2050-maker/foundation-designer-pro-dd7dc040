@@ -181,6 +181,124 @@ export function computeLineProfileStats(profile: LineLoadPoint[]): { area: numbe
   };
 }
 
+/**
+ * Detects slab edge loads that have no matching beam (orphan / free edges) and
+ * redistributes their total force to the parallel supported edges of the same slab.
+ *
+ * This is the correct treatment for L-shaped (or otherwise irregular) slabs that
+ * have been decomposed into rectangular sub-slabs sharing an internal edge with no
+ * beam:  instead of silently dropping the load (equilibrium error), the orphan
+ * edge's force is added as a uniform intensity increase to the opposite/parallel
+ * beam-supported edge(s) — matching the physical behaviour where the load travels
+ * the long way around to the nearest real support.
+ *
+ * @param edgeLoads  Output of buildSlabEdgeLoads()
+ * @param beams      All beams in the model (used to detect which edges are supported)
+ * @returns New array of SlabEdgeLoad with orphan loads merged into supported edges
+ */
+export function redistributeOrphanEdgeLoads(
+  edgeLoads: SlabEdgeLoad[],
+  beams: PlanarBeamGeometry[],
+): SlabEdgeLoad[] {
+  /** true when at least one beam segment is collinear with and overlaps this edge */
+  const hasMatchingBeam = (edge: SlabEdgeLoad): boolean => {
+    for (const b of beams) {
+      const dir = inferDirection(b);
+      if (!dir || dir !== edge.direction) continue;
+      if (edge.direction === 'horizontal') {
+        if (Math.abs(b.y1 - edge.y1) > EPS) continue;
+        const [bs, be_] = sortRange(b.x1, b.x2);
+        const [es, ee] = sortRange(edge.x1, edge.x2);
+        if (bs <= ee + EPS && be_ >= es - EPS) return true;
+      } else {
+        if (Math.abs(b.x1 - edge.x1) > EPS) continue;
+        const [bs, be_] = sortRange(b.y1, b.y2);
+        const [es, ee] = sortRange(edge.y1, edge.y2);
+        if (bs <= ee + EPS && be_ >= es - EPS) return true;
+      }
+    }
+    return false;
+  };
+
+  const edgeLen = (e: SlabEdgeLoad): number =>
+    e.direction === 'horizontal'
+      ? Math.abs(e.x2 - e.x1)
+      : Math.abs(e.y2 - e.y1);
+
+  /** group edge loads by slab */
+  const bySlabId = new Map<string, SlabEdgeLoad[]>();
+  for (const e of edgeLoads) {
+    const arr = bySlabId.get(e.slabId) ?? [];
+    arr.push(e);
+    bySlabId.set(e.slabId, arr);
+  }
+
+  const result: SlabEdgeLoad[] = [];
+
+  for (const [, edges] of bySlabId) {
+    /** deep-copy so we never mutate callers' data */
+    const local: SlabEdgeLoad[] = edges.map(e => ({
+      ...e,
+      profileDL: e.profileDL.map(p => ({ ...p })),
+      profileLL: e.profileLL.map(p => ({ ...p })),
+    }));
+
+    const supported: SlabEdgeLoad[] = [];
+    const orphans: SlabEdgeLoad[] = [];
+    for (const e of local) {
+      (hasMatchingBeam(e) ? supported : orphans).push(e);
+    }
+
+    /** nothing to fix for this slab */
+    if (orphans.length === 0) {
+      result.push(...local);
+      continue;
+    }
+
+    for (const orphan of orphans) {
+      const dlStats = computeLineProfileStats(orphan.profileDL);
+      const llStats = computeLineProfileStats(orphan.profileLL);
+      const olen = edgeLen(orphan);
+      /** total force [N] that would have gone to this unsupported edge */
+      const totalDL = dlStats.area * olen;
+      const totalLL = llStats.area * olen;
+
+      /** parallel supported edges of the same slab — same direction, different position */
+      const parallels = supported.filter(e => e.direction === orphan.direction);
+      if (parallels.length === 0) {
+        /** no parallel beam at all → redistribute to perpendicular edges equally */
+        const perp = supported.filter(e => e.direction !== orphan.direction);
+        if (perp.length === 0) continue;
+        const factor = 1 / perp.length;
+        for (const target of perp) {
+          const tlen = edgeLen(target);
+          if (tlen < EPS) continue;
+          const addDL = (totalDL * factor) / tlen;
+          const addLL = (totalLL * factor) / tlen;
+          target.profileDL = target.profileDL.map(p => ({ t: p.t, wy: p.wy + addDL }));
+          target.profileLL = target.profileLL.map(p => ({ t: p.t, wy: p.wy + addLL }));
+        }
+        continue;
+      }
+
+      /** distribute equally among parallel supported edges as uniform addition */
+      const factor = 1 / parallels.length;
+      for (const target of parallels) {
+        const tlen = edgeLen(target);
+        if (tlen < EPS) continue;
+        const addDL = (totalDL * factor) / tlen;
+        const addLL = (totalLL * factor) / tlen;
+        target.profileDL = target.profileDL.map(p => ({ t: p.t, wy: p.wy + addDL }));
+        target.profileLL = target.profileLL.map(p => ({ t: p.t, wy: p.wy + addLL }));
+      }
+    }
+
+    result.push(...supported);
+  }
+
+  return result;
+}
+
 export function computeBeamLoadProfile(
   beam: PlanarBeamGeometry,
   slabEdgeLoads: SlabEdgeLoad[],
