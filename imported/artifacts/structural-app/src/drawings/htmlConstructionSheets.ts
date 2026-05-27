@@ -159,15 +159,36 @@ function svgBeamsOnPlan(
   groupLabels?: Map<string, string>,
 ): string {
   let svg = '';
+
+  // ── اكتشاف مجموعات الأجزاء (مثل 67-1, 67-2, 67-3 ← جسر واحد "67") ──
+  const segGroupMap = new Map<string, Beam[]>();
+  for (const b of beams) {
+    const m = b.id.match(/^(.+)-(\d+)$/);
+    if (m) {
+      const baseId = m[1];
+      if (!segGroupMap.has(baseId)) segGroupMap.set(baseId, []);
+      segGroupMap.get(baseId)!.push(b);
+    }
+  }
+  // احتفظ فقط بالمجموعات ذات جزأين أو أكثر
+  for (const [k, parts] of segGroupMap) {
+    if (parts.length < 2) segGroupMap.delete(k);
+  }
+  const segmentPartIds = new Set<string>();
+  for (const [, parts] of segGroupMap) {
+    for (const p of parts) segmentPartIds.add(p.id);
+  }
+
+  // ── الجولة الأولى: رسم مستطيلات الجسور ──
   for (const b of beams) {
     const isHoriz = Math.abs(b.y1 - b.y2) < 0.01;
     const beamThickPx = Math.max((b.b / 1000) * mmPerM, 6);
-    
+
     let bx1 = tx(b.x1), by1 = ty(b.y1), bx2 = tx(b.x2), by2 = ty(b.y2);
-    
+
     const fromCol = columns.find(c => c.id === (b as any).fromCol || (Math.abs(c.x - b.x1) < 0.01 && Math.abs(c.y - b.y1) < 0.01));
     const toCol = columns.find(c => c.id === (b as any).toCol || (Math.abs(c.x - b.x2) < 0.01 && Math.abs(c.y - b.y2) < 0.01));
-    
+
     if (fromCol) {
       if (isHoriz) bx1 += (fromCol.b / 1000) * mmPerM / 2;
       else by1 -= (fromCol.h / 1000) * mmPerM / 2;
@@ -183,19 +204,56 @@ function svgBeamsOnPlan(
       svg += `<rect x="${bx1 - beamThickPx / 2}" y="${Math.min(by1, by2)}" width="${beamThickPx}" height="${Math.abs(by2 - by1)}" fill="#B4D2B4" stroke="#006400" stroke-width="1" />`;
     }
 
-    const mx = (bx1 + bx2) / 2;
-    const my = (by1 + by2) / 2;
-    const labelOffset = isHoriz ? -beamThickPx / 2 - 10 : beamThickPx / 2 + 5;
-    // Find the group label — prefer the canonical base ID (strip trailing -N suffix for segments)
-    const baseId = b.id.replace(/-\d+$/, '');
-    const groupLabel = groupLabels?.get(b.id) ?? groupLabels?.get(baseId);
-    const displayLabel = groupLabel ? `${groupLabel}(${b.id})` : b.id;
-    if (isHoriz) {
-      svg += `<text x="${mx}" y="${my + labelOffset}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
-    } else {
-      svg += `<text x="${mx + labelOffset}" y="${my}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial">${displayLabel}</text>`;
+    // ── التسمية: فقط للجسور المستقلة (غير الأجزاء المقسّمة) ──
+    if (!segmentPartIds.has(b.id)) {
+      const mx = (bx1 + bx2) / 2;
+      const my = (by1 + by2) / 2;
+      const labelOffset = isHoriz ? -beamThickPx / 2 - 10 : beamThickPx / 2 + 5;
+      const groupLabel = groupLabels?.get(b.id);
+      const displayLabel = groupLabel ?? b.id;
+      if (isHoriz) {
+        svg += `<text x="${mx}" y="${my + labelOffset}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
+      } else {
+        svg += `<text x="${mx + labelOffset}" y="${my}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial">${displayLabel}</text>`;
+      }
     }
   }
+
+  // ── الجولة الثانية: تسمية مجموعات الأجزاء بتسمية واحدة عند منتصف الجسر الكامل ──
+  for (const [baseId, parts] of segGroupMap) {
+    const first = parts[0];
+    const isHoriz = Math.abs(first.y1 - first.y2) < 0.01;
+    const beamThickPx = Math.max((first.b / 1000) * mmPerM, 6);
+    const groupLabel = groupLabels?.get(baseId);
+    const displayLabel = groupLabel ? `${groupLabel}(${baseId})` : baseId;
+
+    if (isHoriz) {
+      const allX = parts.flatMap(p => {
+        let bx1 = tx(p.x1), bx2 = tx(p.x2);
+        const fc = columns.find(c => Math.abs(c.x - p.x1) < 0.01 && Math.abs(c.y - p.y1) < 0.01);
+        const tc = columns.find(c => Math.abs(c.x - p.x2) < 0.01 && Math.abs(c.y - p.y2) < 0.01);
+        if (fc) bx1 += (fc.b / 1000) * mmPerM / 2;
+        if (tc) bx2 -= (tc.b / 1000) * mmPerM / 2;
+        return [bx1, bx2];
+      });
+      const midX = (Math.min(...allX) + Math.max(...allX)) / 2;
+      const midY = ty(first.y1);
+      svg += `<text x="${midX}" y="${midY - beamThickPx / 2 - 10}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
+    } else {
+      const allY = parts.flatMap(p => {
+        let by1 = ty(p.y1), by2 = ty(p.y2);
+        const fc = columns.find(c => Math.abs(c.x - p.x1) < 0.01 && Math.abs(c.y - p.y1) < 0.01);
+        const tc = columns.find(c => Math.abs(c.x - p.x2) < 0.01 && Math.abs(c.y - p.y2) < 0.01);
+        if (fc) by1 -= (fc.h / 1000) * mmPerM / 2;
+        if (tc) by2 += (tc.h / 1000) * mmPerM / 2;
+        return [by1, by2];
+      });
+      const midY = (Math.min(...allY) + Math.max(...allY)) / 2;
+      const midX = tx(first.x1);
+      svg += `<text x="${midX + beamThickPx / 2 + 5}" y="${midY}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial">${displayLabel}</text>`;
+    }
+  }
+
   return svg;
 }
 
@@ -547,9 +605,9 @@ function generateSheetHTML(
 
   const hasTable = tableContent && tableContent.trim().length > 0;
 
-  // Widths: plan 62%, divider 2%, table 36%  (of innerW)
-  const planW  = hasTable ? Math.round(innerW * 0.62) : innerW;
-  const tableW = hasTable ? Math.round(innerW * 0.36) : 0;
+  // Widths: plan 72%, divider 2%, table 26%  (of innerW)
+  const planW  = hasTable ? Math.round(innerW * 0.72) : innerW;
+  const tableW = hasTable ? Math.round(innerW * 0.26) : 0;
   const tableLeft = 45 + planW + Math.round(innerW * 0.02);  // left position of table zone
 
   // Vertical separator between plan and table
@@ -1196,11 +1254,11 @@ export function generateHTMLConstructionSheets(
   const titleBlockH = 135 + 36 + 10;
   const svgW = _SHEET_W - 90;   // full inner sheet width
   const svgH = _SHEET_H - 45 - titleBlockH;
-  // Plan display zone = 62% of inner width (matches generateSheetHTML planW calculation)
-  const planZoneW = Math.round(svgW * 0.62);
-  const mmPerM = Math.min((planZoneW - 60) / modelW, (svgH - 60) / modelH);
-  const planOffsetX = 30 + ((planZoneW - 60) - modelW * mmPerM) / 2;
-  const planOffsetY = 30 + ((svgH - 60) - modelH * mmPerM) / 2;
+  // Plan display zone = 72% of inner width (matches generateSheetHTML planW calculation)
+  const planZoneW = Math.round(svgW * 0.72);
+  const mmPerM = Math.min((planZoneW - 20) / modelW, (svgH - 20) / modelH);
+  const planOffsetX = 10 + ((planZoneW - 20) - modelW * mmPerM) / 2;
+  const planOffsetY = 10 + ((svgH - 20) - modelH * mmPerM) / 2;
   const tx = (x: number) => (x - minX) * mmPerM + planOffsetX;
   const ty = (y: number) => (maxY - y) * mmPerM + planOffsetY;
 

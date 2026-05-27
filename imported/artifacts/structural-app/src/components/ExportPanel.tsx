@@ -401,7 +401,14 @@ export default function ExportPanel({
               onClick={() => {
                 const allFilteredBeams = beams.filter(b => !b.storyId || selectedFloors.includes(b.storyId));
                 const allFilteredBeamIds = new Set(allFilteredBeams.map(b => b.id));
-                const filtDesigns = beamDesigns.filter((d: any) => allFilteredBeamIds.has(d.beamId));
+                const filtDesigns = beamDesigns.filter((d: any) => {
+                  if (allFilteredBeamIds.has(d.beamId)) return true;
+                  // الجسور المدمجة (مثل 67 من أجزاء 67-1, 67-2, 67-3)
+                  if (d.mergedCarrierIds) {
+                    return (d.mergedCarrierIds as string[]).some((id: string) => allFilteredBeamIds.has(id));
+                  }
+                  return false;
+                });
                 const storyLabel = selectedFloors.length === 1
                   ? stories.find(s => s.id === selectedFloors[0])?.label || ''
                   : stories.filter(s => selectedFloors.includes(s.id)).map(s => s.label).join(', ');

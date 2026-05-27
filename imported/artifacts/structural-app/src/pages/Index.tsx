@@ -5135,7 +5135,7 @@ const Index = () => {
                                     <div className="mr-2 mt-0.5 flex flex-col gap-0.5">
                                       <span className="text-blue-700 dark:text-blue-400 font-semibold">
                                         📐 الارتفاع المقترح لتحقيق الترخيم: <strong>h = {deflSuggestion.hRequired} mm</strong>
-                                        {' '}(الحالي: {beamsWithLoads.find(b => b.id === d.beamId)?.h ?? '—'} mm)
+                                        {' '}(الحالي: {(beamsWithLoads.find(b => b.id === d.beamId) ?? ((d as any).mergedCarrierIds as string[] | undefined)?.map((id: string) => beamsWithLoads.find(b => b.id === id)).find(Boolean))?.h ?? '—'} mm)
                                       </span>
                                       <span className="text-muted-foreground text-[10px]">
                                         ℹ️ {deflSuggestion.note}

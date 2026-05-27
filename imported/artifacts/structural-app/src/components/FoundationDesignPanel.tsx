@@ -129,16 +129,15 @@ export default function FoundationDesignPanel({
     // باستخدام الأحمال الخدمية فقط (بدون معاملات أمان)
     const groundCols = columns.filter(col => Math.abs((col.zBottom ?? 0) - minZ) < 1);
 
-    // تجميع جميع أحمال الأدوار على كل موضع عمود أرضي
+    // تجميع أحمال الأعمدة الأرضية فقط — عمود الدور الأرضي يحمل الحمل التراكمي الكامل من الأدوار العليا
+    // ملاحظة: استخدام كامل الأعمدة (جميع الأدوار) يُسبب تضاعف الحمل لأن كل دور يُضاف على حدة
     const posLoads = new Map<string, { P_DL: number; P_LL: number; colB: number; colH: number; x: number; y: number }>();
-    for (const col of columns) {
-      // مفتاح الموضع (x, y) لتجميع الأحمال من جميع الأدوار
+    for (const col of groundCols) {
+      // مفتاح الموضع (x, y)
       const posKey = `${col.x.toFixed(3)}_${col.y.toFixed(3)}`;
-      // تحقق أن هذا الموضع له عمود أرضي
-      const hasGround = groundCols.some(gc => gc.x === col.x && gc.y === col.y);
-      if (!hasGround) continue;
 
-      // الأولوية: P_service من التحليل (1.0D+1.0L)، فإن تعذّر → Pu/1.2
+      // الأولوية: P_service من التحليل ثلاثي الأبعاد (1.0D+1.0L) للعمود الأرضي
+      // — هذه القيمة تعكس الحمل التراكمي الحقيقي الواصل لمستوى الأساس
       const load3D = colLoads3D?.get(col.id);
       let P_service: number;
       if (load3D?.P_service && load3D.P_service > 0) {
@@ -148,21 +147,14 @@ export default function FoundationDesignPanel({
         const Pu = des?.Pu ?? des?.design?.Pu ?? 0;
         P_service = Pu / 1.2;
       }
-      const existing = posLoads.get(posKey);
-      if (existing) {
-        existing.P_DL += parseFloat((P_service * 0.6).toFixed(1));
-        existing.P_LL += parseFloat((P_service * 0.4).toFixed(1));
-      } else {
-        const gc = groundCols.find(c => c.x === col.x && c.y === col.y)!;
-        posLoads.set(posKey, {
-          P_DL: parseFloat((P_service * 0.6).toFixed(1)),
-          P_LL: parseFloat((P_service * 0.4).toFixed(1)),
-          colB: gc.b,
-          colH: gc.h,
-          x: gc.x,
-          y: gc.y,
-        });
-      }
+      posLoads.set(posKey, {
+        P_DL: parseFloat((P_service * 0.6).toFixed(1)),
+        P_LL: parseFloat((P_service * 0.4).toFixed(1)),
+        colB: col.b,
+        colH: col.h,
+        x: col.x,
+        y: col.y,
+      });
     }
 
     return groundCols
