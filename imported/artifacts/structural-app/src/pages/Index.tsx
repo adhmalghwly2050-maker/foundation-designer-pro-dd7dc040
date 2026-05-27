@@ -68,6 +68,7 @@ import LevelPlanView from "@/components/LevelPlanView";
 import LoadComparisonPanel from "@/components/LoadComparisonPanel";
 import FEMComparisonPanel  from "@/components/FEMComparisonPanel";
 import GlobalFrameSolverPanel from "@/components/GlobalFrameSolverPanel";
+import { buildMergedSlabGroups } from "@/lib/slabLoadTransfer";
 import AdvancedAnalysisPanel from "@/components/AdvancedAnalysisPanel";
 import ETABSImportPanel from "@/components/ETABSImportPanel";
 import BeamLoadDiagrams from "@/components/BeamLoadDiagrams";
@@ -597,6 +598,19 @@ const Index = () => {
   const viewIsAll = viewStoryId === '__ALL__';
   const viewFilteredSlabs = useMemo(() => viewIsAll ? slabs : slabs.filter(s => s.storyId === viewStoryId), [slabs, viewStoryId, viewIsAll]);
   const viewFilteredCols = useMemo(() => viewIsAll ? columns : columns.filter(c => c.storyId === viewStoryId), [columns, viewStoryId, viewIsAll]);
+
+  // Detect adjacent slabs with no beam between them — run per story to avoid cross-story merging
+  const slabMergeGroups = useMemo(() => {
+    const storyIds = [...new Set(slabs.map(s => s.storyId).filter(Boolean))];
+    const groups: ReturnType<typeof buildMergedSlabGroups> = [];
+    for (const stId of storyIds) {
+      const stSlabs = slabs.filter(s => s.storyId === stId);
+      const stBeams = beams.filter(b => b.storyId === stId);
+      const detected = buildMergedSlabGroups(stSlabs as any[], stBeams as any[]);
+      groups.push(...detected.filter(g => g.subSlabIds.length > 1));
+    }
+    return groups;
+  }, [slabs, beams]);
 
   const detectedConnections = useMemo(() => {
     if (removedColumnIds.length === 0) return [];
@@ -2408,6 +2422,71 @@ const Index = () => {
                       </Table>
                     </CardContent>
                   </Card>
+
+                  {/* Slab Merge Panel — shows when adjacent slabs share a free edge */}
+                  {slabMergeGroups.length > 0 && (
+                    <Card className="border-yellow-400 dark:border-yellow-600">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
+                          <Merge size={15} />
+                          بلاطات متجاورة تحتاج دمجاً ({slabMergeGroups.length})
+                        </CardTitle>
+                        <p className="text-[11px] text-muted-foreground mt-1">
+                          البلاطات التالية متجاورة ولا يوجد جسر بينها — يجب دمجها لنقل الأحمال صحيحاً وتصميمها كبلاطة واحدة
+                        </p>
+                      </CardHeader>
+                      <CardContent className="overflow-x-auto pt-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-xs">البلاطات المراد دمجها</TableHead>
+                              <TableHead className="text-xs">الأبعاد بعد الدمج</TableHead>
+                              <TableHead className="text-xs">الدور</TableHead>
+                              <TableHead className="text-xs"></TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {slabMergeGroups.map((group, gi) => {
+                              const { compositeRect, subSlabIds } = group;
+                              const w = Math.abs(compositeRect.x2 - compositeRect.x1).toFixed(2);
+                              const h = Math.abs(compositeRect.y2 - compositeRect.y1).toFixed(2);
+                              const stLabel = stories.find(st => st.id === compositeRect.storyId)?.label ?? compositeRect.storyId;
+                              return (
+                                <TableRow key={gi}>
+                                  <TableCell className="font-mono text-xs font-semibold text-yellow-700 dark:text-yellow-400">
+                                    {subSlabIds.join(' + ')}
+                                  </TableCell>
+                                  <TableCell className="font-mono text-xs">{w} × {h} م</TableCell>
+                                  <TableCell className="text-xs">{stLabel}</TableCell>
+                                  <TableCell>
+                                    <Button
+                                      size="sm"
+                                      className="h-8 text-xs gap-1"
+                                      onClick={() => {
+                                        const newId = `M${subSlabIds.join('')}`;
+                                        const newSlab: Slab = {
+                                          id: newId,
+                                          x1: compositeRect.x1,
+                                          y1: compositeRect.y1,
+                                          x2: compositeRect.x2,
+                                          y2: compositeRect.y2,
+                                          storyId: compositeRect.storyId ?? '',
+                                        };
+                                        const remaining = slabs.filter(s => !subSlabIds.includes(s.id));
+                                        dispatch({ type: 'SET_SLABS', slabs: [...remaining, newSlab] });
+                                      }}
+                                    >
+                                      <Merge size={12} />دمج
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
 
                   {/* Generate Beams Button */}
                   <Card>

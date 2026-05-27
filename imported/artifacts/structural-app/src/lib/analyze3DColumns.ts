@@ -1140,9 +1140,11 @@ export function getFrameResults3D(
       }
 
       // ── Keep centre-to-centre span, but evaluate end moments at faces ─────
+      // beam.length is stored in mm; halfColLeft/Right are in metres.
+      // Convert span to metres so the station-interpolation index is correct.
       const Mmid_cc = finalEnv?.momentZmid ?? 0;
        const trimmed = sampleBeamEndMomentsAtPhysicalFaces({
-         span: beam.length,
+         span: beam.length / 1000,
          stations,
          momentLeft: Mleft,
          momentRight: Mright,
