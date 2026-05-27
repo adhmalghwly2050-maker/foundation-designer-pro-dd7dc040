@@ -5099,10 +5099,12 @@ const Index = () => {
                                 const wL = beamForDefl.liveLoad;
                                 const span = d.span;
                                 let hReq = beamForDefl.h;
+                                // استخدام نفس الحد المسموح به (allowableDeflection) الذي حُسب في التصميم الأصلي
+                                const allowableDefl = d.deflection.allowableDeflection;
                                 for (let hTry = beamForDefl.h + 25; hTry <= beamForDefl.h * 4 && hTry <= 2500; hTry += 25) {
                                   const testAs = d.flexMid.As;
                                   const testDefl = calculateDeflection(span, bw, hTry, mat.fc, wD, wL, testAs, 'both-ends', 'B', testAs * 0.3, 1.0, 60);
-                                  if (testDefl.isServiceable) { hReq = hTry; break; }
+                                  if (testDefl.deflection <= allowableDefl) { hReq = hTry; break; }
                                 }
                                 if (hReq > beamForDefl.h) {
                                   // Also check if adding more steel helps (increase As by 50%)

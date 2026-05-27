@@ -6,8 +6,9 @@
  * Uses html2canvas to convert to images for PDF export or opens print dialog.
  */
 
-import type { Slab, Column, Beam, FlexureResult, ShearResult, ColumnResult, SlabDesignResult } from '@/lib/structuralEngine';
+import type { Slab, Column, Beam, FlexureResult, ShearResult, ColumnResult, SlabDesignResult, MatProps, SlabProps } from '@/lib/structuralEngine';
 import { getFloorCode, makeDrawingNumber, type TitleBlockConfig, type ExportOptions, type DevelopmentLengths } from './drawingStandards';
+import { analyzeAllContinuousSlabs, type ContinuousSlabResult, type SpanResult } from '@/lib/continuousSlabAnalysis';
 
 interface BeamDesignData {
   beamId: string;
@@ -261,30 +262,57 @@ function svgSlabsOnPlan(
   slabs: Slab[], slabDesigns: SlabDesignData[],
   tx: (x: number) => number, ty: (y: number) => number, mmPerM: number,
   groupLabels?: Map<string, string>,
+  stripResults?: ContinuousSlabResult[],
+  phiSlab?: number,
 ): string {
   let svg = '';
   for (const s of slabs) {
-    const sd = slabDesigns.find(d => d.id === s.id);
-    if (!sd) continue;
     const x = tx(s.x1);
     const y = ty(s.y2);
     const w = (s.x2 - s.x1) * mmPerM;
     const h = (s.y2 - s.y1) * mmPerM;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#000096" stroke-width="0.7" />`;
-    
     const cx = tx((s.x1 + s.x2) / 2);
     const cy = ty((s.y1 + s.y2) / 2);
-    const groupLabel = groupLabels?.get(s.id);
-    // Show group label prominently, then element ID below
-    if (groupLabel) {
-      svg += `<text x="${cx}" y="${cy - 20}" text-anchor="middle" font-size="8" font-weight="bold" fill="#004000" font-family="Arial">${groupLabel}</text>`;
-      svg += `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">(${s.id})</text>`;
+
+    if (stripResults && stripResults.length > 0) {
+      // ── عرض نتائج الشرائح المستمرة ──
+      const dia = phiSlab || 12;
+      const xSpans = stripResults.filter(r => r.direction === 'X').flatMap(r => r.spans.filter(sp => sp.slabId === s.id));
+      const ySpans = stripResults.filter(r => r.direction === 'Y').flatMap(r => r.spans.filter(sp => sp.slabId === s.id));
+      const maxAsX = xSpans.length > 0 ? Math.max(...xSpans.map(sp => sp.As_pos)) : null;
+      const maxAsY = ySpans.length > 0 ? Math.max(...ySpans.map(sp => sp.As_pos)) : null;
+
+      svg += `<text x="${cx}" y="${cy - 18}" text-anchor="middle" font-size="7" font-weight="bold" fill="#004000" font-family="Arial">${s.id}</text>`;
+      if (maxAsX !== null) {
+        const fmt = fmtAs(maxAsX, dia);
+        svg += `<text x="${cx}" y="${cy - 7}" text-anchor="middle" font-size="5.5" fill="#1a3a5c" font-family="Arial">X+: ${maxAsX.toFixed(0)} (${fmt})</text>`;
+      }
+      if (maxAsY !== null) {
+        const fmt = fmtAs(maxAsY, dia);
+        svg += `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="5.5" fill="#5c1a00" font-family="Arial">Y+: ${maxAsY.toFixed(0)} (${fmt})</text>`;
+      }
+      if (maxAsX === null && maxAsY === null) {
+        // بلاطة منفردة — لا تنتمي لأي شريحة مستمرة
+        const sd = slabDesigns.find(d => d.id === s.id);
+        svg += `<text x="${cx}" y="${cy}" text-anchor="middle" font-size="5.5" fill="#888" font-family="Arial">منفردة</text>`;
+        if (sd) svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="5" fill="#888" font-family="Arial">h=${sd.design.hUsed}</text>`;
+      }
     } else {
-      svg += `<text x="${cx}" y="${cy - 14}" text-anchor="middle" font-size="7" font-weight="bold" fill="#000078" font-family="Arial">${s.id}</text>`;
+      // ── عرض التصميم المعزول (fallback) ──
+      const sd = slabDesigns.find(d => d.id === s.id);
+      if (!sd) continue;
+      const groupLabel = groupLabels?.get(s.id);
+      if (groupLabel) {
+        svg += `<text x="${cx}" y="${cy - 20}" text-anchor="middle" font-size="8" font-weight="bold" fill="#004000" font-family="Arial">${groupLabel}</text>`;
+        svg += `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">(${s.id})</text>`;
+      } else {
+        svg += `<text x="${cx}" y="${cy - 14}" text-anchor="middle" font-size="7" font-weight="bold" fill="#000078" font-family="Arial">${s.id}</text>`;
+      }
+      svg += `<text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">h=${sd.design.hUsed}</text>`;
+      svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}</text>`;
+      svg += `<text x="${cx}" y="${cy + 20}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}</text>`;
     }
-    svg += `<text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">h=${sd.design.hUsed}</text>`;
-    svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}</text>`;
-    svg += `<text x="${cx}" y="${cy + 20}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}</text>`;
   }
   return svg;
 }
@@ -384,44 +412,67 @@ function fmtRebar(bars: number, dia: number): string { return `${bars}Φ${dia}`;
 
 function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): string {
   const groupLabels = buildBeamGroupLabels(beamDesigns);
-  let rows = '';
+
+  // ── تجميع حسب رمز المجموعة (جسور بنفس التسليح = مجموعة واحدة) ──
+  const groups = new Map<string, { designs: BeamDesignData[]; memberIds: string[] }>();
   for (const d of beamDesigns) {
-    // Try to find beam directly, then via mergedCarrierIds for multi-segment carrier beams
-    let beam = beams.find(b => b.id === d.beamId);
-    let spanM: number;
+    const label = groupLabels.get(d.beamId) ?? d.beamId;
+    if (!groups.has(label)) groups.set(label, { designs: [], memberIds: [] });
+    groups.get(label)!.designs.push(d);
+    const mergedIds = (d as any).mergedCarrierIds as string[] | undefined;
+    if (mergedIds && mergedIds.length > 0) {
+      groups.get(label)!.memberIds.push(...mergedIds);
+    } else {
+      groups.get(label)!.memberIds.push(d.beamId);
+    }
+  }
+
+  let rows = '';
+  for (const [groupLabel, { designs, memberIds }] of groups) {
+    const d = designs[0]; // التسليح متطابق لجميع أعضاء المجموعة
     let b_dim: number | undefined;
     let h_dim: number | undefined;
+    const spans: number[] = [];
 
-    if (!beam && d.mergedCarrierIds && d.mergedCarrierIds.length > 0) {
-      // Multi-segment carrier beam — reconstruct from its segments
-      const parts = d.mergedCarrierIds.map(id => beams.find(b => b.id === id)).filter((b): b is Beam => !!b);
-      if (parts.length > 0) {
-        spanM = d.span ?? parts.reduce((s, b) => s + b.length, 0);
-        const largest = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
-        b_dim = largest.b;
-        h_dim = largest.h;
-      } else {
-        spanM = d.span ?? 0;
+    for (const design of designs) {
+      let beam = beams.find(b => b.id === design.beamId);
+      if (!beam && (design as any).mergedCarrierIds) {
+        const parts = ((design as any).mergedCarrierIds as string[])
+          .map(id => beams.find(b => b.id === id)).filter(Boolean) as Beam[];
+        if (parts.length > 0) {
+          const largest = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
+          if (b_dim === undefined) { b_dim = largest.b; h_dim = largest.h; }
+        }
+      } else if (beam) {
+        if (b_dim === undefined) { b_dim = beam.b; h_dim = beam.h; }
       }
-    } else {
-      spanM = d.span ?? beam?.length ?? 0;
-      b_dim = beam?.b;
-      h_dim = beam?.h;
+      if (design.span !== undefined && design.span > 0) spans.push(design.span);
     }
 
+    const minSpan = spans.length > 0 ? Math.min(...spans) : 0;
+    const maxSpan = spans.length > 0 ? Math.max(...spans) : 0;
+    const spanText = spans.length === 0 ? '—'
+      : minSpan === maxSpan ? minSpan.toFixed(2)
+      : `${minSpan.toFixed(2)}~${maxSpan.toFixed(2)}`;
+
     const totalBot = d.flexMid.bars;
-    const isShort = spanM <= 2.0;
+    const isShort = maxSpan <= 2.0;
     const hasBent = !isShort && totalBot >= 4;
     const bentCount = hasBent ? Math.min(2, Math.floor(totalBot / 2)) : 0;
     const straightBot = totalBot - bentCount;
-    const groupLabel = groupLabels.get(d.beamId) ?? '';
+
+    const uniqueIds = [...new Set(memberIds)].sort((a, b) => {
+      const na = parseFloat(a.replace(/[^0-9.]/g, ''));
+      const nb = parseFloat(b.replace(/[^0-9.]/g, ''));
+      return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
+    });
 
     rows += `<tr>
-      <td style="background:#f0f8ff; font-weight:bold; color:#1a3a5c;">${groupLabel}</td>
-      <td>${d.beamId}</td>
+      <td style="background:#f0f8ff; font-weight:bold; color:#1a3a5c; text-align:center; padding:3px;">${groupLabel}</td>
+      <td style="font-size:6.5px; color:#444; word-break:break-all;">${uniqueIds.join(', ')}</td>
       <td>${b_dim ?? ''}</td>
       <td>${h_dim ?? ''}</td>
-      <td>${spanM > 0 ? spanM.toFixed(2) : '—'}</td>
+      <td>${spanText}</td>
       <td>${fmtRebar(straightBot, d.flexMid.dia)}</td>
       <td>${bentCount > 0 ? fmtRebar(bentCount, d.flexMid.dia) : '—'}</td>
       <td>${d.flexLeft.bars > 0 ? fmtRebar(d.flexLeft.bars, d.flexLeft.dia) : '—'}</td>
@@ -432,11 +483,11 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
 
   return `
   <div style="font-weight:bold; font-size:11px; margin-bottom:4px; font-family:Arial;">BEAM SCHEDULE / جدول الجسور</div>
-  <table style="width:100%; border-collapse:collapse; font-size:8.5px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
+  <table style="width:100%; border-collapse:collapse; font-size:8px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     <thead>
       <tr>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">رمز</th>
-        <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">الجسر</th>
+        <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">الأعضاء</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">B</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">H</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">L (m)</th>
@@ -445,26 +496,41 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">الكانات</th>
       </tr>
       <tr>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7.5px;">مستقيم</th>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7.5px;">مكسح*</th>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7.5px;">يسار</th>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7.5px;">يمين</th>
+        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">مستقيم</th>
+        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">مكسح*</th>
+        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">يسار</th>
+        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">يمين</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div style="font-size:7.5px; color:#555; margin-top:3px;">* التكسيح للجسور L > 2.0 م فقط — الجسور القصيرة: حديد سفلي مستمر كامل الطول</div>
-  <div style="font-size:7.5px; color:#1a3a5c; margin-top:2px;">رمز: الجسور ذات نفس التسليح تحمل رمزاً واحداً (ج-1، ج-2، …)</div>`;
+  <div style="font-size:7px; color:#555; margin-top:3px;">* التكسيح للجسور L > 2.0 م فقط</div>
+  <div style="font-size:7px; color:#1a3a5c; margin-top:2px;">رمز: مجموعة جسور ذات تسليح متطابق — الأعضاء: أرقام الجسور في المجموعة</div>`;
 }
 
 function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
   const groupLabels = buildColGroupLabels(colDesigns);
-  let rows = '';
+
+  // ── تجميع حسب رمز المجموعة ──
+  const groups = new Map<string, ColDesignData[]>();
   for (const c of colDesigns) {
-    const groupLabel = groupLabels.get(c.id) ?? '';
+    const label = groupLabels.get(c.id) ?? c.id;
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label)!.push(c);
+  }
+
+  let rows = '';
+  for (const [groupLabel, cols] of groups) {
+    const c = cols[0]; // ممثل المجموعة
+    const memberIds = cols.map(col => col.id).sort((a, b) => {
+      const na = parseFloat(a.replace(/[^0-9.]/g, ''));
+      const nb = parseFloat(b.replace(/[^0-9.]/g, ''));
+      return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
+    });
+
     rows += `<tr>
-      <td style="background:#fff8f0; font-weight:bold; color:#5c1a00;">${groupLabel}</td>
-      <td>${c.id}</td>
+      <td style="background:#fff8f0; font-weight:bold; color:#5c1a00; text-align:center; padding:3px;">${groupLabel}</td>
+      <td style="font-size:6.5px; color:#444; word-break:break-all;">${memberIds.join(', ')}</td>
       <td>${c.b}</td>
       <td>${c.h}</td>
       <td>${fmtRebar(c.design.bars, c.design.dia)}</td>
@@ -478,7 +544,7 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
     <thead>
       <tr>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">رمز</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">العمود</th>
+        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">الأعمدة</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">B mm</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">H mm</th>
         <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">التسليح</th>
@@ -487,7 +553,118 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div style="font-size:7.5px; color:#5c1a00; margin-top:2px;">رمز: الأعمدة ذات نفس التسليح تحمل رمزاً واحداً (ع-1، ع-2، …)</div>`;
+  <div style="font-size:7px; color:#5c1a00; margin-top:2px;">رمز: مجموعة أعمدة ذات تسليح متطابق — الأعمدة: أرقام الأعمدة في المجموعة</div>`;
+}
+
+/** تحويل مساحة As (mm²/m) إلى تنسيق Φdia@spacing */
+function fmtAs(As: number, dia: number): string {
+  const abar = Math.PI / 4 * dia * dia;
+  const spacingRaw = abar / Math.max(As, 1) * 1000;
+  const spacing = Math.max(100, Math.min(300, Math.round(spacingRaw / 25) * 25));
+  return `Φ${dia}@${spacing}`;
+}
+
+/** حساب التسليح السالب الصافي — يُخصم تسليح العزم الموجب من البحرتين المجاورتين */
+function computeNetNegAs(
+  spans: SpanResult[],
+  AsMin: number,
+): Array<{ supportIdx: number; As_neg_req: number; deduction: number; As_neg_net: number }> {
+  const supports: Array<{ supportIdx: number; As_neg_req: number; deduction: number; As_neg_net: number }> = [];
+  for (let i = 0; i < spans.length - 1; i++) {
+    const left = spans[i];
+    const right = spans[i + 1];
+    const As_neg_req = Math.max(left.As_neg_right, right.As_neg_left);
+    // الحديد الموجب من البحرة اليسرى يمتد L/5 نحو الركيزة (= As_pos_left)
+    // والحديد الموجب من البحرة اليمنى يمتد L/5 نحو الركيزة (= As_pos_right)
+    const deduction = left.As_pos + right.As_pos;
+    const As_neg_net = Math.max(As_neg_req - deduction, AsMin);
+    supports.push({ supportIdx: i + 1, As_neg_req, deduction, As_neg_net });
+  }
+  return supports;
+}
+
+/** جدول تسليح البلاطات بطريقة الشرائح ACI 318-19 §6.5 */
+function htmlSlabStripTable(results: ContinuousSlabResult[], slabProps: SlabProps, mat: MatProps): string {
+  if (results.length === 0) {
+    return '<p style="font-size:9px; color:#666; font-family:Arial;">لا توجد شرائح مستمرة (يلزم بلاطتان متجاورتان أو أكثر)</p>';
+  }
+
+  const shrinkageRatio = mat.fy >= 420 ? 0.0018 : 0.0020;
+  const AsMin = shrinkageRatio * 1000 * slabProps.thickness;
+  const dia = slabProps.phiSlab || 12;
+  const xResults = results.filter(r => r.direction === 'X');
+  const yResults = results.filter(r => r.direction === 'Y');
+
+  let html = `
+  <div style="font-weight:bold; font-size:11px; margin-bottom:4px; font-family:Arial; border-bottom:2px solid #004000; padding-bottom:3px;">
+    SLAB STRIP SCHEDULE / جدول تسليح شرائح البلاطات (ACI 318-19 §6.5)
+  </div>
+  <div style="font-size:7px; color:#555; margin-bottom:6px; font-family:Arial; direction:rtl;">
+    Wu = 1.2DL + 1.6LL — h=${slabProps.thickness}mm — تغطية=${slabProps.cover}mm — Φ${dia}mm — AsMin=${AsMin.toFixed(0)} mm²/m
+  </div>`;
+
+  for (const [dir, strips] of [['X', xResults], ['Y', yResults]] as [string, ContinuousSlabResult[]][]) {
+    if (strips.length === 0) continue;
+    const dirLabel = dir === 'X' ? 'X (شرائح أفقية — حديد يسير في اتجاه X)' : 'Y (شرائح رأسية — حديد يسير في اتجاه Y)';
+    html += `<div style="font-weight:bold; font-size:9px; color:#004000; background:#f0fff0; padding:2px 4px; margin-top:6px; margin-bottom:3px; font-family:Arial;">
+      اتجاه ${dirLabel}
+    </div>`;
+
+    for (const strip of strips) {
+      const netNegs = computeNetNegAs(strip.spans, AsMin);
+
+      // بناء صفوف الجدول: كل بحرة + ركيزة بعدها
+      let headerCells = '';
+      let valueCells = '';
+      let negCells = '';
+      for (let i = 0; i < strip.spans.length; i++) {
+        const sp = strip.spans[i];
+        headerCells += `<th style="border:1px solid #aaa; background:#e8f5e9; padding:2px; font-size:7px; min-width:55px;">بحرة: ${sp.slabId}<br>L=${sp.spanLength.toFixed(2)}م</th>`;
+        valueCells += `<td style="border:1px solid #ccc; padding:2px; font-size:7px; text-align:center;">
+          <div style="color:#004000; font-weight:bold;">As+=${sp.As_pos.toFixed(0)}</div>
+          <div style="color:#006000;">${fmtAs(sp.As_pos, dia)}</div>
+          <div style="color:#888; font-size:6px;">L/5=${(sp.spanLength/5).toFixed(2)}م↔</div>
+        </td>`;
+        // ركيزة بعد هذه البحرة
+        if (i < netNegs.length) {
+          const sup = netNegs[i];
+          headerCells += `<th style="border:1px solid #aaa; background:#ffeee8; padding:2px; font-size:7px; min-width:45px;">ركيزة ${sup.supportIdx}</th>`;
+          valueCells += `<td style="border:1px solid #ccc; padding:2px; font-size:7px; text-align:center; background:#fff5f0;">
+            <div style="color:#800000;">As−=${sup.As_neg_req.toFixed(0)}</div>
+            <div style="color:#999; font-size:6px;">−${sup.deduction.toFixed(0)}</div>
+            <div style="color:#c00000; font-weight:bold;">صافي=${sup.As_neg_net.toFixed(0)}</div>
+            <div style="color:#a00000;">${fmtAs(sup.As_neg_net, dia)}</div>
+          </td>`;
+        }
+      }
+
+      html += `<table style="width:100%; border-collapse:collapse; margin-bottom:4px; font-family:'Segoe UI',Arial,sans-serif;">
+        <thead>
+          <tr>
+            <th style="border:1px solid #666; background:#004000; color:#fff; padding:2px 4px; font-size:7.5px; text-align:right;" colspan="1">
+              ${strip.stripId} — Wu=${strip.Wu.toFixed(1)} kN/m²
+            </th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="border:1px solid #ccc; padding:2px; font-size:7px; background:#f9f9f9; font-weight:bold; color:#444;">As (mm²/m)<br>Φmm@mm</td>
+            ${valueCells}
+          </tr>
+        </tbody>
+      </table>`;
+    }
+  }
+
+  html += `<div style="font-size:6.5px; color:#555; margin-top:6px; font-family:Arial; direction:rtl; border-top:1px solid #ccc; padding-top:3px;">
+    • As+: حديد العزم الموجب (منتصف البحرة) — يمتد مسافة L/5 من البحرة داخل البحرة المجاورة عند كل طرف<br>
+    • As− صافي: الحديد المطلوب للعزم السالب بعد خصم ما يمتد من As+ من البحرتين اليمنى واليسرى<br>
+    • الحد الأدنى AsMin = ${AsMin.toFixed(0)} mm²/m (ρ=${shrinkageRatio}) وفق ACI 318-19 §7.6.1<br>
+    • الوزن الذاتي مُدرج: γ×h = ${mat.gamma}×${(slabProps.thickness/1000).toFixed(3)} = ${(mat.gamma*slabProps.thickness/1000).toFixed(2)} kN/m²
+  </div>`;
+
+  return html;
 }
 
 function htmlSlabScheduleTable(slabDesigns: SlabDesignData[]): string {
@@ -1207,6 +1384,8 @@ export function generateHTMLConstructionSheets(
   projectName: string = 'Structural Design Studio',
   options?: ExportOptions,
   paperSize: PaperSize = 'auto',
+  slabProps?: SlabProps,
+  mat?: MatProps,
 ): string {
   const floorCode = options?.floorCode || 'GF';
   const storyLabel = options?.storyLabel || '';
@@ -1357,22 +1536,42 @@ export function generateHTMLConstructionSheets(
   );
 
   // ═══════════════════════════════════════════════════
-  // SHEET 3: SLAB REINFORCEMENT PLAN
+  // SHEET 3: SLAB REINFORCEMENT PLAN (Strip Method)
   // ═══════════════════════════════════════════════════
   const slDwg = makeDrawingNumber(floorCode, 'SL', 1);
+
+  // تحليل الشرائح المستمرة إذا توفرت slabProps وmat
+  let stripResults: ContinuousSlabResult[] = [];
+  if (slabProps && mat && slabs.length >= 2) {
+    try {
+      stripResults = analyzeAllContinuousSlabs(slabs, slabProps, mat);
+    } catch (_) {
+      stripResults = [];
+    }
+  }
+
   const slabPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, false)
-    + svgSlabsOnPlan(slabs, slabDesigns, tx, ty, mmPerM, slabGroupLabels)
+    + svgSlabsOnPlan(
+        slabs, slabDesigns, tx, ty, mmPerM,
+        slabGroupLabels,
+        stripResults.length > 0 ? stripResults : undefined,
+        slabProps?.phiSlab,
+      )
     + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
+
+  const slabTableHTML = (slabProps && mat && stripResults.length > 0)
+    ? htmlSlabStripTable(stripResults, slabProps, mat)
+    : htmlSlabScheduleTable(slabDesigns);
 
   sheetsHTML += generateSheetHTML(
     'slab-plan',
     slabPlanSvg,
     planZoneW, svgH,
-    htmlSlabScheduleTable(slabDesigns),
+    slabTableHTML,
     {
       ...tbBase,
-      drawingTitle: 'SLAB REINFORCEMENT PLAN / مخطط تسليح البلاطات',
+      drawingTitle: 'SLAB REINFORCEMENT PLAN / مخطط تسليح البلاطات (طريقة الشرائح)',
       drawingSubTitle: storyLabel || 'All Floors',
       drawingNumber: slDwg,
       sheetNo: '3',
@@ -1517,9 +1716,12 @@ export function openHTMLSheetsForPrint(
   projectName: string,
   options?: ExportOptions,
   paperSize: 'A1' | 'A3' | 'A4' | 'auto' = 'auto',
+  slabProps?: SlabProps,
+  mat?: MatProps,
 ): void {
   const htmlContent = generateHTMLConstructionSheets(
-    slabs, beams, columns, beamDesigns, colDesigns, slabDesigns, projectName, options, paperSize,
+    slabs, beams, columns, beamDesigns, colDesigns, slabDesigns,
+    projectName, options, paperSize, slabProps, mat,
   );
   
   import('@/lib/capacitorDownload').then(({ openHTMLForPrint }) =>
