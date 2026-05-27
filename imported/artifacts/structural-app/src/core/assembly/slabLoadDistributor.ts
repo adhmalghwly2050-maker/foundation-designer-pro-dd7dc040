@@ -12,10 +12,10 @@
  */
 
 import {
+  buildMergedSlabGroups,
   buildSlabEdgeLoads,
   computeBeamLoadProfile,
   computeLineProfileStats,
-  redistributeOrphanEdgeLoads,
   type PlanarBeamGeometry,
   type PlanarSlabGeometry,
 } from '../../lib/slabLoadTransfer';
@@ -81,9 +81,7 @@ export function distributeSlabLoads(
     });
   }
 
-  const rawEdgeLoads = buildSlabEdgeLoads(slabRects, 0, 0);
-
-  // Build flat beam geometry list for orphan-edge detection
+  // Build flat beam geometry list (needed for composite-slab detection)
   const beamGeoms: PlanarBeamGeometry[] = [];
   for (const beam of beams) {
     const nodeI = nodeMap.get(beam.nodeIds[0]);
@@ -93,9 +91,19 @@ export function distributeSlabLoads(
     beamGeoms.push({ id: String(beam.id), x1: nodeI.x, y1: nodeI.y, x2: nodeJ.x, y2: nodeJ.y, length: len });
   }
 
-  // Redistribute loads from free/shared edges (no beam) to the parallel supported edges.
-  // This is the correct treatment for L-shaped slabs decomposed into rectangular sub-slabs.
-  const slabEdgeLoads = redistributeOrphanEdgeLoads(rawEdgeLoads, beamGeoms);
+  // ── Composite slab merging ──────────────────────────────────────────────
+  // Adjacent sub-slabs sharing a free edge (no beam between them) must be
+  // treated as ONE slab for β / tributary-load calculation.  Using each
+  // sub-slab's own dimensions produces the wrong β (e.g. two 2×2 panels are
+  // each "two-way" but together form a 2×4 "one-way" slab).
+  // buildMergedSlabGroups() uses union-find to detect these groups and returns
+  // composite bounding-rectangle slabs whose dimensions drive the profiles.
+  const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
+  const compositeRects = mergedGroups.map(g => g.compositeRect);
+
+  // Edge loads are now built from composite rectangles → β is always correct,
+  // internal shared edges disappear, only the outer perimeter generates loads.
+  const slabEdgeLoads = buildSlabEdgeLoads(compositeRects, 0, 0);
 
   for (const beam of beams) {
     const nodeI = nodeMap.get(beam.nodeIds[0]);

@@ -181,122 +181,157 @@ export function computeLineProfileStats(profile: LineLoadPoint[]): { area: numbe
   };
 }
 
-/**
- * Detects slab edge loads that have no matching beam (orphan / free edges) and
- * redistributes their total force to the parallel supported edges of the same slab.
- *
- * This is the correct treatment for L-shaped (or otherwise irregular) slabs that
- * have been decomposed into rectangular sub-slabs sharing an internal edge with no
- * beam:  instead of silently dropping the load (equilibrium error), the orphan
- * edge's force is added as a uniform intensity increase to the opposite/parallel
- * beam-supported edge(s) — matching the physical behaviour where the load travels
- * the long way around to the nearest real support.
- *
- * @param edgeLoads  Output of buildSlabEdgeLoads()
- * @param beams      All beams in the model (used to detect which edges are supported)
- * @returns New array of SlabEdgeLoad with orphan loads merged into supported edges
- */
-export function redistributeOrphanEdgeLoads(
-  edgeLoads: SlabEdgeLoad[],
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPOSITE SLAB MERGING
+// Adjacent slabs that share an edge with NO beam between them must be treated
+// as a single slab for load-distribution purposes.  Failing to do so causes
+// two kinds of error:
+//   1. β (aspect ratio) is computed for each sub-slab independently, which
+//      can flip a one-way slab into a two-way slab or vice-versa.
+//   2. The load destined for the shared (unsupported) edge is silently lost.
+// The fix: union-find adjacent slabs → bounding-rectangle composite → compute
+// β and edge profiles from the composite dimensions only.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** True when a beam segment is collinear with and overlaps the axis-aligned edge (ex1,ey1)→(ex2,ey2). */
+function hasBeamOnEdge(
+  ex1: number, ey1: number, ex2: number, ey2: number,
   beams: PlanarBeamGeometry[],
-): SlabEdgeLoad[] {
-  /** true when at least one beam segment is collinear with and overlaps this edge */
-  const hasMatchingBeam = (edge: SlabEdgeLoad): boolean => {
-    for (const b of beams) {
-      const dir = inferDirection(b);
-      if (!dir || dir !== edge.direction) continue;
-      if (edge.direction === 'horizontal') {
-        if (Math.abs(b.y1 - edge.y1) > EPS) continue;
-        const [bs, be_] = sortRange(b.x1, b.x2);
-        const [es, ee] = sortRange(edge.x1, edge.x2);
-        if (bs <= ee + EPS && be_ >= es - EPS) return true;
-      } else {
-        if (Math.abs(b.x1 - edge.x1) > EPS) continue;
-        const [bs, be_] = sortRange(b.y1, b.y2);
-        const [es, ee] = sortRange(edge.y1, edge.y2);
-        if (bs <= ee + EPS && be_ >= es - EPS) return true;
-      }
+): boolean {
+  const isHoriz = Math.abs(ey2 - ey1) < EPS;
+  const isVert  = Math.abs(ex2 - ex1) < EPS;
+  if (!isHoriz && !isVert) return false;
+
+  for (const b of beams) {
+    const dir = inferDirection(b);
+    if (isHoriz && dir !== 'horizontal') continue;
+    if (isVert  && dir !== 'vertical')   continue;
+    if (isHoriz) {
+      if (Math.abs(b.y1 - ey1) > EPS) continue;
+      const [bs, be_] = sortRange(b.x1, b.x2);
+      const [es, ee]  = sortRange(ex1, ex2);
+      if (bs <= ee + EPS && be_ >= es - EPS) return true;
+    } else {
+      if (Math.abs(b.x1 - ex1) > EPS) continue;
+      const [bs, be_] = sortRange(b.y1, b.y2);
+      const [es, ee]  = sortRange(ey1, ey2);
+      if (bs <= ee + EPS && be_ >= es - EPS) return true;
     }
-    return false;
+  }
+  return false;
+}
+
+/**
+ * True when slabs a and b share at least one common edge segment that has no beam.
+ * Two slabs share a free edge when their boundaries touch AND no beam covers that contact.
+ */
+function slabsShareFreeEdge(
+  a: PlanarSlabGeometry,
+  b: PlanarSlabGeometry,
+  beams: PlanarBeamGeometry[],
+): boolean {
+  const [ax1, ax2] = sortRange(a.x1, a.x2);
+  const [ay1, ay2] = sortRange(a.y1, a.y2);
+  const [bx1, bx2] = sortRange(b.x1, b.x2);
+  const [by1, by2] = sortRange(b.y1, b.y2);
+
+  // ── vertical shared boundary ──
+  const yLo = Math.max(ay1, by1);
+  const yHi = Math.min(ay2, by2);
+  if (yHi - yLo > EPS) {
+    if (Math.abs(ax2 - bx1) < EPS && !hasBeamOnEdge(ax2, yLo, ax2, yHi, beams)) return true;
+    if (Math.abs(ax1 - bx2) < EPS && !hasBeamOnEdge(ax1, yLo, ax1, yHi, beams)) return true;
+  }
+
+  // ── horizontal shared boundary ──
+  const xLo = Math.max(ax1, bx1);
+  const xHi = Math.min(ax2, bx2);
+  if (xHi - xLo > EPS) {
+    if (Math.abs(ay2 - by1) < EPS && !hasBeamOnEdge(xLo, ay2, xHi, ay2, beams)) return true;
+    if (Math.abs(ay1 - by2) < EPS && !hasBeamOnEdge(xLo, ay1, xHi, ay1, beams)) return true;
+  }
+
+  return false;
+}
+
+export interface SlabMergeGroup {
+  /** Effective composite slab rectangle used for β-calculation and edge-load generation */
+  compositeRect: PlanarSlabGeometry;
+  /** IDs of the original sub-slabs that make up this group */
+  subSlabIds: string[];
+}
+
+/**
+ * Groups adjacent rectangular slabs that share a free edge (no beam between them)
+ * into composite slabs.  The composite bounding-rectangle drives β and the
+ * tributary-load profiles, so a 2 m × 4 m slab that was input as two 2 m × 2 m
+ * panels will still be correctly recognised as a one-way slab (β = 2), not two
+ * independent two-way slabs (β = 1).
+ *
+ * Uses union-find for O(n²) adjacency detection.
+ */
+export function buildMergedSlabGroups(
+  slabs: PlanarSlabGeometry[],
+  beams: PlanarBeamGeometry[],
+): SlabMergeGroup[] {
+  const n = slabs.length;
+  if (n === 0) return [];
+
+  // Union-Find
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
   };
+  const union = (i: number, j: number) => { parent[find(i)] = find(j); };
 
-  const edgeLen = (e: SlabEdgeLoad): number =>
-    e.direction === 'horizontal'
-      ? Math.abs(e.x2 - e.x1)
-      : Math.abs(e.y2 - e.y1);
-
-  /** group edge loads by slab */
-  const bySlabId = new Map<string, SlabEdgeLoad[]>();
-  for (const e of edgeLoads) {
-    const arr = bySlabId.get(e.slabId) ?? [];
-    arr.push(e);
-    bySlabId.set(e.slabId, arr);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (slabsShareFreeEdge(slabs[i], slabs[j], beams)) union(i, j);
+    }
   }
 
-  const result: SlabEdgeLoad[] = [];
-
-  for (const [, edges] of bySlabId) {
-    /** deep-copy so we never mutate callers' data */
-    const local: SlabEdgeLoad[] = edges.map(e => ({
-      ...e,
-      profileDL: e.profileDL.map(p => ({ ...p })),
-      profileLL: e.profileLL.map(p => ({ ...p })),
-    }));
-
-    const supported: SlabEdgeLoad[] = [];
-    const orphans: SlabEdgeLoad[] = [];
-    for (const e of local) {
-      (hasMatchingBeam(e) ? supported : orphans).push(e);
-    }
-
-    /** nothing to fix for this slab */
-    if (orphans.length === 0) {
-      result.push(...local);
-      continue;
-    }
-
-    for (const orphan of orphans) {
-      const dlStats = computeLineProfileStats(orphan.profileDL);
-      const llStats = computeLineProfileStats(orphan.profileLL);
-      const olen = edgeLen(orphan);
-      /** total force [N] that would have gone to this unsupported edge */
-      const totalDL = dlStats.area * olen;
-      const totalLL = llStats.area * olen;
-
-      /** parallel supported edges of the same slab — same direction, different position */
-      const parallels = supported.filter(e => e.direction === orphan.direction);
-      if (parallels.length === 0) {
-        /** no parallel beam at all → redistribute to perpendicular edges equally */
-        const perp = supported.filter(e => e.direction !== orphan.direction);
-        if (perp.length === 0) continue;
-        const factor = 1 / perp.length;
-        for (const target of perp) {
-          const tlen = edgeLen(target);
-          if (tlen < EPS) continue;
-          const addDL = (totalDL * factor) / tlen;
-          const addLL = (totalLL * factor) / tlen;
-          target.profileDL = target.profileDL.map(p => ({ t: p.t, wy: p.wy + addDL }));
-          target.profileLL = target.profileLL.map(p => ({ t: p.t, wy: p.wy + addLL }));
-        }
-        continue;
-      }
-
-      /** distribute equally among parallel supported edges as uniform addition */
-      const factor = 1 / parallels.length;
-      for (const target of parallels) {
-        const tlen = edgeLen(target);
-        if (tlen < EPS) continue;
-        const addDL = (totalDL * factor) / tlen;
-        const addLL = (totalLL * factor) / tlen;
-        target.profileDL = target.profileDL.map(p => ({ t: p.t, wy: p.wy + addDL }));
-        target.profileLL = target.profileLL.map(p => ({ t: p.t, wy: p.wy + addLL }));
-      }
-    }
-
-    result.push(...supported);
+  // Collect connected components
+  const groupMap = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    const arr = groupMap.get(root) ?? [];
+    arr.push(i);
+    groupMap.set(root, arr);
   }
 
-  return result;
+  const groups: SlabMergeGroup[] = [];
+  for (const indices of groupMap.values()) {
+    const gs = indices.map(i => slabs[i]);
+
+    // Bounding rectangle of composite
+    const x1 = Math.min(...gs.map(s => Math.min(s.x1, s.x2)));
+    const x2 = Math.max(...gs.map(s => Math.max(s.x1, s.x2)));
+    const y1 = Math.min(...gs.map(s => Math.min(s.y1, s.y2)));
+    const y2 = Math.max(...gs.map(s => Math.max(s.y1, s.y2)));
+
+    // Area-weighted average loads
+    let totalArea = 0, sumDL = 0, sumLL = 0;
+    for (const s of gs) {
+      const a = Math.abs(s.x2 - s.x1) * Math.abs(s.y2 - s.y1);
+      totalArea += a;
+      sumDL += (s.deadLoad ?? 0) * a;
+      sumLL += (s.liveLoad ?? 0) * a;
+    }
+
+    groups.push({
+      compositeRect: {
+        id: gs.map(s => s.id).join('+'),
+        x1, y1, x2, y2,
+        deadLoad: totalArea > 0 ? sumDL / totalArea : 0,
+        liveLoad: totalArea > 0 ? sumLL / totalArea : 0,
+        storyId: gs[0].storyId,
+      },
+      subSlabIds: gs.map(s => s.id),
+    });
+  }
+
+  return groups;
 }
 
 export function computeBeamLoadProfile(
