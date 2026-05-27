@@ -4428,7 +4428,7 @@ const Index = () => {
                     <CardContent className="overflow-x-auto">
                       <Table>
                         <TableHeader><TableRow>
-                          {['الجسر','البحر','M علوي يسار','M سفلي أقصى','M علوي يمين','Vu','📊'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
+                          {['الجسر','البحر (م)','M− يسار\n(عند حافة العمود)','M+ وسط','M− يمين\n(عند حافة العمود)','Vu (kN)','📊'].map(h => <TableHead key={h} className="text-xs whitespace-pre-line leading-tight">{h}</TableHead>)}
                         </TableRow></TableHeader>
                         <TableBody>
                           {mergedBeams.map(b => {

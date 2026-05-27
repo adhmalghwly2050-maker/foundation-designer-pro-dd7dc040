@@ -362,6 +362,30 @@ function svgScaleBar(x: number, y: number, scale: number): string {
   return svg;
 }
 
+/** شريط مقياس الرسم كـ HTML (يوضع في منطقة الجدول أسفل اللوحة) */
+function htmlScaleBarBlock(scale: number): string {
+  const barUnitPx = Math.min(60, Math.max(20, 1000 / scale * 2.5));
+  const totalW = 4 * barUnitPx + 4;
+  let barSvg = '';
+  for (let i = 0; i < 4; i++) {
+    const rx = i * barUnitPx;
+    const fill = i % 2 === 0 ? '#000' : '#fff';
+    barSvg += `<rect x="${rx}" y="0" width="${barUnitPx}" height="7" fill="${fill}" stroke="black" stroke-width="0.5"/>`;
+  }
+  barSvg += `<text x="0" y="17" font-size="6" font-family="Arial">0</text>`;
+  for (let i = 1; i <= 4; i++) {
+    barSvg += `<text x="${i * barUnitPx - 4}" y="17" font-size="6" font-family="Arial">${i}m</text>`;
+  }
+  return `
+  <div style="margin-top:8px; padding:5px 6px; border-top:1px dashed #bbb; display:flex; align-items:center; gap:8px; font-family:Arial; direction:ltr;">
+    <div>
+      <div style="font-size:8px; font-weight:bold; margin-bottom:3px; color:#333;">مقياس الرسم / Scale</div>
+      <svg width="${totalW}" height="20" xmlns="http://www.w3.org/2000/svg">${barSvg}</svg>
+    </div>
+    <div style="font-size:9px; font-weight:bold; color:#333; letter-spacing:0.5px;">1 : ${scale}</div>
+  </div>`;
+}
+
 function svgLegendBox(x: number, y: number): string {
   const w = 160;
   const h = 110;
@@ -708,20 +732,24 @@ function htmlSlabStripTable(results: ContinuousSlabResult[], slabProps: SlabProp
   return html;
 }
 
-function htmlSlabScheduleTable(slabDesigns: SlabDesignData[]): string {
-  const groupLabels = buildSlabGroupLabels(slabDesigns);
+function htmlSlabScheduleTable(slabDesigns: SlabDesignData[], slabs: Slab[]): string {
+  const slabById = new Map(slabs.map(s => [s.id, s]));
   let rows = '';
   for (const s of slabDesigns) {
-    const groupLabel = groupLabels.get(s.id) ?? '';
+    const geom = slabById.get(s.id);
+    const xIsShort = geom
+      ? Math.abs(geom.x2 - geom.x1) <= Math.abs(geom.y2 - geom.y1)
+      : true;
+    const xDir = xIsShort ? s.design.shortDir : s.design.longDir;
+    const yDir = xIsShort ? s.design.longDir : s.design.shortDir;
+    const beta = s.design.ly > 0 ? s.design.ly / Math.max(s.design.lx, 0.01) : 0;
+
     rows += `<tr>
-      <td style="background:#f5fff5; font-weight:bold; color:#004000;">${groupLabel}</td>
-      <td>${s.id}</td>
-      <td>${s.design.lx.toFixed(1)}</td>
-      <td>${s.design.ly.toFixed(1)}</td>
-      <td>${s.design.hUsed}</td>
-      <td>${s.design.isOneWay ? 'باتجاه واحد' : 'باتجاهين'}</td>
-      <td>${s.design.shortDir.bars}Φ${s.design.shortDir.dia}@${s.design.shortDir.spacing}</td>
-      <td>${s.design.longDir.bars}Φ${s.design.longDir.dia}@${s.design.longDir.spacing}</td>
+      <td style="background:#f5fff5; font-weight:bold; color:#004000; text-align:center;">${s.id}</td>
+      <td style="text-align:center;">${s.design.hUsed} mm</td>
+      <td style="text-align:center; color:#1a3a5c;">${xDir.bars}Φ${xDir.dia}@${xDir.spacing}</td>
+      <td style="text-align:center; color:#7b1a00;">${yDir.bars}Φ${yDir.dia}@${yDir.spacing}</td>
+      <td style="text-align:center; font-size:8px; color:#555;">${beta.toFixed(1)} — ${s.design.isOneWay ? 'أحادي' : 'ثنائي'}</td>
     </tr>`;
   }
 
@@ -730,19 +758,18 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[]): string {
   <table style="width:100%; border-collapse:collapse; font-size:9px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
     <thead>
       <tr>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">رمز</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">البلاطة</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">Lx</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">Ly</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">h</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">النوع</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">الاتجاه القصير</th>
-        <th style="border:1px solid #000; background:#000; color:#fff; padding:3px;">الاتجاه الطويل</th>
+        <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">اسم البلاطة</th>
+        <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">السماكة</th>
+        <th style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px 4px;">حديد التسليح<br>اتجاه X</th>
+        <th style="border:1px solid #000; background:#7b1a00; color:#fff; padding:3px 4px;">حديد التسليح<br>اتجاه Y</th>
+        <th style="border:1px solid #000; background:#333; color:#fff; padding:3px 4px;">β / النوع</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div style="font-size:7.5px; color:#004000; margin-top:2px;">رمز: البلاطات ذات نفس التسليح تحمل رمزاً واحداً (ب-1، ب-2، …)</div>`;
+  <div style="font-size:7.5px; color:#1a3a5c; margin-top:3px;">
+    X: الاتجاه الأفقي (→) &nbsp;|&nbsp; Y: الاتجاه الرأسي (↑) &nbsp;|&nbsp; القيم: عدد الأسياخ Φ القطر @ الفاصل (mm)
+  </div>`;
 }
 
 // ─── Column cross-section SVG ───
@@ -1502,14 +1529,13 @@ export function generateHTMLConstructionSheets(
   const bsDwg = makeDrawingNumber(floorCode, 'BS', 1);
   const beamPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, false)
-    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM, beamGroupLabels)
-    + svgScaleBar(15, svgH - 45, scaleVal);
+    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM, beamGroupLabels);
 
   sheetsHTML += generateSheetHTML(
     'beam-layout',
     beamPlanSvg,
     planZoneW, svgH,
-    htmlBeamScheduleTable(beams, beamDesigns),
+    htmlScaleBarBlock(scaleVal) + htmlBeamScheduleTable(beams, beamDesigns),
     {
       ...tbBase,
       drawingTitle: 'BEAM LAYOUT PLAN / مخطط الجسور',
@@ -1525,8 +1551,7 @@ export function generateHTMLConstructionSheets(
   // ═══════════════════════════════════════════════════
   const csDwg = makeDrawingNumber(floorCode, 'CS', 1);
   const colPlanSvg = gridSvg
-    + svgColumns(columns, tx, ty, mmPerM, true, true, colGroupLabels)
-    + svgScaleBar(15, svgH - 45, scaleVal);
+    + svgColumns(columns, tx, ty, mmPerM, true, true, colGroupLabels);
 
   // Column cross-sections SVG
   const colPatternMap = new Map<string, ColDesignData[]>();
@@ -1553,7 +1578,8 @@ export function generateHTMLConstructionSheets(
   }
 
   const colSecSvgH = Math.ceil(patternEntries.length / colsPerRow) * (secH + 15);
-  const colTableAndSections = htmlColumnScheduleTable(colDesigns)
+  const colTableAndSections = htmlScaleBarBlock(scaleVal)
+    + htmlColumnScheduleTable(colDesigns)
     + `<div style="margin-top:12px;">
         <div style="font-weight:bold; font-size:10px; margin-bottom:4px; font-family:Arial;">COLUMN SECTIONS / مقاطع الأعمدة</div>
         <svg viewBox="0 0 ${colsPerRow * secW} ${colSecSvgH}" width="100%" height="${Math.min(colSecSvgH, 350)}px" xmlns="http://www.w3.org/2000/svg">
@@ -1599,12 +1625,13 @@ export function generateHTMLConstructionSheets(
         slabProps?.phiSlab,
       )
     + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM)
-    + svgColumns(columns, tx, ty, mmPerM, true, false)
-    + svgScaleBar(15, svgH - 45, scaleVal);
+    + svgColumns(columns, tx, ty, mmPerM, true, false);
 
-  const slabTableHTML = (slabProps && mat && stripResults.length > 0)
-    ? htmlSlabStripTable(stripResults, slabProps, mat)
-    : htmlSlabScheduleTable(slabDesigns);
+  const slabTableHTML = htmlScaleBarBlock(scaleVal) + (
+    (slabProps && mat && stripResults.length > 0)
+      ? htmlSlabStripTable(stripResults, slabProps, mat)
+      : htmlSlabScheduleTable(slabDesigns, slabs)
+  );
 
   sheetsHTML += generateSheetHTML(
     'slab-plan',

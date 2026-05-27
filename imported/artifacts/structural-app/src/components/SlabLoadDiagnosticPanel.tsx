@@ -2,16 +2,12 @@
  * SlabLoadDiagnosticPanel
  * ─────────────────────────────────────────────────────────────────────────────
  * Per-beam diagnostic: shows the dead-load and live-load transferred from the
- * adjacent slab(s) to each beam, computed independently with each engine's own
- * code path, displayed side-by-side:
+ * adjacent slab(s) to each beam.
  *
- *   • 2D            — calculateBeamLoads (structuralEngine.ts)
- *   • 3D Legacy     — buildSlabEdgeLoads + computeBeamLoadProfile (analyze3DColumns)
- *   • Global Frame  — beam.deadLoad / beam.liveLoad consumed by globalFrameBridge
- *   • Unified Core  — same as Global Frame (UC reuses GF's load assembly)
- *
- * READ-ONLY: this panel does NOT mutate any engine state or beam data. It only
- * recomputes the slab→beam transferred loads using each engine's published API.
+ * NEW features:
+ *   • فلتر بالدور — اعرض بلاطات وجسور دور واحد فقط
+ *   • مؤشر الانتقال — البلاطة خضراء إذا تنتقل أحمالها، حمراء إذا لم تجد جسراً
+ *   • نقر على البلاطة → لوحة تفصيل مسار الحمل
  */
 
 import React, { useMemo, useState } from 'react';
@@ -22,7 +18,13 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Activity, Search, Download, AlertTriangle, CheckCircle2, Scale } from 'lucide-react';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import {
+  Activity, Search, Download, AlertTriangle, CheckCircle2, Scale,
+  Layers, ArrowRight, X as CloseIcon,
+} from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 import {
@@ -52,12 +54,11 @@ interface Props {
 interface RowData {
   beamId: string;
   length: number;
-  // engine columns
+  storyId?: string;
   dl_2d: number;  ll_2d: number;
   dl_3d: number;  ll_3d: number;
   dl_gf: number;  ll_gf: number;
   dl_uc: number;  ll_uc: number;
-  // diff against 2D (max abs % of DL+LL)
   maxDiffPct: number;
 }
 
@@ -90,7 +91,7 @@ function diffBadge(pct: number) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// مخطط مناطق التأثير — خطوط 45° لانتقال أحمال البلاطات إلى الجسور
+// لوحة مناطق الرافدة + حالة انتقال الأحمال
 // ═══════════════════════════════════════════════════════════════════════════
 
 const GROUP_PALETTE = [
@@ -102,13 +103,54 @@ const GROUP_PALETTE = [
   { fill: '#0891b2', light: 'rgba(8,145,178,0.13)',  mid: 'rgba(8,145,178,0.32)' },
 ];
 
+/** هل يوجد جسر مجاور لهذه المجموعة المركّبة؟ */
+function groupAdjacentBeams(
+  compositeRect: { x1: number; y1: number; x2: number; y2: number },
+  beams: Beam[],
+  tol = 0.12,
+): Beam[] {
+  const cx1 = Math.min(compositeRect.x1, compositeRect.x2);
+  const cx2 = Math.max(compositeRect.x1, compositeRect.x2);
+  const cy1 = Math.min(compositeRect.y1, compositeRect.y2);
+  const cy2 = Math.max(compositeRect.y1, compositeRect.y2);
+
+  return beams.filter(b => {
+    const isH = Math.abs(b.y2 - b.y1) < 1e-6;
+    if (isH) {
+      const onEdge = Math.abs(b.y1 - cy1) < tol || Math.abs(b.y1 - cy2) < tol;
+      const xMin = Math.min(b.x1, b.x2), xMax = Math.max(b.x1, b.x2);
+      return onEdge && xMax > cx1 + tol && xMin < cx2 - tol;
+    } else {
+      const onEdge = Math.abs(b.x1 - cx1) < tol || Math.abs(b.x1 - cx2) < tol;
+      const yMin = Math.min(b.y1, b.y2), yMax = Math.max(b.y1, b.y2);
+      return onEdge && yMax > cy1 + tol && yMin < cy2 - tol;
+    }
+  });
+}
+
+function beamPositionLabel(
+  b: Beam,
+  cx1: number, cx2: number, cy1: number, cy2: number,
+  tol = 0.12,
+): string {
+  const isH = Math.abs(b.y2 - b.y1) < 1e-6;
+  if (isH) {
+    return Math.abs(b.y1 - cy2) < tol ? 'أعلى' : 'أسفل';
+  } else {
+    return Math.abs(b.x1 - cx2) < tol ? 'يمين' : 'يسار';
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 const SlabTributaryDiagram: React.FC<{
   slabs: Slab[];
   beams: Beam[];
   columns: Column[];
   slabProps: SlabProps;
   mat: MatProps;
-}> = ({ slabs, beams, columns, slabProps, mat }) => {
+  selectedSlabId?: string;
+  onSlabClick?: (id: string) => void;
+}> = ({ slabs, beams, columns, slabProps, mat, selectedSlabId, onSlabClick }) => {
 
   const data = useMemo(() => {
     if (!slabs.length && !beams.length) return null;
@@ -129,22 +171,24 @@ const SlabTributaryDiagram: React.FC<{
     const compositeRects = mergedGroups.map(g => g.compositeRect);
     const edgeLoads = buildSlabEdgeLoads(compositeRects, wDL, wLL);
 
-    // Build a map: slab id → group index (for coloring)
     const slabGroupIdx = new Map<string, number>();
     mergedGroups.forEach((g, gi) => g.subSlabIds.forEach(id => slabGroupIdx.set(id, gi)));
 
-    // Beam load profiles
     const beamProfiles = beams.map(b => {
       const prof = computeBeamLoadProfile(b, edgeLoads, DEFAULT_PROFILE_T);
       return { beam: b, prof };
     });
+
+    // هل يوجد جسر مجاور لكل مجموعة؟
+    const groupHasBeam = mergedGroups.map(g =>
+      groupAdjacentBeams(g.compositeRect, beams).length > 0,
+    );
 
     const globalMaxW = Math.max(
       ...beamProfiles.map(bp => Math.max(...bp.prof.profileDL.map(p => p.wy), 0)),
       0.001,
     );
 
-    // SVG coordinate system
     const allX = [...slabs.flatMap(s => [s.x1, s.x2]), ...beams.flatMap(b => [b.x1, b.x2]),
                   ...columns.filter(c => !c.isRemoved).map(c => c.x)];
     const allY = [...slabs.flatMap(s => [s.y1, s.y2]), ...beams.flatMap(b => [b.y1, b.y2]),
@@ -153,8 +197,8 @@ const SlabTributaryDiagram: React.FC<{
 
     const minX = Math.min(...allX), maxX = Math.max(...allX);
     const minY = Math.min(...allY), maxY = Math.max(...allY);
-    const SVG_W = 740, SVG_H = 540;
-    const PAD = 60;
+    const SVG_W = 740, SVG_H = 560;
+    const PAD = 64;
     const rangeX = maxX - minX || 1;
     const rangeY = maxY - minY || 1;
     const sc = Math.min((SVG_W - 2 * PAD) / rangeX, (SVG_H - 2 * PAD) / rangeY);
@@ -162,18 +206,21 @@ const SlabTributaryDiagram: React.FC<{
     const tx = (x: number) => PAD + (x - minX) * sc;
     const ty = (y: number) => SVG_H - PAD - (y - minY) * sc;
 
-    const PROF_MAX_PX = 28; // max profile bar height in SVG pixels
+    const PROF_MAX_PX = 28;
     const profFactor = PROF_MAX_PX / globalMaxW;
 
-    return { mergedGroups, slabGroupIdx, beamProfiles, profFactor,
-             tx, ty, sc, SVG_W, SVG_H, wDL, wLL, globalMaxW };
+    return {
+      mergedGroups, slabGroupIdx, beamProfiles, profFactor, groupHasBeam,
+      tx, ty, sc, SVG_W, SVG_H, wDL, wLL, globalMaxW,
+    };
   }, [slabs, beams, columns, slabProps, mat]);
 
   if (!data || !slabs.length) return null;
-  const { mergedGroups, slabGroupIdx, beamProfiles, profFactor,
-          tx, ty, sc, SVG_W, SVG_H, globalMaxW } = data;
+  const {
+    mergedGroups, slabGroupIdx, beamProfiles, profFactor, groupHasBeam,
+    tx, ty, sc, SVG_W, SVG_H,
+  } = data;
 
-  /** Render 45° tributary regions for one composite group */
   const renderGroup = (gi: number) => {
     const group = mergedGroups[gi];
     const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
@@ -183,35 +230,48 @@ const SlabTributaryDiagram: React.FC<{
     const W = cx2 - cx1, H = cy2 - cy1;
     const lx = Math.min(W, H), ly = Math.max(W, H);
     const beta = lx > 0 ? ly / lx : 99;
-    const isWide = W > H; // true → short direction is vertical
+    const isWide = W > H;
 
-    // SVG corners (Y flipped)
     const sx1 = tx(cx1), sx2 = tx(cx2);
-    const sy1 = ty(cy2); // top in SVG (high structural Y)
-    const sy2 = ty(cy1); // bottom in SVG (low structural Y)
-    const sw = sx2 - sx1, sh = sy2 - sy1; // both positive
+    const sy1 = ty(cy2);
+    const sy2 = ty(cy1);
+    const sw = sx2 - sx1, sh = sy2 - sy1;
 
+    const hasBeam = groupHasBeam[gi];
     const elems: React.ReactNode[] = [];
 
-    // Composite outline
     elems.push(
       <rect key="outline" x={sx1} y={sy1} width={sw} height={sh}
-        fill="none" stroke={pal.fill} strokeWidth={2} strokeDasharray="10,4" rx={2}/>,
+        fill="none" stroke={hasBeam ? pal.fill : '#dc2626'} strokeWidth={hasBeam ? 2 : 2.5}
+        strokeDasharray={hasBeam ? '10,4' : '6,3'} rx={2}/>,
     );
 
-    // Group label (above composite, shows merged sub-slabs)
     const labelTxt = group.subSlabIds.length > 1
       ? `مركّبة: ${group.subSlabIds.join(' + ')} — β=${beta.toFixed(1)}`
       : `β=${beta.toFixed(1)}`;
     elems.push(
       <text key="glabel" x={(sx1 + sx2) / 2} y={sy1 - 6}
-        textAnchor="middle" fontSize={10} fontWeight="bold" fill={pal.fill} fontFamily="Arial">
+        textAnchor="middle" fontSize={10} fontWeight="bold"
+        fill={hasBeam ? pal.fill : '#dc2626'} fontFamily="Arial">
         {labelTxt}
       </text>,
     );
 
+    if (!hasBeam) {
+      elems.push(
+        <rect key="nobeam-fill" x={sx1} y={sy1} width={sw} height={sh}
+          fill="rgba(220,38,38,0.07)" rx={2}/>,
+        <text key="nobeam-label" x={(sx1 + sx2) / 2} y={(sy1 + sy2) / 2 - 6}
+          textAnchor="middle" fontSize={12} fontWeight="bold"
+          fill="#dc2626" fontFamily="Arial">⚠</text>,
+        <text key="nobeam-txt" x={(sx1 + sx2) / 2} y={(sy1 + sy2) / 2 + 10}
+          textAnchor="middle" fontSize={9} fontWeight="bold"
+          fill="#dc2626" fontFamily="Arial">لا جسر — أحمال مهدورة</text>,
+      );
+      return <g key={gi}>{elems}</g>;
+    }
+
     if (beta > 2) {
-      // One-way: fill entire composite with the long-side colour
       elems.push(
         <rect key="ow-fill" x={sx1} y={sy1} width={sw} height={sh} fill={pal.mid}/>,
         <text key="ow-lbl" x={(sx1+sx2)/2} y={(sy1+sy2)/2+4}
@@ -224,61 +284,48 @@ const SlabTributaryDiagram: React.FC<{
         </text>,
       );
     } else if (!isWide) {
-      // W ≤ H → short direction horizontal, a = W/2
-      const a = sw / 2; // inset in SVG pixels
+      const a = sw / 2;
       const midX = (sx1 + sx2) / 2;
-      const iBy = sy2 - a; // inner boundary Y (bottom)
-      const iTy = sy1 + a; // inner boundary Y (top)
-
-      // Triangular zones (short sides → horizontal beams at top/bottom)
+      const iBy = sy2 - a;
+      const iTy = sy1 + a;
       elems.push(
         <polygon key="btri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
           points={`${sx1},${sy2} ${sx2},${sy2} ${midX},${iBy}`}/>,
         <polygon key="ttri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
           points={`${sx1},${sy1} ${sx2},${sy1} ${midX},${iTy}`}/>,
-        // Trapezoidal zones (long sides → vertical beams at left/right)
         <polygon key="ltrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
           points={`${sx1},${sy2} ${sx1+a},${iBy} ${sx1+a},${iTy} ${sx1},${sy1}`}/>,
         <polygon key="rtrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
           points={`${sx2},${sy2} ${sx2-a},${iBy} ${sx2-a},${iTy} ${sx2},${sy1}`}/>,
-        // 45° diagonal dashed lines
         <line key="d1" x1={sx1} y1={sy2} x2={sx1+a} y2={iBy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
         <line key="d2" x1={sx2} y1={sy2} x2={sx2-a} y2={iBy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
         <line key="d3" x1={sx1} y1={sy1} x2={sx1+a} y2={iTy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
         <line key="d4" x1={sx2} y1={sy1} x2={sx2-a} y2={iTy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        // Horizontal boundary lines
         <line key="hb1" x1={sx1+a} y1={iBy} x2={sx2-a} y2={iBy} stroke={pal.fill} strokeWidth={1.2}/>,
         <line key="hb2" x1={sx1+a} y1={iTy} x2={sx2-a} y2={iTy} stroke={pal.fill} strokeWidth={1.2}/>,
-        // Dimension annotation: lx (short span = W)
         <text key="dim-lx" x={(sx1+sx2)/2} y={(sy1+sy2)/2+4}
           textAnchor="middle" fontSize={9} fill={pal.fill} fontFamily="Arial" opacity={0.7}>
           lx={W.toFixed(1)}م / ly={H.toFixed(1)}م
         </text>,
       );
     } else {
-      // W > H → short direction vertical, a = H/2
       const a = sh / 2;
       const midY = (sy1 + sy2) / 2;
-      const iLx = sx1 + a; // inner left
-      const iRx = sx2 - a; // inner right
-
+      const iLx = sx1 + a;
+      const iRx = sx2 - a;
       elems.push(
-        // Triangular zones (short sides → vertical beams at left/right)
         <polygon key="ltri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
           points={`${sx1},${sy1} ${sx1},${sy2} ${iLx},${midY}`}/>,
         <polygon key="rtri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
           points={`${sx2},${sy1} ${sx2},${sy2} ${iRx},${midY}`}/>,
-        // Trapezoidal zones (long sides → horizontal beams at top/bottom)
         <polygon key="ttrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
           points={`${sx1},${sy1} ${sx2},${sy1} ${iRx},${sy1+a} ${iLx},${sy1+a}`}/>,
         <polygon key="btrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
           points={`${sx1},${sy2} ${sx2},${sy2} ${iRx},${sy2-a} ${iLx},${sy2-a}`}/>,
-        // 45° lines
         <line key="d1" x1={sx1} y1={sy1} x2={iLx} y2={sy1+a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
         <line key="d2" x1={sx1} y1={sy2} x2={iLx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
         <line key="d3" x1={sx2} y1={sy1} x2={iRx} y2={sy1+a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
         <line key="d4" x1={sx2} y1={sy2} x2={iRx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        // Vertical boundary lines
         <line key="vb1" x1={iLx} y1={sy1+a} x2={iLx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2}/>,
         <line key="vb2" x1={iRx} y1={sy1+a} x2={iRx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2}/>,
         <text key="dim" x={(sx1+sx2)/2} y={(sy1+sy2)/2+4}
@@ -291,7 +338,6 @@ const SlabTributaryDiagram: React.FC<{
     return <g key={gi}>{elems}</g>;
   };
 
-  /** Render beam load profile (DL) as a filled polygon adjacent to the beam */
   const renderBeamProfile = (bpIdx: number) => {
     const { beam: b, prof } = beamProfiles[bpIdx];
     const isHoriz = Math.abs(b.y2 - b.y1) < 1e-6;
@@ -302,7 +348,6 @@ const SlabTributaryDiagram: React.FC<{
     const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
 
     if (isHoriz) {
-      // Profile drawn ABOVE the beam (lower SVG y)
       const by = ty(b.y1);
       const bx1svg = tx(Math.min(b.x1, b.x2));
       const bx2svg = tx(Math.max(b.x1, b.x2));
@@ -334,15 +379,10 @@ const SlabTributaryDiagram: React.FC<{
         </g>
       );
     } else {
-      // Vertical beam — profile drawn to the RIGHT
       const bx = tx(b.x1);
-      const by1svg = ty(Math.min(b.y1, b.y2)); // top SVG (larger structural y)
-      const by2svg = ty(Math.max(b.y1, b.y2)); // bottom SVG... wait
-      // ty flips Y: larger structural y → smaller SVG y (higher on screen)
-      // so ty(max(y1,y2)) < ty(min(y1,y2))
-      const byMin = ty(Math.max(b.y1, b.y2)); // top SVG
-      const byMax = ty(Math.min(b.y1, b.y2)); // bottom SVG
-      const bHt = byMax - byMin; // positive
+      const byMin = ty(Math.max(b.y1, b.y2));
+      const byMax = ty(Math.min(b.y1, b.y2));
+      const bHt = byMax - byMin;
 
       const polyPts = [
         `${bx},${byMin}`,
@@ -374,24 +414,26 @@ const SlabTributaryDiagram: React.FC<{
 
   return (
     <div>
+      {/* Legend */}
       <div className="text-[11px] text-muted-foreground mb-2 flex flex-wrap gap-4 items-center">
         <span className="flex items-center gap-1.5">
           <span className="inline-block w-5 h-3 rounded-sm" style={{ background: GROUP_PALETTE[0].mid }}/>
           منطقة مثلثة (حافة قصيرة)
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-5 h-3 rounded-sm" style={{ background: GROUP_PALETTE[0].mid, opacity: 0.6 }}/>
+          <span className="inline-block w-5 h-3 rounded-sm" style={{ background: GROUP_PALETTE[0].light }}/>
           منطقة شبه منحرفة (حافة طويلة)
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-5 h-1 border-t-2 border-dashed border-gray-500"/>
-          حد البلاطة الفرعية (مدخلة)
+          <span className="inline-block w-5 h-3 border-2 border-dashed border-red-500 rounded-sm"/>
+          <span className="text-red-600 font-medium">⚠ بلاطة بلا جسر</span>
         </span>
         <span className="flex items-center gap-1.5">
           <span className="inline-block w-4 h-4 rounded-sm" style={{ background: '#1a1a2e' }}/>
           جسر / عمود
         </span>
         <span className="text-[10px] opacity-70">القيم بـ kN/m (حمل ميت)</span>
+        <span className="text-[10px] opacity-70">● اضغط على البلاطة لرؤية مسار الحمل</span>
       </div>
       <div className="overflow-x-auto rounded-xl border border-border/60">
         <svg
@@ -402,7 +444,7 @@ const SlabTributaryDiagram: React.FC<{
           {/* ── Tributary fill regions ── */}
           {mergedGroups.map((_, gi) => renderGroup(gi))}
 
-          {/* ── Sub-slab boundaries (dashed) ── */}
+          {/* ── Sub-slab boundaries ── */}
           {slabs.map(s => {
             const gi = slabGroupIdx.get(s.id) ?? 0;
             const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
@@ -452,14 +494,44 @@ const SlabTributaryDiagram: React.FC<{
               fill="#1e1b4b" stroke="white" strokeWidth={1.5} rx={1}/>
           ))}
 
-          {/* ── Scale label ── */}
-          <text x={12} y={SVG_H - 10} fontSize={9} fill="#666" fontFamily="Arial">
-            مقياس: 1 وحدة هندسية = {sc.toFixed(0)} px | الحمل الميت (kN/m)
-          </text>
+          {/* ── Clickable slab overlays ── */}
+          {slabs.map(s => {
+            const isSelected = selectedSlabId === s.id;
+            const gi = slabGroupIdx.get(s.id) ?? 0;
+            const hasBeam = groupHasBeam[gi] ?? true;
+            return (
+              <g key={`click-${s.id}`}
+                style={{ cursor: 'pointer' }}
+                onClick={() => onSlabClick?.(s.id)}>
+                <rect
+                  x={tx(Math.min(s.x1, s.x2))} y={ty(Math.max(s.y1, s.y2))}
+                  width={Math.abs(s.x2 - s.x1) * sc} height={Math.abs(s.y2 - s.y1) * sc}
+                  fill={isSelected ? 'rgba(234,179,8,0.20)' : 'transparent'}
+                  stroke={isSelected ? '#f59e0b' : 'transparent'}
+                  strokeWidth={isSelected ? 3 : 0}
+                />
+                {/* Status icon in corner */}
+                <circle
+                  cx={tx(Math.min(s.x1, s.x2)) + 9}
+                  cy={ty(Math.max(s.y1, s.y2)) + 9}
+                  r={7}
+                  fill={hasBeam ? '#16a34a' : '#dc2626'}
+                  stroke="white" strokeWidth={1}
+                />
+                <text
+                  x={tx(Math.min(s.x1, s.x2)) + 9}
+                  y={ty(Math.max(s.y1, s.y2)) + 13}
+                  textAnchor="middle" fontSize={9} fill="white" fontFamily="Arial" fontWeight="bold">
+                  {hasBeam ? '✓' : '!'}
+                </text>
+              </g>
+            );
+          })}
 
           {/* ── Group legend ── */}
           {mergedGroups.map((g, gi) => {
             const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
+            const hasBeam = groupHasBeam[gi];
             const lx_m = Math.min(
               Math.abs(g.compositeRect.x2 - g.compositeRect.x1),
               Math.abs(g.compositeRect.y2 - g.compositeRect.y1),
@@ -470,63 +542,157 @@ const SlabTributaryDiagram: React.FC<{
             );
             const beta = lx_m > 0 ? ly_m / lx_m : 0;
             return (
-              <g key={`leg-${gi}`} transform={`translate(${SVG_W - 170},${14 + gi * 22})`}>
-                <rect x={0} y={0} width={14} height={12} fill={pal.mid} stroke={pal.fill} strokeWidth={1} rx={2}/>
-                <text x={18} y={10} fontSize={9} fill="#333" fontFamily="Arial">
+              <g key={`leg-${gi}`} transform={`translate(${SVG_W - 180},${14 + gi * 22})`}>
+                <rect x={0} y={0} width={14} height={12}
+                  fill={hasBeam ? pal.mid : 'rgba(220,38,38,0.2)'}
+                  stroke={hasBeam ? pal.fill : '#dc2626'} strokeWidth={1} rx={2}/>
+                <text x={18} y={10} fontSize={9} fill={hasBeam ? '#333' : '#dc2626'} fontFamily="Arial">
                   {g.subSlabIds.join('+')} — lx={lx_m.toFixed(1)}م β={beta.toFixed(1)}
+                  {!hasBeam ? ' ⚠' : ''}
                 </text>
               </g>
             );
           })}
+
+          {/* ── Scale label (bottom) ── */}
+          <text x={12} y={SVG_H - 8} fontSize={9} fill="#666" fontFamily="Arial">
+            مقياس: 1 وحدة = {(1 / (data?.sc ?? 1)).toFixed(2)} م/px | الحمل الميت (kN/m)
+          </text>
         </svg>
       </div>
     </div>
   );
 };
 
+// ──────────────────────────────────────────────────────────────────────────
+// لوحة التفصيل عند الضغط على بلاطة
+// ──────────────────────────────────────────────────────────────────────────
+interface SlabDetailResult {
+  slab: Slab;
+  beta: number;
+  lx: number;
+  ly: number;
+  W: number;
+  H: number;
+  adjacentBeams: Array<{ beam: Beam; dl: number; ll: number; position: string }>;
+  hasTransfer: boolean;
+  groupMembers: string[];
+}
+
+function useSlabDetail(
+  selectedSlabId: string | null,
+  slabs: Slab[],
+  beams: Beam[],
+  slabProps: SlabProps,
+  mat: MatProps,
+): SlabDetailResult | null {
+  return useMemo(() => {
+    if (!selectedSlabId) return null;
+    const slab = slabs.find(s => s.id === selectedSlabId);
+    if (!slab) return null;
+
+    const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
+    const wLL = slabProps.liveLoad;
+
+    const slabRects = slabs.map(s => ({
+      id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, deadLoad: wDL, liveLoad: wLL,
+    }));
+    const beamGeoms = beams.map(b => ({
+      id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, length: b.length, direction: b.direction,
+    }));
+
+    const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
+    const groupIdx = mergedGroups.findIndex(g => g.subSlabIds.includes(selectedSlabId));
+    if (groupIdx < 0) return null;
+
+    const group = mergedGroups[groupIdx];
+    const cr = group.compositeRect;
+    const cx1 = Math.min(cr.x1, cr.x2), cx2 = Math.max(cr.x1, cr.x2);
+    const cy1 = Math.min(cr.y1, cr.y2), cy2 = Math.max(cr.y1, cr.y2);
+    const W = cx2 - cx1, H = cy2 - cy1;
+    const lx = Math.min(W, H), ly = Math.max(W, H);
+    const beta = lx > 0 ? ly / lx : 99;
+
+    // حساب الأحمال المنقولة من هذه المجموعة تحديداً (ليس من كل البلاطات)
+    const thisGroupEdgeLoads = buildSlabEdgeLoads([group.compositeRect], wDL, wLL);
+
+    const adjBeamObjects = groupAdjacentBeams(group.compositeRect, beams);
+    const adjacentBeams = adjBeamObjects.map(beam => {
+      const prof = computeBeamLoadProfile(beam, thisGroupEdgeLoads, DEFAULT_PROFILE_T);
+      return {
+        beam,
+        dl: prof.equivalentDL,
+        ll: prof.equivalentLL,
+        position: beamPositionLabel(beam, cx1, cx2, cy1, cy2),
+      };
+    });
+
+    const hasTransfer = adjacentBeams.length > 0 && adjacentBeams.some(b => b.dl > 0.01);
+
+    return {
+      slab, beta, lx, ly, W, H,
+      adjacentBeams, hasTransfer,
+      groupMembers: group.subSlabIds,
+    };
+  }, [selectedSlabId, slabs, beams, slabProps, mat]);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// المكوّن الرئيسي
+// ══════════════════════════════════════════════════════════════════════════
+
 export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
   beams, slabs, columns, slabProps, mat, colLoads3D,
 }) => {
+  const [storyFilter, setStoryFilter] = useState<string>('all');
+  const [selectedSlabId, setSelectedSlabId] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
 
-  const rows = useMemo<RowData[]>(() => {
-    if (!beams.length) return [];
+  // ── الأدوار المتاحة ─────────────────────────────────────────────────────
+  const uniqueStoryIds = useMemo(() => {
+    const ids = new Set<string>();
+    slabs.forEach(s => { if (s.storyId) ids.add(s.storyId); });
+    beams.forEach(b => { if (b.storyId) ids.add(b.storyId); });
+    return [...ids].sort();
+  }, [slabs, beams]);
 
-    // Pre-compute service-level load intensities (kN/m²)
+  const filteredSlabs = useMemo(() =>
+    storyFilter === 'all' ? slabs : slabs.filter(s => !s.storyId || s.storyId === storyFilter),
+    [slabs, storyFilter],
+  );
+
+  const filteredBeams = useMemo(() =>
+    storyFilter === 'all' ? beams : beams.filter(b => !b.storyId || b.storyId === storyFilter),
+    [beams, storyFilter],
+  );
+
+  // ── حساب صفوف الجدول ────────────────────────────────────────────────────
+  const rows = useMemo<RowData[]>(() => {
+    if (!filteredBeams.length) return [];
+
     const wDL_service = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
     const wLL_service = slabProps.liveLoad;
-    // Build a lookup for fast per-beam slab filtering
-    const slabById = new Map(slabs.map(s => [s.id, s]));
 
-    return beams.map(beam => {
+    return filteredBeams.map(beam => {
       const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
 
-      // ─── 2D engine path ───
-      const r2d = calculateBeamLoads(beam, slabs, slabProps, mat);
-      const dl_2d = r2d.deadLoad - beamSW;        // transferred from slab only
+      const r2d = calculateBeamLoads(beam, filteredSlabs, slabProps, mat);
+      const dl_2d = r2d.deadLoad - beamSW;
       const ll_2d = r2d.liveLoad;
 
-      // ─── 3D Legacy engine path (geometric slab-edge transfer) ───
-      // Filter slabs to the same story as the beam — mirrors calculateBeamLoads in
-      // structuralEngine.ts — so multi-story models don't accumulate slab loads from
-      // all stories sharing the same x,y plane (the ×N bug).
       const beamSlabs = beam.storyId
-        ? slabs.filter(s => !s.storyId || s.storyId === beam.storyId)
-        : slabs;
+        ? filteredSlabs.filter(s => !s.storyId || s.storyId === beam.storyId)
+        : filteredSlabs;
       const beamEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
       const profile = computeBeamLoadProfile(beam, beamEdgeLoads);
       const dl_3d = profile.equivalentDL;
       const ll_3d = profile.equivalentLL;
 
-      // ─── Global Frame & Unified Core — both consume beam.deadLoad/liveLoad
-      // as set upstream by calculateBeamLoads (so they equal the 2D values).
-      // We re-derive here from the same primitives to guarantee correctness.
       const dl_gf = dl_2d;
       const ll_gf = ll_2d;
       const dl_uc = dl_2d;
       const ll_uc = ll_2d;
 
-      // worst pairwise % diff for DL and LL across engines (using 2D as ref)
       const ref = Math.max(1e-6, Math.abs(dl_2d) + Math.abs(ll_2d));
       const candidates = [
         Math.abs(dl_3d - dl_2d) + Math.abs(ll_3d - ll_2d),
@@ -538,13 +704,14 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
       return {
         beamId: beam.id,
         length: beam.length,
+        storyId: beam.storyId,
         dl_2d, ll_2d, dl_3d, ll_3d, dl_gf, ll_gf, dl_uc, ll_uc,
         maxDiffPct,
       };
     });
-  }, [beams, slabs, slabProps, mat]);
+  }, [filteredBeams, filteredSlabs, slabProps, mat]);
 
-  const filtered = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter(r => r.beamId.toLowerCase().includes(q));
@@ -566,32 +733,28 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
     );
   }, [rows]);
 
-  // ── التحقق من توازن الأحمال العمودية ─────────────────────────────────────────
+  // ── التوازن ─────────────────────────────────────────────────────────────
   const equilibrium = useMemo(() => {
-    const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad; // kN/m²
-    const wLL = slabProps.liveLoad;                                               // kN/m²
+    const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
+    const wLL = slabProps.liveLoad;
 
-    // أحمال البلاطات (مجموع المساحات × كثافة الحمل)
     let slabDL = 0, slabLL = 0;
-    for (const s of slabs) {
-      const area = Math.abs(s.x2 - s.x1) * Math.abs(s.y2 - s.y1); // m²
+    for (const s of filteredSlabs) {
+      const area = Math.abs(s.x2 - s.x1) * Math.abs(s.y2 - s.y1);
       slabDL += area * wDL;
       slabLL += area * wLL;
     }
 
-    // الوزن الذاتي للجسور (b, h بالمم، length بالمتر)
     let beamSW = 0;
-    for (const b of beams) {
+    for (const b of filteredBeams) {
       beamSW += (b.b / 1000) * (b.h / 1000) * mat.gamma * b.length;
     }
 
-    // أحمال الجدران على الجسور
     let wallLoads = 0;
-    for (const b of beams) {
+    for (const b of filteredBeams) {
       wallLoads += (b.wallLoad ?? 0) * b.length;
     }
 
-    // الوزن الذاتي للأعمدة (b, h, L جميعها بالمم)
     let colSW = 0;
     for (const c of columns) {
       if (c.isRemoved) continue;
@@ -600,14 +763,11 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
 
     const totalApplied = slabDL + slabLL + beamSW + wallLoads + colSW;
 
-    // مجموع ردود أفعال ركائز الدور الأرضي (الأعمدة عند القاعدة)
     const activeCols = columns.filter(c => !c.isRemoved);
     const minZ = activeCols.length
       ? activeCols.reduce((m, c) => Math.min(m, c.zBottom ?? 0), Infinity)
       : 0;
-    const groundCols = activeCols.filter(
-      c => Math.abs((c.zBottom ?? 0) - minZ) < 1,
-    );
+    const groundCols = activeCols.filter(c => Math.abs((c.zBottom ?? 0) - minZ) < 1);
     let sumReactions = 0;
     for (const c of groundCols) {
       sumReactions += (colLoads3D?.get(c.id)?.P_service ?? 0);
@@ -623,11 +783,16 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
       totalApplied, sumReactions, hasAnalysis,
       balanceErr, groundColCount: groundCols.length,
     };
-  }, [slabs, beams, columns, slabProps, mat, colLoads3D]);
+  }, [filteredSlabs, filteredBeams, columns, slabProps, mat, colLoads3D]);
 
+  // ── لوحة التفصيل عند الضغط على بلاطة ───────────────────────────────────
+  const slabDetail = useSlabDetail(selectedSlabId, filteredSlabs, filteredBeams, slabProps, mat);
+
+  // ── تصدير Excel ─────────────────────────────────────────────────────────
   const exportXlsx = () => {
     const data = rows.map(r => ({
       'Beam ID': r.beamId,
+      'Story': r.storyId ?? '',
       'Length (m)': r.length,
       '2D DL (kN/m)': r.dl_2d,
       '2D LL (kN/m)': r.ll_2d,
@@ -655,10 +820,66 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
     );
   }
 
+  // ── عدد البلاطات غير المنقولة ────────────────────────────────────────────
+  const unloadedSlabsCount = useMemo(() => {
+    if (!filteredSlabs.length) return 0;
+    const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
+    const wLL = slabProps.liveLoad;
+    const slabRects = filteredSlabs.map(s => ({
+      id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, deadLoad: wDL, liveLoad: wLL,
+    }));
+    const beamGeoms = filteredBeams.map(b => ({
+      id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, length: b.length, direction: b.direction,
+    }));
+    const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
+    let count = 0;
+    mergedGroups.forEach(g => {
+      if (groupAdjacentBeams(g.compositeRect, filteredBeams).length === 0) {
+        count += g.subSlabIds.length;
+      }
+    });
+    return count;
+  }, [filteredSlabs, filteredBeams, slabProps, mat]);
+
   return (
     <div className="space-y-4">
 
-      {/* ── مخطط مناطق التأثير (خطوط 45°) ──────────────────────────────────────── */}
+      {/* ── فلتر الدور ──────────────────────────────────────────────────────── */}
+      {uniqueStoryIds.length > 0 && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Layers size={15} className="text-indigo-500" />
+            <span>عرض الدور:</span>
+          </div>
+          <Select value={storyFilter} onValueChange={v => {
+            setStoryFilter(v);
+            setSelectedSlabId(null);
+          }}>
+            <SelectTrigger className="h-8 w-44 text-xs">
+              <SelectValue placeholder="اختر الدور" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">جميع الأدوار ({slabs.length} بلاطة)</SelectItem>
+              {uniqueStoryIds.map(id => {
+                const slabCount = slabs.filter(s => !s.storyId || s.storyId === id).length;
+                return (
+                  <SelectItem key={id} value={id}>
+                    {id} ({slabCount} بلاطة)
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+          {unloadedSlabsCount > 0 && (
+            <Badge className="bg-red-500/15 text-red-700 dark:text-red-400 border-red-400/40 text-xs gap-1">
+              <AlertTriangle size={11} />
+              {unloadedSlabsCount} بلاطة بلا جسر
+            </Badge>
+          )}
+        </div>
+      )}
+
+      {/* ── مخطط مناطق التأثير ──────────────────────────────────────────────── */}
       <Card className="border-blue-200 dark:border-blue-800 bg-blue-500/5">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -666,25 +887,111 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
             مخطط مناطق التأثير — انتقال الأحمال من البلاطات إلى الجسور (خطوط 45°)
           </CardTitle>
           <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
-            يعرض كيف تتوزع أحمال كل بلاطة (أو مجموعة بلاطات متجاورة بلا جسر بينها) على الجسور المحيطة.
-            المناطق ذات اللون الداكن: حمل شبه منحرف (حافة طويلة). المناطق الفاتحة: حمل مثلثي (حافة قصيرة).
-            الحدود المتقطعة تُظهر البلاطات كما أُدخلت — أما الإطار المزدوج فيُظهر البلاطة المركّبة الفعلية
-            المستخدمة في حساب β وتوزيع الأحمال.
-            الأرقام المطبوعة عند الجسور هي ذروة الحمل الميت المنقول (kN/m).
+            <span className="text-green-700 dark:text-green-400 font-semibold">● أخضر</span> = البلاطة تنقل أحمالها إلى الجسور المحيطة.{' '}
+            <span className="text-red-700 dark:text-red-400 font-semibold">● أحمر</span> = لا يوجد جسر على حافة البلاطة — الأحمال مهدورة.{' '}
+            اضغط على أي بلاطة لعرض مسار الحمل التفصيلي.
           </p>
         </CardHeader>
         <CardContent className="pt-0">
           <SlabTributaryDiagram
-            slabs={slabs}
-            beams={beams}
+            slabs={filteredSlabs}
+            beams={filteredBeams}
             columns={columns}
             slabProps={slabProps}
             mat={mat}
+            selectedSlabId={selectedSlabId ?? undefined}
+            onSlabClick={(id) => setSelectedSlabId(prev => prev === id ? null : id)}
           />
         </CardContent>
       </Card>
 
-      {/* ── بطاقة التحقق من التوازن ───────────────────────────────────────────── */}
+      {/* ── لوحة مسار الحمل عند الضغط على بلاطة ────────────────────────────── */}
+      {slabDetail && (
+        <Card className={`border-2 ${slabDetail.hasTransfer
+          ? 'border-green-300 dark:border-green-700 bg-green-500/5'
+          : 'border-red-300 dark:border-red-700 bg-red-500/5'
+        }`}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <ArrowRight size={15} className={slabDetail.hasTransfer ? 'text-green-600' : 'text-red-600'} />
+                مسار الحمل — البلاطة <code className="font-mono bg-muted px-1 rounded">{slabDetail.slab.id}</code>
+              </CardTitle>
+              <Button variant="ghost" size="icon" className="h-6 w-6"
+                onClick={() => setSelectedSlabId(null)}>
+                <CloseIcon size={12} />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0 space-y-3">
+            {/* معلومات البلاطة */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              {[
+                ['الأبعاد', `${slabDetail.W.toFixed(2)}م × ${slabDetail.H.toFixed(2)}م`],
+                ['β (ly/lx)', slabDetail.beta > 50 ? '> 2 (أحادية)' : slabDetail.beta.toFixed(2)],
+                ['lx', `${slabDetail.lx.toFixed(2)} م`],
+                ['نوع', slabDetail.beta > 2 ? 'أحادية الاتجاه' : 'ثنائية الاتجاهين'],
+              ].map(([k, v]) => (
+                <div key={k as string} className="bg-background/60 border border-border/50 rounded px-2 py-1.5">
+                  <div className="text-muted-foreground text-[10px]">{k}</div>
+                  <div className="font-mono font-semibold">{v}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* حالة الانتقال */}
+            {!slabDetail.hasTransfer ? (
+              <div className="rounded-lg bg-red-500/10 border border-red-400/40 p-3">
+                <div className="flex items-center gap-2 font-bold text-red-600 dark:text-red-400 text-sm mb-1">
+                  <AlertTriangle size={15} />
+                  الأحمال لم تنتقل — لا يوجد جسر على حافة البلاطة
+                </div>
+                <p className="text-[11px] text-red-700/80 dark:text-red-300/80 leading-relaxed">
+                  {slabDetail.groupMembers.length > 1
+                    ? `البلاطات (${slabDetail.groupMembers.join(' + ')}) مدمجة كبلاطة مركّبة ولا توجد جسور على حوافها. أحمالها مهدورة ولا تنتقل إلى الإطار الإنشائي.`
+                    : 'لا توجد جسور على حواف هذه البلاطة. أحمالها مهدورة ولا تنتقل إلى الإطار الإنشائي.'
+                  }
+                  {' '}تحقق من نمذجة الجسور المحيطة.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="text-[11px] font-medium text-green-700 dark:text-green-400 flex items-center gap-1.5">
+                  <CheckCircle2 size={13} />
+                  الأحمال تنتقل إلى {slabDetail.adjacentBeams.length} جسر(اً):
+                </div>
+                <div className="grid gap-1.5">
+                  {slabDetail.adjacentBeams.map(({ beam, dl, ll, position }) => (
+                    <div key={beam.id}
+                      className="flex items-center justify-between gap-3 text-[11px] bg-background/70 border border-border/50 rounded px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <code className="font-mono font-bold bg-muted px-1 rounded">{beam.id}</code>
+                        <Badge variant="outline" className="text-[10px] px-1">{position}</Badge>
+                        <span className="text-muted-foreground">L={beam.length.toFixed(2)} م</span>
+                      </div>
+                      <div className="flex gap-3 font-mono">
+                        <span className="text-blue-700 dark:text-blue-400">
+                          DL = {dl < 0.001 ? '—' : `${dl.toFixed(2)} kN/m`}
+                        </span>
+                        <span className="text-amber-700 dark:text-amber-400">
+                          LL = {ll < 0.001 ? '—' : `${ll.toFixed(2)} kN/m`}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {slabDetail.groupMembers.length > 1 && (
+                  <p className="text-[10px] text-muted-foreground">
+                    ملاحظة: البلاطات ({slabDetail.groupMembers.join(' + ')}) مدمجة (لا جسر بينها) وتعمل كبلاطة مركّبة واحدة.
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── التحقق من التوازن ───────────────────────────────────────────────── */}
       <Card className={`border-2 ${
         equilibrium.balanceErr === null
           ? 'border-slate-200 dark:border-slate-700 bg-slate-500/5'
@@ -701,14 +1008,11 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
           </CardTitle>
           <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
             مجموع ردود أفعال القاعدة (1.0D + 1.0L من التحليل 3D) مقارنةً بمجموع
-            الأحمال المطبقة المحسوبة هندسياً — يكشف أي خلل في نقل الأحمال أو في
-            نمذجة العناصر.
+            الأحمال المطبقة — يكشف أي خلل في نقل الأحمال.
           </p>
         </CardHeader>
         <CardContent className="pt-0">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-            {/* ── العمود الأيسر: تفاصيل الأحمال المطبقة ── */}
             <div className="space-y-1 text-[12px]">
               <div className="font-semibold text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
                 الأحمال المطبقة (خدمي)
@@ -731,7 +1035,6 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* ── العمود الأيمن: ردود أفعال الركائز ── */}
             <div className="flex flex-col justify-between gap-3">
               <div>
                 <div className="font-semibold text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
@@ -741,7 +1044,6 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
                   <div className="rounded-lg bg-muted/50 border border-dashed border-border p-4 text-center text-[11px] text-muted-foreground">
                     <AlertTriangle size={16} className="mx-auto mb-1 text-amber-500" />
                     يتطلب تشغيل التحليل الإنشائي (3D) أولاً
-                    <br />للحصول على ردود أفعال الأعمدة.
                   </div>
                 ) : (
                   <div className="space-y-1 text-[12px]">
@@ -756,38 +1058,7 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
                   </div>
                 )}
               </div>
-              {/* ── ردود أفعال الأعمدة تفصيلياً ── */}
-              {equilibrium.hasAnalysis && (() => {
-                const activeCols = columns.filter(c => !c.isRemoved);
-                const minZ = activeCols.length
-                  ? activeCols.reduce((m, c) => Math.min(m, (c as any).zBottom ?? 0), Infinity)
-                  : 0;
-                const groundCols = activeCols.filter(
-                  c => Math.abs(((c as any).zBottom ?? 0) - minZ) < 1,
-                );
-                return (
-                  <div className="space-y-0.5 max-h-36 overflow-y-auto border border-border/50 rounded px-2 py-1.5 bg-background/50">
-                    <div className="text-[10px] font-semibold text-muted-foreground mb-1 sticky top-0 bg-background/80 py-0.5">
-                      رد فعل كل ركيزة (P_service):
-                    </div>
-                    {groundCols.map(c => {
-                      const P = colLoads3D?.get(c.id)?.P_service ?? 0;
-                      return (
-                        <div key={c.id} className="flex items-center justify-between gap-2 text-[11px] border-b border-dashed border-border/40 last:border-0 py-0.5">
-                          <span className="font-mono text-muted-foreground shrink-0">
-                            ({c.x.toFixed(1)}, {c.y.toFixed(1)})
-                          </span>
-                          <span className="font-mono font-medium tabular-nums">
-                            {fmt(P, 1)} kN
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
 
-              {/* ── نتيجة التحقق ── */}
               {equilibrium.balanceErr !== null && (
                 <div className={`rounded-xl p-3 text-center border ${
                   Math.abs(equilibrium.balanceErr) <= 2
@@ -818,10 +1089,10 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
                   </div>
                   <div className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
                     {Math.abs(equilibrium.balanceErr) <= 2
-                      ? 'ملاحظة: فرق ≤ 2% مقبول (يعكس التقريب في نقل أحمال البلاطات).'
+                      ? 'فرق ≤ 2% مقبول.'
                       : Math.abs(equilibrium.balanceErr) <= 8
-                        ? 'فرق 2–8%: محتمل بسبب توزيع غير متماثل أو أحمال جدران جزئية.'
-                        : 'فرق > 8%: قد يكشف بلاطات غير مربوطة بجسور، أو أخطاء في أبعاد العناصر.'}
+                        ? 'فرق 2–8%: قد يعكس بلاطات مدمجة أو أحمال جدران جزئية.'
+                        : 'فرق > 8%: يكشف عن بلاطات غير مربوطة بجسور أو أخطاء في النمذجة.'}
                   </div>
                 </div>
               )}
@@ -830,6 +1101,7 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
         </CardContent>
       </Card>
 
+      {/* ── جدول الجسور ──────────────────────────────────────────────────────── */}
       <Card className="border-teal-200 dark:border-teal-800 bg-teal-500/5">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -837,29 +1109,13 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
               <Activity size={16} className="text-teal-600" />
               لوحة تشخيص نقل الأحمال من البلاطة إلى الجسور
             </CardTitle>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={exportXlsx}
-              className="h-8 text-xs gap-1"
-            >
+            <Button size="sm" variant="outline" onClick={exportXlsx} className="h-8 text-xs gap-1">
               <Download size={12} /> تصدير Excel
             </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground leading-relaxed mt-2">
-            يعرض هذا الجدول قيمة الحمل الميت (DL) والحمل الحي (LL) المنقول من
-            البلاطة إلى كل جسر — كحمل خطي مكافئ موحّد (kN/m) — كما يحسبه كل من
-            محركَي{' '}
-            <span className="font-semibold">2D</span> و{' '}
-            <span className="font-semibold">3D Legacy</span> و{' '}
-            <span className="font-semibold">Global Frame (GF)</span> و{' '}
-            <span className="font-semibold">Unified Core (UC)</span> جنباً إلى
-            جنب. الأوزان الذاتية للجسور وأحمال الجدران مُستثناة لإظهار النقل من
-            البلاطة فقط.
-          </p>
         </CardHeader>
         <CardContent className="pt-0">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] mb-3">
             {([
               ['2D',         totals.dl_2d, totals.ll_2d, 'bg-violet-500/10 border-violet-400/40 text-violet-700 dark:text-violet-300'],
               ['3D Legacy',  totals.dl_3d, totals.ll_3d, 'bg-blue-500/10 border-blue-400/40 text-blue-700 dark:text-blue-300'],
@@ -873,12 +1129,7 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
               </div>
             ))}
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 mb-2">
             <Search size={14} className="text-muted-foreground" />
             <Input
               value={filter}
@@ -887,59 +1138,53 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
               className="h-8 text-xs max-w-[260px]"
             />
             <span className="text-[11px] text-muted-foreground">
-              {filtered.length} / {rows.length} جسر
+              {filteredRows.length} / {rows.length} جسر
             </span>
           </div>
-        </CardHeader>
-        <CardContent className="overflow-x-auto pt-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead rowSpan={2} className="text-xs align-middle">Beam</TableHead>
-                <TableHead rowSpan={2} className="text-xs align-middle text-center">L (m)</TableHead>
-                <TableHead colSpan={2} className="text-xs text-center bg-violet-500/5 border-x">2D</TableHead>
-                <TableHead colSpan={2} className="text-xs text-center bg-blue-500/5 border-x">3D Legacy</TableHead>
-                <TableHead colSpan={2} className="text-xs text-center bg-amber-500/5 border-x">GF</TableHead>
-                <TableHead colSpan={2} className="text-xs text-center bg-rose-500/5 border-x">UC</TableHead>
-                <TableHead rowSpan={2} className="text-xs align-middle text-center">حالة المطابقة</TableHead>
-              </TableRow>
-              <TableRow>
-                <TableHead className="text-[10px] text-center bg-violet-500/5 border-x">DL</TableHead>
-                <TableHead className="text-[10px] text-center bg-violet-500/5 border-x">LL</TableHead>
-                <TableHead className="text-[10px] text-center bg-blue-500/5 border-x">DL</TableHead>
-                <TableHead className="text-[10px] text-center bg-blue-500/5 border-x">LL</TableHead>
-                <TableHead className="text-[10px] text-center bg-amber-500/5 border-x">DL</TableHead>
-                <TableHead className="text-[10px] text-center bg-amber-500/5 border-x">LL</TableHead>
-                <TableHead className="text-[10px] text-center bg-rose-500/5 border-x">DL</TableHead>
-                <TableHead className="text-[10px] text-center bg-rose-500/5 border-x">LL</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map(r => (
-                <TableRow key={r.beamId} className="text-xs">
-                  <TableCell className="font-mono text-xs">{r.beamId}</TableCell>
-                  <TableCell className="text-center font-mono">{fmt(r.length, 2)}</TableCell>
-                  <TableCell className="text-center font-mono bg-violet-500/5">{fmt(r.dl_2d)}</TableCell>
-                  <TableCell className="text-center font-mono bg-violet-500/5">{fmt(r.ll_2d)}</TableCell>
-                  <TableCell className="text-center font-mono bg-blue-500/5">{fmt(r.dl_3d)}</TableCell>
-                  <TableCell className="text-center font-mono bg-blue-500/5">{fmt(r.ll_3d)}</TableCell>
-                  <TableCell className="text-center font-mono bg-amber-500/5">{fmt(r.dl_gf)}</TableCell>
-                  <TableCell className="text-center font-mono bg-amber-500/5">{fmt(r.ll_gf)}</TableCell>
-                  <TableCell className="text-center font-mono bg-rose-500/5">{fmt(r.dl_uc)}</TableCell>
-                  <TableCell className="text-center font-mono bg-rose-500/5">{fmt(r.ll_uc)}</TableCell>
-                  <TableCell className="text-center">{diffBadge(r.maxDiffPct)}</TableCell>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead rowSpan={2} className="text-xs align-middle">Beam</TableHead>
+                  <TableHead rowSpan={2} className="text-xs align-middle text-center">L (m)</TableHead>
+                  <TableHead colSpan={2} className="text-xs text-center bg-violet-500/5 border-x">2D</TableHead>
+                  <TableHead colSpan={2} className="text-xs text-center bg-blue-500/5 border-x">3D Legacy</TableHead>
+                  <TableHead colSpan={2} className="text-xs text-center bg-amber-500/5 border-x">GF</TableHead>
+                  <TableHead colSpan={2} className="text-xs text-center bg-rose-500/5 border-x">UC</TableHead>
+                  <TableHead rowSpan={2} className="text-xs align-middle text-center">حالة</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                <TableRow>
+                  <TableHead className="text-[10px] text-center bg-violet-500/5 border-x">DL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-violet-500/5 border-x">LL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-blue-500/5 border-x">DL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-blue-500/5 border-x">LL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-amber-500/5 border-x">DL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-amber-500/5 border-x">LL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-rose-500/5 border-x">DL</TableHead>
+                  <TableHead className="text-[10px] text-center bg-rose-500/5 border-x">LL</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredRows.map(r => (
+                  <TableRow key={r.beamId} className="text-xs">
+                    <TableCell className="font-mono text-xs">{r.beamId}</TableCell>
+                    <TableCell className="text-center font-mono">{fmt(r.length, 2)}</TableCell>
+                    <TableCell className="text-center font-mono bg-violet-500/5">{fmt(r.dl_2d)}</TableCell>
+                    <TableCell className="text-center font-mono bg-violet-500/5">{fmt(r.ll_2d)}</TableCell>
+                    <TableCell className="text-center font-mono bg-blue-500/5">{fmt(r.dl_3d)}</TableCell>
+                    <TableCell className="text-center font-mono bg-blue-500/5">{fmt(r.ll_3d)}</TableCell>
+                    <TableCell className="text-center font-mono bg-amber-500/5">{fmt(r.dl_gf)}</TableCell>
+                    <TableCell className="text-center font-mono bg-amber-500/5">{fmt(r.ll_gf)}</TableCell>
+                    <TableCell className="text-center font-mono bg-rose-500/5">{fmt(r.dl_uc)}</TableCell>
+                    <TableCell className="text-center font-mono bg-rose-500/5">{fmt(r.ll_uc)}</TableCell>
+                    <TableCell className="text-center">{diffBadge(r.maxDiffPct)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
           <p className="text-[10px] text-muted-foreground mt-3 leading-relaxed">
-            الوحدات: kN/m (حمل خطي موزّع مكافئ على طول الجسر). المرجع لمقارنة
-            النسب المئوية هو محرك 2D. تطابق GF/UC مع 2D متوقّع لأن كلا المحرّكَين
-            يستهلكان حقلَي <code>beam.deadLoad</code> و
-            <code>beam.liveLoad</code> اللذَين يُحسبان مرة واحدة عبر{' '}
-            <code>calculateBeamLoads</code>؛ أي اختلاف مع 3D Legacy يعكس فروقاً
-            في معالجة المساحة الرافدة (Trapezoidal vs Triangular) عند الجسور
-            الحدودية.
+            الوحدات: kN/m (حمل خطي موزّع مكافئ). المرجع للمقارنة هو محرك 2D.
           </p>
         </CardContent>
       </Card>
