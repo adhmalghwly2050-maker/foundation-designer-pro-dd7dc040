@@ -281,69 +281,74 @@ function svgSlabsOnPlan(
 ): string {
   let svg = '';
   for (const s of slabs) {
-    const x = tx(s.x1);
-    const y = ty(s.y2);
-    const w = (s.x2 - s.x1) * mmPerM;
-    const h = (s.y2 - s.y1) * mmPerM;
-    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#000096" stroke-width="0.7" />`;
+    const svgX = tx(s.x1);
+    const svgY = ty(s.y2);
+    const svgW = (s.x2 - s.x1) * mmPerM;
+    const svgH_slab = (s.y2 - s.y1) * mmPerM;
+    svg += `<rect x="${svgX}" y="${svgY}" width="${svgW}" height="${svgH_slab}" fill="rgba(220,235,255,0.25)" stroke="#000096" stroke-width="0.7" />`;
     const cx = tx((s.x1 + s.x2) / 2);
     const cy = ty((s.y1 + s.y2) / 2);
+    const dia = phiSlab || 12;
+
+    // رقم البلاطة في الأعلى دائماً
+    svg += `<text x="${cx}" y="${svgY + 10}" text-anchor="middle" font-size="7" font-weight="bold" fill="#004000" font-family="Arial">${s.id}</text>`;
 
     if (stripResults && stripResults.length > 0) {
       // ── عرض نتائج الشرائح المستمرة ──
-      const dia = phiSlab || 12;
       const xSpans = stripResults.filter(r => r.direction === 'X').flatMap(r => r.spans.filter(sp => sp.slabId === s.id));
       const ySpans = stripResults.filter(r => r.direction === 'Y').flatMap(r => r.spans.filter(sp => sp.slabId === s.id));
       const maxAsX = xSpans.length > 0 ? Math.max(...xSpans.map(sp => sp.As_pos)) : null;
       const maxAsY = ySpans.length > 0 ? Math.max(...ySpans.map(sp => sp.As_pos)) : null;
 
-      svg += `<text x="${cx}" y="${cy - 18}" text-anchor="middle" font-size="7" font-weight="bold" fill="#004000" font-family="Arial">${s.id}</text>`;
       if (maxAsX !== null) {
         const fmt = fmtAs(maxAsX, dia);
-        svg += `<text x="${cx}" y="${cy - 7}" text-anchor="middle" font-size="5.5" fill="#1a3a5c" font-family="Arial">X+: ${maxAsX.toFixed(0)} (${fmt})</text>`;
+        // حديد اتجاه X — نص أفقي على امتداد محور X
+        svg += `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#1a3a5c" font-family="Arial">X: ${fmt}</text>`;
       }
       if (maxAsY !== null) {
         const fmt = fmtAs(maxAsY, dia);
-        svg += `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="5.5" fill="#5c1a00" font-family="Arial">Y+: ${maxAsY.toFixed(0)} (${fmt})</text>`;
+        // حديد اتجاه Y — نص رأسي مدوّر 90° على امتداد محور Y
+        svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#7b1a00" font-family="Arial" transform="rotate(-90 ${cx} ${cy + 10})">Y: ${fmt}</text>`;
       }
       if (maxAsX === null && maxAsY === null) {
-        // بلاطة منفردة — لا تنتمي لأي شريحة مستمرة
         const sd = slabDesigns.find(d => d.id === s.id);
-        svg += `<text x="${cx}" y="${cy}" text-anchor="middle" font-size="5.5" fill="#888" font-family="Arial">منفردة</text>`;
-        if (sd) svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="5" fill="#888" font-family="Arial">h=${sd.design.hUsed}</text>`;
+        svg += `<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="5.5" fill="#888" font-family="Arial">منفردة${sd ? `  h=${sd.design.hUsed}` : ''}</text>`;
       }
     } else {
       // ── عرض التصميم المعزول (fallback) ──
       const sd = slabDesigns.find(d => d.id === s.id);
       if (!sd) continue;
-      const groupLabel = groupLabels?.get(s.id);
-      if (groupLabel) {
-        svg += `<text x="${cx}" y="${cy - 20}" text-anchor="middle" font-size="8" font-weight="bold" fill="#004000" font-family="Arial">${groupLabel}</text>`;
-        svg += `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">(${s.id})</text>`;
-      } else {
-        svg += `<text x="${cx}" y="${cy - 14}" text-anchor="middle" font-size="7" font-weight="bold" fill="#000078" font-family="Arial">${s.id}</text>`;
-      }
-      svg += `<text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="6" fill="#000078" font-family="Arial">h=${sd.design.hUsed}</text>`;
-      svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}</text>`;
-      svg += `<text x="${cx}" y="${cy + 20}" text-anchor="middle" font-size="5.5" fill="#000078" font-family="Arial">${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}</text>`;
+      // تحديد أي الاتجاهين هو X (الأفقي)
+      const lx = s.x2 - s.x1;
+      const ly = s.y2 - s.y1;
+      const xIsShort = lx <= ly;
+      const xDir = xIsShort ? sd.design.shortDir : sd.design.longDir;
+      const yDir = xIsShort ? sd.design.longDir : sd.design.shortDir;
+      const nPerMX = Math.max(5, Math.round(1000 / xDir.spacing));
+      const nPerMY = Math.max(5, Math.round(1000 / yDir.spacing));
+      // حديد X — أفقي
+      svg += `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#1a3a5c" font-family="Arial">X: ${nPerMX}@Φ${xDir.dia}/م</text>`;
+      // حديد Y — رأسي مدوّر
+      svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#7b1a00" font-family="Arial" transform="rotate(-90 ${cx} ${cy + 10})">Y: ${nPerMY}@Φ${yDir.dia}/م</text>`;
     }
   }
   return svg;
 }
 
 function svgScaleBar(x: number, y: number, scale: number): string {
-  const barUnitPx = 1000 / scale * 3; // scaled for SVG
-  let svg = '';
+  const barUnitPx = 1000 / scale * 3;
+  const totalW = 4 * barUnitPx + 32;
+  let svg = `<rect x="${x - 4}" y="${y - 4}" width="${totalW}" height="32" fill="white" stroke="#999" stroke-width="0.5" opacity="0.93" rx="2"/>`;
+  svg += `<text x="${x}" y="${y + 5}" font-size="5.5" font-weight="bold" font-family="Arial">Scale 1:${scale}</text>`;
   for (let i = 0; i < 4; i++) {
     const rx = x + i * barUnitPx;
     const fill = i % 2 === 0 ? '#000' : '#fff';
-    svg += `<rect x="${rx}" y="${y}" width="${barUnitPx}" height="${8}" fill="${fill}" stroke="black" stroke-width="0.5" />`;
+    svg += `<rect x="${rx}" y="${y + 8}" width="${barUnitPx}" height="8" fill="${fill}" stroke="black" stroke-width="0.5" />`;
   }
-  svg += `<text x="${x}" y="${y + 18}" font-size="5" font-family="Arial">0</text>`;
+  svg += `<text x="${x}" y="${y + 25}" font-size="5" font-family="Arial">0</text>`;
   for (let i = 1; i <= 4; i++) {
-    svg += `<text x="${x + i * barUnitPx - 5}" y="${y + 18}" font-size="5" font-family="Arial">${i}m</text>`;
+    svg += `<text x="${x + i * barUnitPx - 5}" y="${y + 25}" font-size="5" font-family="Arial">${i}m</text>`;
   }
-  svg += `<text x="${x}" y="${y - 4}" font-size="6" font-family="Arial">Scale 1:${scale}</text>`;
   return svg;
 }
 
@@ -572,12 +577,12 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
   <div style="font-size:7px; color:#5c1a00; margin-top:2px;">رمز: مجموعة أعمدة ذات تسليح متطابق — الأعمدة: أرقام الأعمدة في المجموعة</div>`;
 }
 
-/** تحويل مساحة As (mm²/m) إلى تنسيق عدد الأسياخ للمتر مثل 5@Φ10/م */
+/** تحويل مساحة As (mm²/m) إلى تنسيق عدد الأسياخ للمتر مثل 5@Φ10/م — الحد الأدنى 5 أسياخ/م */
 function fmtAs(As: number, dia: number): string {
   const abar = Math.PI / 4 * dia * dia;
   const spacingRaw = abar / Math.max(As, 1) * 1000;
-  const spacing = Math.max(100, Math.min(300, Math.round(spacingRaw / 25) * 25));
-  const nPerM = Math.round(1000 / spacing);
+  const spacing = Math.max(100, Math.min(200, Math.round(spacingRaw / 25) * 25));
+  const nPerM = Math.max(5, Math.round(1000 / spacing));
   return `${nPerM}@Φ${dia}/م`;
 }
 
@@ -1488,7 +1493,7 @@ export function generateHTMLConstructionSheets(
   const beamPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, false)
     + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM, beamGroupLabels)
-    + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
+    + svgScaleBar(15, svgH - 45, scaleVal);
 
   sheetsHTML += generateSheetHTML(
     'beam-layout',
@@ -1511,7 +1516,7 @@ export function generateHTMLConstructionSheets(
   const csDwg = makeDrawingNumber(floorCode, 'CS', 1);
   const colPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, true, colGroupLabels)
-    + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
+    + svgScaleBar(15, svgH - 45, scaleVal);
 
   // Column cross-sections SVG
   const colPatternMap = new Map<string, ColDesignData[]>();
@@ -1577,14 +1582,15 @@ export function generateHTMLConstructionSheets(
   }
 
   const slabPlanSvg = gridSvg
-    + svgColumns(columns, tx, ty, mmPerM, true, false)
     + svgSlabsOnPlan(
         slabs, slabDesigns, tx, ty, mmPerM,
         slabGroupLabels,
         stripResults.length > 0 ? stripResults : undefined,
         slabProps?.phiSlab,
       )
-    + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
+    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM)
+    + svgColumns(columns, tx, ty, mmPerM, true, false)
+    + svgScaleBar(15, svgH - 45, scaleVal);
 
   const slabTableHTML = (slabProps && mat && stripResults.length > 0)
     ? htmlSlabStripTable(stripResults, slabProps, mat)
