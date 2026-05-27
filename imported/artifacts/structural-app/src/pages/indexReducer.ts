@@ -194,7 +194,8 @@ export type AppAction =
   | { type: 'SET_ETABS_IMPORT_MODE'; value: boolean }
   | { type: 'SET_ETABS_ANALYSIS_DATA'; data: AppState['etabsAnalysisData'] }
   | { type: 'SET_TITLE_BLOCK_CONFIG'; config: Partial<AppState['titleBlockConfig']> }
-  | { type: 'SET_MANUAL_JOINT_OVERRIDES'; overrides: ManualJointOverride[] };
+  | { type: 'SET_MANUAL_JOINT_OVERRIDES'; overrides: ManualJointOverride[] }
+  | { type: 'UPDATE_SLAB_VERTICES'; index: number; vertices: { x: number; y: number }[] };
 
 const defaultStoryId = 'ST1';
 
@@ -314,6 +315,21 @@ function coreReducer(state: AppState, action: AppAction): AppState {
     case 'UPDATE_SLAB': {
       const updated = [...state.slabs];
       (updated[action.index] as any)[action.key] = (action.key === 'id' || action.key === 'storyId') ? action.value : parseFloat(action.value) || 0;
+      return { ...state, slabs: updated, manualColumnsGenerated: false, manualBeamsGenerated: false, analyzed: false };
+    }
+    case 'UPDATE_SLAB_VERTICES': {
+      const updated = [...state.slabs];
+      const slab = { ...updated[action.index] };
+      if (action.vertices.length < 3) {
+        delete (slab as any).vertices;
+      } else {
+        slab.vertices = action.vertices;
+        slab.x1 = Math.min(...action.vertices.map(v => v.x));
+        slab.y1 = Math.min(...action.vertices.map(v => v.y));
+        slab.x2 = Math.max(...action.vertices.map(v => v.x));
+        slab.y2 = Math.max(...action.vertices.map(v => v.y));
+      }
+      updated[action.index] = slab;
       return { ...state, slabs: updated, manualColumnsGenerated: false, manualBeamsGenerated: false, analyzed: false };
     }
     case 'SET_MAT':

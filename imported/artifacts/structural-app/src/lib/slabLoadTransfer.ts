@@ -4,9 +4,23 @@ export interface PlanarSlabGeometry {
   y1: number;
   x2: number;
   y2: number;
+  /** نقاط مضلع البلاطة غير المستطيلة */
+  vertices?: { x: number; y: number }[];
   storyId?: string;
   deadLoad?: number;
   liveLoad?: number;
+}
+
+/** مساحة مضلع بالصيغة المتقاطعة (Shoelace formula) */
+function polygonArea(vertices: { x: number; y: number }[]): number {
+  let area = 0;
+  const n = vertices.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += vertices[i].x * vertices[j].y;
+    area -= vertices[j].x * vertices[i].y;
+  }
+  return Math.abs(area) / 2;
 }
 
 export interface PlanarBeamGeometry {
@@ -107,8 +121,23 @@ export function buildSlabEdgeLoads(
   const edgeLoads: SlabEdgeLoad[] = [];
 
   for (const slab of slabs) {
-    const [minX, maxX] = sortRange(slab.x1, slab.x2);
-    const [minY, maxY] = sortRange(slab.y1, slab.y2);
+    // للبلاطات المضلعة: احسب الـ bounding box من النقاط، وصحّح الأحمال بنسبة مساحة المضلع
+    let minX: number, maxX: number, minY: number, maxY: number;
+    let areaFactor = 1.0;
+
+    if (slab.vertices && slab.vertices.length >= 3) {
+      minX = Math.min(...slab.vertices.map(v => v.x));
+      maxX = Math.max(...slab.vertices.map(v => v.x));
+      minY = Math.min(...slab.vertices.map(v => v.y));
+      maxY = Math.max(...slab.vertices.map(v => v.y));
+      const bboxArea = (maxX - minX) * (maxY - minY);
+      const polyArea = polygonArea(slab.vertices);
+      areaFactor = bboxArea > EPS ? Math.min(polyArea / bboxArea, 1.0) : 1.0;
+    } else {
+      [minX, maxX] = sortRange(slab.x1, slab.x2);
+      [minY, maxY] = sortRange(slab.y1, slab.y2);
+    }
+
     const width = maxX - minX;
     const height = maxY - minY;
     if (width < EPS || height < EPS) continue;
@@ -118,8 +147,8 @@ export function buildSlabEdgeLoads(
     const beta = ly / lx;
     const wDL = slab.deadLoad ?? defaultDeadLoad;
     const wLL = slab.liveLoad ?? defaultLiveLoad;
-    const peakDL = wDL * (lx / 2);
-    const peakLL = wLL * (lx / 2);
+    const peakDL = wDL * (lx / 2) * areaFactor;
+    const peakLL = wLL * (lx / 2) * areaFactor;
 
     const edges = [
       { direction: 'horizontal' as const, x1: minX, y1: minY, x2: maxX, y2: minY, isLongSide: width >= ly - EPS },

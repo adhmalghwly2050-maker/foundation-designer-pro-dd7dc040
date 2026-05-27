@@ -19,6 +19,10 @@ export interface Story {
 
 export interface Slab {
   id: string; x1: number; y1: number; x2: number; y2: number;
+  /** نقاط مضلع البلاطة غير المستطيلة — إذا وُجدت تُعرَّف البلاطة بمضلع بدلاً من المستطيل.
+   *  x1/y1/x2/y2 تُحسب تلقائياً كـ bounding box للمضلع.
+   */
+  vertices?: { x: number; y: number }[];
   storyId?: string;
 }
 export interface Column {

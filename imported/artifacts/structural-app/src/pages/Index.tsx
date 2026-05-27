@@ -37,7 +37,7 @@ import {
   Building2, Layers, Calculator, BarChart3, Ruler, Eye,
   Grid3X3, Settings2, Download, Bot, Building, Zap, Plus, Trash2,
   Undo2, Save, Check, Wand2, Search, Compass, Merge, Crosshair, CheckSquare, Upload, Activity,
-  Loader2, X as XIcon, RotateCcw,
+  Loader2, X as XIcon, RotateCcw, Shapes,
 } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 import BottomNav, { type MainTab } from "@/components/BottomNav";
@@ -183,6 +183,12 @@ const Index = () => {
   const [beamSearch, setBeamSearch] = React.useState('');
   const [colSearch, setColSearch] = React.useState('');
   const [slabSearch, setSlabSearch] = React.useState('');
+
+  // Polygon slab vertex editor state
+  const [polygonEditorSlabIndex, setPolygonEditorSlabIndex] = React.useState<number | null>(null);
+
+  // Manual slab merge selection
+  const [manualMergeSelectedIds, setManualMergeSelectedIds] = React.useState<Set<string>>(new Set());
 
   // Modeler elevation filter state
   const [modelerElevation, setModelerElevation] = React.useState<number>(0);
@@ -2374,14 +2380,19 @@ const Index = () => {
                   {/* Slabs table */}
                   <Card>
                     <CardHeader className="pb-2 flex-row items-center justify-between">
-                      <CardTitle className="text-sm">إحداثيات البلاطات (م) - {isAllStories ? 'جميع الأدوار' : getStoryLabel(selectedStoryId)}</CardTitle>
+                      <div>
+                        <CardTitle className="text-sm">إحداثيات البلاطات (م) - {isAllStories ? 'جميع الأدوار' : getStoryLabel(selectedStoryId)}</CardTitle>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          يدعم البلاطات المستطيلة والمضلعة غير المنتظمة — اضغط <Shapes size={10} className="inline" /> لتحرير نقاط المضلع
+                        </p>
+                      </div>
                       <Button onClick={() => dispatch({ type: 'ADD_SLAB', slab: { id: `S${slabs.length + 1}`, x1: 0, y1: 0, x2: 5, y2: 4, storyId: selectedStoryId === '__ALL__' ? stories[0]?.id : selectedStoryId } })} size="sm" variant="outline" className="min-h-[44px] gap-1"><Plus size={14} /> إضافة بلاطة</Button>
                     </CardHeader>
                     <CardContent className="overflow-x-auto">
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            {[...(isAllStories ? ['الدور'] : []),'الاسم','X1','Y1','X2','Y2','الدور / المنسوب Z','Lx','Ly','النوع','حذف'].map(h => (
+                            {[...(isAllStories ? ['الدور'] : []),'الاسم','X1','Y1','X2','Y2','الدور / المنسوب Z','Lx','Ly','النوع','مضلع','حذف'].map(h => (
                               <TableHead key={h} className="text-xs">{h}</TableHead>
                             ))}
                           </TableRow>
@@ -2390,32 +2401,176 @@ const Index = () => {
                           {storyFilteredSlabs.map((s) => {
                             const i = slabs.indexOf(s);
                             const sd = slabDesigns.find(sd => sd.id === s.id)?.design;
+                            const isPolygon = !!(s.vertices && s.vertices.length >= 3);
+                            const isEditingPolygon = polygonEditorSlabIndex === i;
+                            const colSpanFull = isAllStories ? 12 : 11;
                             return (
-                              <TableRow key={`${s.storyId}-${s.id}`}>
-                                {isAllStories && <TableCell className="text-xs font-medium text-muted-foreground">{getStoryLabel(s.storyId)}</TableCell>}
-                                <TableCell><Input value={s.id} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'id', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
-                                <TableCell>
-                                  <select
-                                    value={s.storyId || ''}
-                                    onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'storyId', value: e.target.value })}
-                                    className="h-10 text-xs border border-input rounded-md px-1 bg-background text-foreground w-28"
-                                  >
-                                    {stories.map(st => (
-                                      <option key={st.id} value={st.id}>
-                                        {st.label} (+{((st.elevation ?? 0) + st.height).toFixed(0)})
-                                      </option>
-                                    ))}
-                                  </select>
-                                </TableCell>
-                                <TableCell className="font-mono text-xs">{sd?.lx.toFixed(1)}</TableCell>
-                                <TableCell className="font-mono text-xs">{sd?.ly.toFixed(1)}</TableCell>
-                                <TableCell className="text-xs">{sd?.isOneWay ? 'اتجاه واحد' : 'اتجاهين'}</TableCell>
-                                <TableCell><Button onClick={() => dispatch({ type: 'REMOVE_SLAB', index: i })} variant="ghost" size="sm" className="text-destructive h-10 w-10 p-0"><Trash2 size={14} /></Button></TableCell>
-                              </TableRow>
+                              <React.Fragment key={`${s.storyId}-${s.id}`}>
+                                <TableRow className={isPolygon ? 'bg-blue-50/40 dark:bg-blue-950/20' : ''}>
+                                  {isAllStories && <TableCell className="text-xs font-medium text-muted-foreground">{getStoryLabel(s.storyId)}</TableCell>}
+                                  <TableCell><Input value={s.id} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'id', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                  {isPolygon ? (
+                                    <>
+                                      <TableCell className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">{s.x1.toFixed(2)}</TableCell>
+                                      <TableCell className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">{s.y1.toFixed(2)}</TableCell>
+                                      <TableCell className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">{s.x2.toFixed(2)}</TableCell>
+                                      <TableCell className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">{s.y2.toFixed(2)}</TableCell>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                      <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y1} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y1', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                      <TableCell><Input type="number" step="any" inputMode="decimal" value={s.x2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'x2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                      <TableCell><Input type="number" step="any" inputMode="decimal" value={s.y2} onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'y2', value: e.target.value })} className="h-10 w-16 font-mono text-xs" /></TableCell>
+                                    </>
+                                  )}
+                                  <TableCell>
+                                    <select
+                                      value={s.storyId || ''}
+                                      onChange={e => dispatch({ type: 'UPDATE_SLAB', index: i, key: 'storyId', value: e.target.value })}
+                                      className="h-10 text-xs border border-input rounded-md px-1 bg-background text-foreground w-28"
+                                    >
+                                      {stories.map(st => (
+                                        <option key={st.id} value={st.id}>
+                                          {st.label} (+{((st.elevation ?? 0) + st.height).toFixed(0)})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </TableCell>
+                                  <TableCell className="font-mono text-xs">{sd?.lx.toFixed(1)}</TableCell>
+                                  <TableCell className="font-mono text-xs">{sd?.ly.toFixed(1)}</TableCell>
+                                  <TableCell className="text-xs">{sd?.isOneWay ? 'اتجاه واحد' : 'اتجاهين'}</TableCell>
+                                  <TableCell>
+                                    <Button
+                                      variant={isPolygon ? 'default' : 'outline'}
+                                      size="sm"
+                                      title={isPolygon ? `مضلع (${s.vertices!.length} نقطة) — اضغط لتعديل` : 'تحويل إلى بلاطة مضلعة'}
+                                      className={`h-10 w-10 p-0 ${isEditingPolygon ? 'ring-2 ring-blue-400' : ''}`}
+                                      onClick={() => setPolygonEditorSlabIndex(isEditingPolygon ? null : i)}
+                                    >
+                                      <Shapes size={13} />
+                                    </Button>
+                                  </TableCell>
+                                  <TableCell><Button onClick={() => { dispatch({ type: 'REMOVE_SLAB', index: i }); if (polygonEditorSlabIndex === i) setPolygonEditorSlabIndex(null); }} variant="ghost" size="sm" className="text-destructive h-10 w-10 p-0"><Trash2 size={14} /></Button></TableCell>
+                                </TableRow>
+                                {/* Polygon Vertex Editor Sub-Row */}
+                                {isEditingPolygon && (
+                                  <TableRow>
+                                    <TableCell colSpan={colSpanFull} className="p-3 bg-blue-50/60 dark:bg-blue-950/30">
+                                      <div className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 flex items-center gap-1">
+                                            <Shapes size={12} />
+                                            محرر نقاط المضلع — البلاطة {s.id}
+                                            {isPolygon && <Badge variant="secondary" className="text-[9px] mr-1">{s.vertices!.length} نقطة</Badge>}
+                                          </p>
+                                          <div className="flex gap-1">
+                                            {isPolygon && (
+                                              <Button size="sm" variant="ghost" className="h-7 text-[10px] text-destructive" onClick={() => { dispatch({ type: 'UPDATE_SLAB_VERTICES', index: i, vertices: [] }); }}>
+                                                إزالة المضلع (عودة للمستطيل)
+                                              </Button>
+                                            )}
+                                            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => {
+                                              const currentVerts = s.vertices && s.vertices.length >= 3
+                                                ? [...s.vertices]
+                                                : [
+                                                    { x: s.x1, y: s.y1 },
+                                                    { x: s.x2, y: s.y1 },
+                                                    { x: s.x2, y: s.y2 },
+                                                    { x: s.x1, y: s.y2 },
+                                                  ];
+                                              dispatch({ type: 'UPDATE_SLAB_VERTICES', index: i, vertices: [...currentVerts, { x: s.x2, y: s.y2 }] });
+                                            }}>
+                                              <Plus size={10} className="mr-1" />إضافة نقطة
+                                            </Button>
+                                          </div>
+                                        </div>
+                                        <p className="text-[10px] text-muted-foreground">
+                                          أدخل إحداثيات نقاط المضلع بالترتيب (عكس عقارب الساعة). الإحداثيات بالمتر. الـ bounding box يُحسب تلقائياً.
+                                        </p>
+                                        <div className="overflow-x-auto">
+                                          <table className="text-xs w-auto border-collapse">
+                                            <thead>
+                                              <tr className="text-muted-foreground">
+                                                <th className="text-right px-2 py-1 font-medium">النقطة</th>
+                                                <th className="text-right px-2 py-1 font-medium">X (م)</th>
+                                                <th className="text-right px-2 py-1 font-medium">Y (م)</th>
+                                                <th className="px-2 py-1"></th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {(s.vertices && s.vertices.length >= 3
+                                                ? s.vertices
+                                                : [
+                                                    { x: s.x1, y: s.y1 },
+                                                    { x: s.x2, y: s.y1 },
+                                                    { x: s.x2, y: s.y2 },
+                                                    { x: s.x1, y: s.y2 },
+                                                  ]
+                                              ).map((v, vi) => {
+                                                const verts = s.vertices && s.vertices.length >= 3
+                                                  ? s.vertices
+                                                  : [
+                                                      { x: s.x1, y: s.y1 },
+                                                      { x: s.x2, y: s.y1 },
+                                                      { x: s.x2, y: s.y2 },
+                                                      { x: s.x1, y: s.y2 },
+                                                    ];
+                                                return (
+                                                  <tr key={vi} className="border-t border-border/40">
+                                                    <td className="px-2 py-0.5 text-muted-foreground">P{vi + 1}</td>
+                                                    <td className="px-2 py-0.5">
+                                                      <Input
+                                                        type="number" step="any" inputMode="decimal"
+                                                        value={v.x}
+                                                        onChange={e => {
+                                                          const newVerts = verts.map((vv, j) => j === vi ? { ...vv, x: parseFloat(e.target.value) || 0 } : vv);
+                                                          dispatch({ type: 'UPDATE_SLAB_VERTICES', index: i, vertices: newVerts });
+                                                        }}
+                                                        className="h-7 w-20 font-mono text-xs"
+                                                      />
+                                                    </td>
+                                                    <td className="px-2 py-0.5">
+                                                      <Input
+                                                        type="number" step="any" inputMode="decimal"
+                                                        value={v.y}
+                                                        onChange={e => {
+                                                          const newVerts = verts.map((vv, j) => j === vi ? { ...vv, y: parseFloat(e.target.value) || 0 } : vv);
+                                                          dispatch({ type: 'UPDATE_SLAB_VERTICES', index: i, vertices: newVerts });
+                                                        }}
+                                                        className="h-7 w-20 font-mono text-xs"
+                                                      />
+                                                    </td>
+                                                    <td className="px-2 py-0.5">
+                                                      {verts.length > 3 && (
+                                                        <Button
+                                                          variant="ghost" size="sm"
+                                                          className="h-7 w-7 p-0 text-destructive"
+                                                          onClick={() => {
+                                                            const newVerts = verts.filter((_, j) => j !== vi);
+                                                            dispatch({ type: 'UPDATE_SLAB_VERTICES', index: i, vertices: newVerts });
+                                                          }}
+                                                        >
+                                                          <Trash2 size={11} />
+                                                        </Button>
+                                                      )}
+                                                    </td>
+                                                  </tr>
+                                                );
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                        {(s.vertices && s.vertices.length >= 3) && (
+                                          <p className="text-[10px] text-muted-foreground">
+                                            Bounding box: X [{s.x1.toFixed(2)} → {s.x2.toFixed(2)}] م | Y [{s.y1.toFixed(2)} → {s.y2.toFixed(2)}] م
+                                          </p>
+                                        )}
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                )}
+                              </React.Fragment>
                             );
                           })}
                         </TableBody>
@@ -2423,13 +2578,13 @@ const Index = () => {
                     </CardContent>
                   </Card>
 
-                  {/* Slab Merge Panel — shows when adjacent slabs share a free edge */}
+                  {/* Auto-Detected Slab Merge Panel — shows when adjacent slabs share a free edge */}
                   {slabMergeGroups.length > 0 && (
                     <Card className="border-yellow-400 dark:border-yellow-600">
                       <CardHeader className="pb-2">
                         <CardTitle className="text-sm flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
                           <Merge size={15} />
-                          بلاطات متجاورة تحتاج دمجاً ({slabMergeGroups.length})
+                          بلاطات متجاورة مكتشفة تلقائياً ({slabMergeGroups.length})
                         </CardTitle>
                         <p className="text-[11px] text-muted-foreground mt-1">
                           البلاطات التالية متجاورة ولا يوجد جسر بينها — يجب دمجها لنقل الأحمال صحيحاً وتصميمها كبلاطة واحدة
@@ -2487,6 +2642,89 @@ const Index = () => {
                       </CardContent>
                     </Card>
                   )}
+
+                  {/* Manual Slab Merge Panel */}
+                  <Card className="border-blue-300 dark:border-blue-700">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-2 text-blue-700 dark:text-blue-400">
+                        <Merge size={15} />
+                        دمج يدوي للبلاطات
+                        {manualMergeSelectedIds.size > 0 && (
+                          <Badge variant="secondary" className="text-[10px]">{manualMergeSelectedIds.size} محددة</Badge>
+                        )}
+                      </CardTitle>
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        حدد بلاطتين أو أكثر من القائمة أدناه ثم اضغط "دمج" — تُنشأ بلاطة مركبة واحدة تشمل الـ bounding box لجميع البلاطات المحددة
+                      </p>
+                    </CardHeader>
+                    <CardContent className="pt-0 space-y-3">
+                      <div className="flex flex-wrap gap-1.5">
+                        {storyFilteredSlabs.map(s => (
+                          <button
+                            key={s.id}
+                            className={`text-xs px-2.5 py-1 rounded-md border font-mono transition-colors ${
+                              manualMergeSelectedIds.has(s.id)
+                                ? 'bg-blue-500 text-white border-blue-600 dark:bg-blue-600'
+                                : 'bg-background border-border hover:bg-muted'
+                            }`}
+                            onClick={() => {
+                              const next = new Set(manualMergeSelectedIds);
+                              if (next.has(s.id)) next.delete(s.id);
+                              else next.add(s.id);
+                              setManualMergeSelectedIds(next);
+                            }}
+                          >
+                            {s.id}
+                          </button>
+                        ))}
+                        {storyFilteredSlabs.length === 0 && (
+                          <p className="text-xs text-muted-foreground">لا توجد بلاطات في هذا الدور</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          className="h-9 gap-1"
+                          disabled={manualMergeSelectedIds.size < 2}
+                          onClick={() => {
+                            const selectedSlabs = slabs.filter(s => manualMergeSelectedIds.has(s.id));
+                            if (selectedSlabs.length < 2) return;
+                            const x1 = Math.min(...selectedSlabs.map(s => Math.min(s.x1, s.x2)));
+                            const y1 = Math.min(...selectedSlabs.map(s => Math.min(s.y1, s.y2)));
+                            const x2 = Math.max(...selectedSlabs.map(s => Math.max(s.x1, s.x2)));
+                            const y2 = Math.max(...selectedSlabs.map(s => Math.max(s.y1, s.y2)));
+                            const ids = [...manualMergeSelectedIds];
+                            const newId = `M${ids.join('')}`;
+                            const newSlab: Slab = {
+                              id: newId, x1, y1, x2, y2,
+                              storyId: selectedSlabs[0].storyId ?? '',
+                            };
+                            const remaining = slabs.filter(s => !manualMergeSelectedIds.has(s.id));
+                            dispatch({ type: 'SET_SLABS', slabs: [...remaining, newSlab] });
+                            setManualMergeSelectedIds(new Set());
+                          }}
+                        >
+                          <Merge size={13} />دمج البلاطات المحددة
+                        </Button>
+                        {manualMergeSelectedIds.size > 0 && (
+                          <Button size="sm" variant="ghost" className="h-9 text-xs" onClick={() => setManualMergeSelectedIds(new Set())}>
+                            إلغاء التحديد
+                          </Button>
+                        )}
+                        {manualMergeSelectedIds.size >= 2 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            النتيجة: بلاطة M{[...manualMergeSelectedIds].join('')} تشمل أبعاد:{' '}
+                            {(() => {
+                              const sel = slabs.filter(s => manualMergeSelectedIds.has(s.id));
+                              const w = (Math.max(...sel.map(s => Math.max(s.x1,s.x2))) - Math.min(...sel.map(s => Math.min(s.x1,s.x2)))).toFixed(2);
+                              const h2 = (Math.max(...sel.map(s => Math.max(s.y1,s.y2))) - Math.min(...sel.map(s => Math.min(s.y1,s.y2)))).toFixed(2);
+                              return `${w} × ${h2} م`;
+                            })()}
+                          </span>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
 
                   {/* Generate Beams Button */}
                   <Card>
