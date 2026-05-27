@@ -136,19 +136,33 @@ function svgGridSystem(
 function svgColumns(
   columns: Column[], tx: (x: number) => number, ty: (y: number) => number, mmPerM: number,
   filled: boolean = true, showLabels: boolean = false,
+  groupLabels?: Map<string, string>,
 ): string {
   let svg = '';
   for (const c of columns) {
     if ((c as any).isRemoved) continue;
-    const hw = (c.b / 1000) * mmPerM / 2;
-    const hh = (c.h / 1000) * mmPerM / 2;
+
+    // دعم التدوير: orientAngle ~90° يعني تبديل b و h في الرسم
+    const angle = (c as any).orientAngle ?? 0;
+    const isRotated = Math.round(Math.abs(angle) % 180) >= 45 && Math.round(Math.abs(angle) % 180) < 135;
+    // الأبعاد المرئية على المسقط الأفقي
+    const visualW = isRotated ? c.h : c.b; // البُعد على محور X
+    const visualH = isRotated ? c.b : c.h; // البُعد على محور Y
+
+    const hw = (visualW / 1000) * mmPerM / 2;
+    const hh = (visualH / 1000) * mmPerM / 2;
     const cx = tx(c.x) - hw;
     const cy = ty(c.y) - hh;
     const fill = filled ? '#3C3C3C' : '#000';
     svg += `<rect x="${cx}" y="${cy}" width="${hw * 2}" height="${hh * 2}" fill="${fill}" stroke="black" stroke-width="1" />`;
     if (showLabels) {
-      svg += `<text x="${tx(c.x) + hw + 6}" y="${ty(c.y) + 3}" font-size="8" font-weight="bold" font-family="Arial">${c.id}</text>`;
-      svg += `<text x="${tx(c.x) + hw + 6}" y="${ty(c.y) + 14}" font-size="6" font-family="Arial">${c.b}×${c.h}</text>`;
+      const groupLabel = groupLabels?.get(c.id);
+      // السطر الأول: رمز المجموعة + رقم العمود
+      const line1 = groupLabel ? `${groupLabel}(${c.id})` : c.id;
+      // السطر الثاني: الأبعاد + مؤشر التدوير إن وجد
+      const line2 = `${c.b}×${c.h}${isRotated ? ' ®' : ''}`;
+      svg += `<text x="${tx(c.x) + hw + 5}" y="${ty(c.y) - 2}" font-size="7" font-weight="bold" font-family="Arial" fill="#000">${line1}</text>`;
+      svg += `<text x="${tx(c.x) + hw + 5}" y="${ty(c.y) + 9}" font-size="5.5" font-family="Arial" fill="#444">${line2}</text>`;
     }
   }
   return svg;
@@ -461,6 +475,11 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
     const bentCount = hasBent ? Math.min(2, Math.floor(totalBot / 2)) : 0;
     const straightBot = totalBot - bentCount;
 
+    // الحديد العلوي الصافي بعد خصم حديد التكسيح المكسح الذي يرتفع للمنطقة العلوية
+    const topDia = Math.max(d.flexLeft.dia, d.flexRight.dia);
+    const uTop = Math.max(d.flexLeft.bars, d.flexRight.bars);
+    const netTop = Math.max(0, uTop - bentCount);
+
     const uniqueIds = [...new Set(memberIds)].sort((a, b) => {
       const na = parseFloat(a.replace(/[^0-9.]/g, ''));
       const nb = parseFloat(b.replace(/[^0-9.]/g, ''));
@@ -475,9 +494,8 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
       <td>${spanText}</td>
       <td>${fmtRebar(straightBot, d.flexMid.dia)}</td>
       <td>${bentCount > 0 ? fmtRebar(bentCount, d.flexMid.dia) : '—'}</td>
-      <td>${d.flexLeft.bars > 0 ? fmtRebar(d.flexLeft.bars, d.flexLeft.dia) : '—'}</td>
-      <td>${d.flexRight.bars > 0 ? fmtRebar(d.flexRight.bars, d.flexRight.dia) : '—'}</td>
-      <td>${d.shear.stirrups}</td>
+      <td>${netTop > 0 ? fmtRebar(netTop, topDia) : '—'}</td>
+      <td style="font-size:7px; white-space:nowrap;">${d.shear.stirrups}</td>
     </tr>`;
   }
 
@@ -492,19 +510,17 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">H</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">L (m)</th>
         <th colspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">سفلي</th>
-        <th colspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">علوي</th>
+        <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">علوي صافي*</th>
         <th rowspan="2" style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px;">الكانات</th>
       </tr>
       <tr>
         <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">مستقيم</th>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">مكسح*</th>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">يسار</th>
-        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">يمين</th>
+        <th style="border:1px solid #000; background:#2a4a6c; color:#fff; padding:2px; font-size:7px;">مكسح</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div style="font-size:7px; color:#555; margin-top:3px;">* التكسيح للجسور L > 2.0 م فقط</div>
+  <div style="font-size:7px; color:#555; margin-top:3px;">* علوي صافي = الحديد العلوي المطلوب بعد خصم مساهمة حديد التكسيح المكسح في المنطقة العلوية عند الركائز</div>
   <div style="font-size:7px; color:#1a3a5c; margin-top:2px;">رمز: مجموعة جسور ذات تسليح متطابق — الأعضاء: أرقام الجسور في المجموعة</div>`;
 }
 
@@ -556,12 +572,13 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
   <div style="font-size:7px; color:#5c1a00; margin-top:2px;">رمز: مجموعة أعمدة ذات تسليح متطابق — الأعمدة: أرقام الأعمدة في المجموعة</div>`;
 }
 
-/** تحويل مساحة As (mm²/m) إلى تنسيق Φdia@spacing */
+/** تحويل مساحة As (mm²/m) إلى تنسيق عدد الأسياخ للمتر مثل 5@Φ10/م */
 function fmtAs(As: number, dia: number): string {
   const abar = Math.PI / 4 * dia * dia;
   const spacingRaw = abar / Math.max(As, 1) * 1000;
   const spacing = Math.max(100, Math.min(300, Math.round(spacingRaw / 25) * 25));
-  return `Φ${dia}@${spacing}`;
+  const nPerM = Math.round(1000 / spacing);
+  return `${nPerM}@Φ${dia}/م`;
 }
 
 /** حساب التسليح السالب الصافي — يُخصم تسليح العزم الموجب من البحرتين المجاورتين */
@@ -628,13 +645,22 @@ function htmlSlabStripTable(results: ContinuousSlabResult[], slabProps: SlabProp
         // ركيزة بعد هذه البحرة
         if (i < netNegs.length) {
           const sup = netNegs[i];
-          headerCells += `<th style="border:1px solid #aaa; background:#ffeee8; padding:2px; font-size:7px; min-width:45px;">ركيزة ${sup.supportIdx}</th>`;
-          valueCells += `<td style="border:1px solid #ccc; padding:2px; font-size:7px; text-align:center; background:#fff5f0;">
-            <div style="color:#800000;">As−=${sup.As_neg_req.toFixed(0)}</div>
-            <div style="color:#999; font-size:6px;">−${sup.deduction.toFixed(0)}</div>
-            <div style="color:#c00000; font-weight:bold;">صافي=${sup.As_neg_net.toFixed(0)}</div>
-            <div style="color:#a00000;">${fmtAs(sup.As_neg_net, dia)}</div>
-          </td>`;
+          const isCovered = sup.As_neg_req <= sup.deduction;
+          headerCells += `<th style="border:1px solid #aaa; background:${isCovered ? '#e8f5e9' : '#ffeee8'}; padding:2px; font-size:7px; min-width:45px;">ركيزة ${sup.supportIdx}</th>`;
+          if (isCovered) {
+            valueCells += `<td style="border:1px solid #ccc; padding:2px; font-size:7px; text-align:center; background:#f0fff0;">
+              <div style="color:#007000; font-weight:bold;">مغطى ✓</div>
+              <div style="color:#888; font-size:6px;">As−=${sup.As_neg_req.toFixed(0)}</div>
+              <div style="color:#888; font-size:6px;">امتداد L/5 يغطي</div>
+            </td>`;
+          } else {
+            valueCells += `<td style="border:1px solid #ccc; padding:2px; font-size:7px; text-align:center; background:#fff5f0;">
+              <div style="color:#800000;">As−=${sup.As_neg_req.toFixed(0)}</div>
+              <div style="color:#999; font-size:6px;">−${sup.deduction.toFixed(0)}</div>
+              <div style="color:#c00000; font-weight:bold;">إضافي=${sup.As_neg_net.toFixed(0)}</div>
+              <div style="color:#a00000;">${fmtAs(sup.As_neg_net, dia)}</div>
+            </td>`;
+          }
         }
       }
 
@@ -1484,7 +1510,7 @@ export function generateHTMLConstructionSheets(
   // ═══════════════════════════════════════════════════
   const csDwg = makeDrawingNumber(floorCode, 'CS', 1);
   const colPlanSvg = gridSvg
-    + svgColumns(columns, tx, ty, mmPerM, true, true)
+    + svgColumns(columns, tx, ty, mmPerM, true, true, colGroupLabels)
     + svgScaleBar(planZoneW / 2 - 60, svgH - 35, scaleVal);
 
   // Column cross-sections SVG
