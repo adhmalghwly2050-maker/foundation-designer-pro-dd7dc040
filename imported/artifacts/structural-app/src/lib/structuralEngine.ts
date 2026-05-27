@@ -1092,6 +1092,32 @@ export function detectBeamOnBeam(
 import { MSPointLoad, MSNode, MSElement, analyzeByMatrixStiffness, envelopeAnalysis as msEnvelopeAnalysis } from './matrixStiffness';
 import { MDNode, MDElement, envelopeByMomentDistribution, analyzeByMomentDistribution } from './momentDistribution';
 
+/**
+ * ACI 318-19 §6.3.2.1 — Rigid End Offset (امتداد النهاية الصلبة)
+ *
+ * Returns the half-column extent (metres) in the beam direction,
+ * correctly accounting for the column's orientAngle.
+ *
+ * Column orientation convention (structuralEngine.ts):
+ *   orientAngle = 0°  →  b along Global X,  h along Global Y  (default)
+ *   orientAngle = 90° →  b along Global Y,  h along Global X
+ *
+ * For a rectangular column rotated by θ, the bounding-box half-extent
+ * in the X direction is:  |b/2 · cosθ| + |h/2 · sinθ|
+ * and in the Y direction: |b/2 · sinθ| + |h/2 · cosθ|
+ *
+ * @param col      Column object (b, h in mm; orientAngle in degrees)
+ * @param isHoriz  true → beam runs in X direction; false → Y direction
+ */
+function colHalfExtentInBeamDir(col: Column, isHoriz: boolean): number {
+  const θ = ((col.orientAngle ?? 0) * Math.PI) / 180;
+  const bHalf = col.b / 2000; // mm → m, half-dimension along b-axis
+  const hHalf = col.h / 2000; // mm → m, half-dimension along h-axis
+  return isHoriz
+    ? Math.abs(bHalf * Math.cos(θ)) + Math.abs(hHalf * Math.sin(θ))
+    : Math.abs(bHalf * Math.sin(θ)) + Math.abs(hHalf * Math.cos(θ));
+}
+
 export function analyzeFrame(
   frame: Frame, beamsMap: Map<string, Beam>,
   columns: Column[], mat: MatProps,
@@ -1269,14 +1295,16 @@ export function analyzeFrame(
     const beamEI = E * (beamStiffnessFactor * I_beam);
     const hinge = secondaryBeamHinges?.get(b.id);
 
-    // Compute half-column widths in beam direction (meters)
+    // Compute half-column extents in beam direction — accounts for orientAngle
     const fromCol = columns.find(c => c.id === b.fromCol);
-    const toCol = columns.find(c => c.id === b.toCol);
+    const toCol   = columns.find(c => c.id === b.toCol);
     const isHoriz = b.direction === 'horizontal';
-    const halfColLeft = fromCol ? (isHoriz ? fromCol.b : fromCol.h) / 2000 : 0;
-    const halfColRight = toCol ? (isHoriz ? toCol.b : toCol.h) / 2000 : 0;
-    // Clear span (face-to-face), minimum 80% of center-to-center per ACI
-    const clearSpan = Math.max(b.length - halfColLeft - halfColRight, b.length * 0.8);
+    const halfColLeft  = fromCol ? colHalfExtentInBeamDir(fromCol, isHoriz) : 0;
+    const halfColRight = toCol   ? colHalfExtentInBeamDir(toCol,   isHoriz) : 0;
+    // ACI 318-19 §6.3.2.1 — clear span (face-to-face).
+    // Physical minimum: must leave at least 30 cm of flexible beam between faces
+    // (guards against degenerate geometry; not an ACI code minimum).
+    const clearSpan = Math.max(b.length - halfColLeft - halfColRight, 0.30);
 
     // Adjust point load positions for clear span
     let adjustedPointLoads = additionalPointLoads?.get(b.id);

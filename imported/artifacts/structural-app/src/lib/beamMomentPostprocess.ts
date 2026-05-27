@@ -31,7 +31,16 @@ export function getEndpointColumnHalfWidth(
   );
 
   if (!matchedColumn) return 0;
-  return (isHoriz ? matchedColumn.b : matchedColumn.h) / 2000;
+  // Account for column orientAngle (ACI 318-19 §6.3.2.1 rigid end offset).
+  // orientAngle=0°: b along X, h along Y.
+  // orientAngle=90°: b along Y, h along X.
+  // General case: bounding-box half-extent in beam direction.
+  const θ = ((matchedColumn.orientAngle ?? 0) * Math.PI) / 180;
+  const bHalf = matchedColumn.b / 2000;
+  const hHalf = matchedColumn.h / 2000;
+  return isHoriz
+    ? Math.abs(bHalf * Math.cos(θ)) + Math.abs(hHalf * Math.sin(θ))
+    : Math.abs(bHalf * Math.sin(θ)) + Math.abs(hHalf * Math.cos(θ));
 }
 
 export function sampleBeamEndMomentsAtPhysicalFaces({

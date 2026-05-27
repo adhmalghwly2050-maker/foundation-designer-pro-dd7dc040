@@ -938,13 +938,23 @@ export function generateConstructionSheets(
     let bx2 = tx(b.x2);
     let by2 = ty(b.y2);
     
+    // Half-column extent in beam direction accounting for orientAngle
+    const _colHalfPx = (col: typeof fromCol, horiz: boolean) => {
+      if (!col) return 0;
+      const θ = ((col.orientAngle ?? 0) * Math.PI) / 180;
+      const bH = (col.b / 1000) * mmPerM / 2;
+      const hH = (col.h / 1000) * mmPerM / 2;
+      return horiz
+        ? Math.abs(bH * Math.cos(θ)) + Math.abs(hH * Math.sin(θ))
+        : Math.abs(bH * Math.sin(θ)) + Math.abs(hH * Math.cos(θ));
+    };
     if (fromCol) {
-      if (isHoriz) bx1 = tx(b.x1) + (fromCol.b / 1000) * mmPerM / 2;
-      else by1 = ty(b.y1) - (fromCol.h / 1000) * mmPerM / 2;
+      if (isHoriz) bx1 = tx(b.x1) + _colHalfPx(fromCol, true);
+      else by1 = ty(b.y1) - _colHalfPx(fromCol, false);
     }
     if (toCol) {
-      if (isHoriz) bx2 = tx(b.x2) - (toCol.b / 1000) * mmPerM / 2;
-      else by2 = ty(b.y2) + (toCol.h / 1000) * mmPerM / 2;
+      if (isHoriz) bx2 = tx(b.x2) - _colHalfPx(toCol, true);
+      else by2 = ty(b.y2) + _colHalfPx(toCol, false);
     }
 
     // Draw beam as shaded rectangle

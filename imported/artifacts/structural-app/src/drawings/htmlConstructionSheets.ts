@@ -204,13 +204,23 @@ function svgBeamsOnPlan(
     const fromCol = columns.find(c => c.id === (b as any).fromCol || (Math.abs(c.x - b.x1) < 0.01 && Math.abs(c.y - b.y1) < 0.01));
     const toCol = columns.find(c => c.id === (b as any).toCol || (Math.abs(c.x - b.x2) < 0.01 && Math.abs(c.y - b.y2) < 0.01));
 
+    // Half-column extent in beam direction accounting for orientAngle
+    const _colHalfPx = (col: typeof fromCol, horiz: boolean) => {
+      if (!col) return 0;
+      const θ = ((col.orientAngle ?? 0) * Math.PI) / 180;
+      const bH = (col.b / 1000) * mmPerM / 2;
+      const hH = (col.h / 1000) * mmPerM / 2;
+      return horiz
+        ? Math.abs(bH * Math.cos(θ)) + Math.abs(hH * Math.sin(θ))
+        : Math.abs(bH * Math.sin(θ)) + Math.abs(hH * Math.cos(θ));
+    };
     if (fromCol) {
-      if (isHoriz) bx1 += (fromCol.b / 1000) * mmPerM / 2;
-      else by1 -= (fromCol.h / 1000) * mmPerM / 2;
+      if (isHoriz) bx1 += _colHalfPx(fromCol, true);
+      else by1 -= _colHalfPx(fromCol, false);
     }
     if (toCol) {
-      if (isHoriz) bx2 -= (toCol.b / 1000) * mmPerM / 2;
-      else by2 += (toCol.h / 1000) * mmPerM / 2;
+      if (isHoriz) bx2 -= _colHalfPx(toCol, true);
+      else by2 += _colHalfPx(toCol, false);
     }
 
     if (isHoriz) {

@@ -196,13 +196,20 @@ function build3DModelWithPatternLoading(
   // column's centreline, so both beams share one DOF set.
   const colRigidZones = columns
     .filter(c => !c.isRemoved)
-    .map(c => ({
-      cx:    c.x * 1000,                                    // column centre X (mm)
-      cy:    c.y * 1000,                                    // column centre Y (mm)
-      bHalf: c.b / 2,                                       // half-width along X (mm, c.b in mm)
-      hHalf: c.h / 2,                                       // half-width along Y (mm)
-      zTop:  c.zTop ?? ((c.zBottom ?? 0) + c.L),           // column top elevation (mm)
-    }));
+    .map(c => {
+      // Bounding-box half-extents in global X and Y, accounting for orientAngle.
+      // orientAngle=0°: b along X, h along Y.  orientAngle=90°: b along Y, h along X.
+      const θ = ((c.orientAngle ?? 0) * Math.PI) / 180;
+      const bH = c.b / 2; // half b-dim in mm
+      const hH = c.h / 2; // half h-dim in mm
+      return {
+        cx:    c.x * 1000,
+        cy:    c.y * 1000,
+        bHalfX: Math.abs(bH * Math.cos(θ)) + Math.abs(hH * Math.sin(θ)), // extent in X (mm)
+        bHalfY: Math.abs(bH * Math.sin(θ)) + Math.abs(hH * Math.cos(θ)), // extent in Y (mm)
+        zTop:  c.zTop ?? ((c.zBottom ?? 0) + c.L),
+      };
+    });
 
   /** Snap (xMm, yMm) to the nearest column centreline when the point is
    *  inside the column's plan footprint at elevation zMm. Returns the
@@ -210,7 +217,7 @@ function build3DModelWithPatternLoading(
   const snapToColumnCenter = (xMm: number, yMm: number, zMm: number): [number, number] => {
     for (const rz of colRigidZones) {
       if (Math.abs(zMm - rz.zTop) > 100) continue;            // must be at same floor (100 mm tol)
-      if (Math.abs(xMm - rz.cx) <= rz.bHalf && Math.abs(yMm - rz.cy) <= rz.hHalf) {
+      if (Math.abs(xMm - rz.cx) <= rz.bHalfX && Math.abs(yMm - rz.cy) <= rz.bHalfY) {
         return [rz.cx, rz.cy];                                 // snap to column centreline
       }
     }
@@ -232,7 +239,13 @@ function build3DModelWithPatternLoading(
       const zTop = c.zTop ?? ((c.zBottom ?? 0) + c.L);
       if (Math.abs(zMm - zTop) > 100) continue;
       if (Math.abs(xMm - cx) < 2 && Math.abs(yMm - cy) < 2) {
-        return isHoriz ? c.b / 2 : c.h / 2;
+        // Account for orientAngle: bounding-box half-extent in beam direction (mm)
+        const θ = ((c.orientAngle ?? 0) * Math.PI) / 180;
+        const bH = c.b / 2;
+        const hH = c.h / 2;
+        return isHoriz
+          ? Math.abs(bH * Math.cos(θ)) + Math.abs(hH * Math.sin(θ))
+          : Math.abs(bH * Math.sin(θ)) + Math.abs(hH * Math.cos(θ));
       }
     }
     return 0;
