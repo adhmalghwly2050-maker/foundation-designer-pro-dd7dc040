@@ -418,7 +418,7 @@ const Index = () => {
       const colSection = modelManager.createSection('C-default', colB, colH, 'column');
       generateStructureFromSlabs(
         modelManager,
-        slabs.map(s => ({ id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 })),
+        slabs.map(s => ({ id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, vertices: s.vertices })),
         beamSection, colSection, slabProps.thickness, colL / 1000
       );
       // Reapply persisted frame end releases to modelManager nodes

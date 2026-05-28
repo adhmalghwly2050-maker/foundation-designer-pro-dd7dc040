@@ -516,10 +516,10 @@ const coordKey = (v: number) => Math.round(v * 1000) / 1000;
 export function generateColumns(slabs: Slab[]): Column[] {
   const map = new Map<string, { x: number; y: number }>();
   for (const s of slabs) {
-    for (const p of [
-      { x: s.x1, y: s.y1 }, { x: s.x2, y: s.y1 },
-      { x: s.x1, y: s.y2 }, { x: s.x2, y: s.y2 },
-    ]) {
+    const pts = (s.vertices && s.vertices.length >= 3)
+      ? s.vertices
+      : [{ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y1 }, { x: s.x1, y: s.y2 }, { x: s.x2, y: s.y2 }];
+    for (const p of pts) {
       map.set(`${coordKey(p.x)},${coordKey(p.y)}`, p);
     }
   }
@@ -543,12 +543,13 @@ export function generateBeams(slabs: Slab[], columns: Column[]): Beam[] {
   // Collect all unique slab edges with their associated slab IDs
   const edgeMap = new Map<string, { x1: number; y1: number; x2: number; y2: number; slabs: string[] }>();
   for (const s of slabs) {
-    const edges = [
-      { x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y1 },
-      { x1: s.x2, y1: s.y1, x2: s.x2, y2: s.y2 },
-      { x1: s.x1, y1: s.y2, x2: s.x2, y2: s.y2 },
-      { x1: s.x1, y1: s.y1, x2: s.x1, y2: s.y2 },
-    ];
+    const verts = (s.vertices && s.vertices.length >= 3)
+      ? s.vertices
+      : [{ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y1 }, { x: s.x2, y: s.y2 }, { x: s.x1, y: s.y2 }];
+    const n = verts.length;
+    const edges = verts.map((v, i) => ({
+      x1: v.x, y1: v.y, x2: verts[(i + 1) % n].x, y2: verts[(i + 1) % n].y,
+    }));
     for (const e of edges) {
       const [px1, py1, px2, py2] = e.x1 < e.x2 || (e.x1 === e.x2 && e.y1 < e.y2)
         ? [e.x1, e.y1, e.x2, e.y2] : [e.x2, e.y2, e.x1, e.y1];
@@ -2468,25 +2469,42 @@ function getSlabCoefficients(
   };
 }
 
-function countDiscontinuousEdges(slab: Slab, allSlabs: Slab[]): number {
-  let count = 0;
-  const edges = [
+function getSlabEdges(slab: Slab): { x1: number; y1: number; x2: number; y2: number }[] {
+  if (slab.vertices && slab.vertices.length >= 3) {
+    const v = slab.vertices;
+    return v.map((pt, i) => ({ x1: pt.x, y1: pt.y, x2: v[(i + 1) % v.length].x, y2: v[(i + 1) % v.length].y }));
+  }
+  return [
     { x1: slab.x1, y1: slab.y1, x2: slab.x2, y2: slab.y1 },
     { x1: slab.x1, y1: slab.y2, x2: slab.x2, y2: slab.y2 },
     { x1: slab.x1, y1: slab.y1, x2: slab.x1, y2: slab.y2 },
     { x1: slab.x2, y1: slab.y1, x2: slab.x2, y2: slab.y2 },
   ];
+}
+
+function countDiscontinuousEdges(slab: Slab, allSlabs: Slab[]): number {
+  let count = 0;
+  const edges = getSlabEdges(slab);
+  const EPS2 = 1e-6;
   for (const edge of edges) {
+    const isH = Math.abs(edge.y2 - edge.y1) < EPS2;
+    const isV = Math.abs(edge.x2 - edge.x1) < EPS2;
     const hasNeighbor = allSlabs.some(s => {
       if (s.id === slab.id) return false;
-      return (
-        (s.x1 === edge.x1 && s.y1 === edge.y1 && s.x2 === edge.x2 && s.y2 === edge.y2) ||
-        (s.x2 === edge.x1 && s.y2 === edge.y1 && s.x1 === edge.x2 && s.y1 === edge.y2) ||
-        (edge.y1 === edge.y2 && (s.y1 === edge.y1 || s.y2 === edge.y1) &&
-          Math.max(s.x1, edge.x1) < Math.min(s.x2, edge.x2)) ||
-        (edge.x1 === edge.x2 && (s.x1 === edge.x1 || s.x2 === edge.x1) &&
-          Math.max(s.y1, edge.y1) < Math.min(s.y2, edge.y2))
-      );
+      return getSlabEdges(s).some(se => {
+        const sameDir = (Math.abs(se.y2 - se.y1) < EPS2) === isH && (Math.abs(se.x2 - se.x1) < EPS2) === isV;
+        if (!sameDir) return false;
+        if (isH) {
+          return Math.abs(se.y1 - edge.y1) < EPS2 &&
+            Math.max(Math.min(se.x1, se.x2), Math.min(edge.x1, edge.x2)) <
+            Math.min(Math.max(se.x1, se.x2), Math.max(edge.x1, edge.x2)) - EPS2;
+        } else if (isV) {
+          return Math.abs(se.x1 - edge.x1) < EPS2 &&
+            Math.max(Math.min(se.y1, se.y2), Math.min(edge.y1, edge.y2)) <
+            Math.min(Math.max(se.y1, se.y2), Math.max(edge.y1, edge.y2)) - EPS2;
+        }
+        return false;
+      });
     });
     if (!hasNeighbor) count++;
   }
@@ -2659,10 +2677,12 @@ export function designSlab(
   // Punching shear check if columns are provided
   let punchingShear: PunchingShearResult | undefined;
   if (columns && columns.length > 0 && !isOneWay) {
-    const slabCorners = [
-      { x: slab.x1, y: slab.y1 }, { x: slab.x2, y: slab.y1 },
-      { x: slab.x1, y: slab.y2 }, { x: slab.x2, y: slab.y2 },
-    ];
+    const slabCorners = (slab.vertices && slab.vertices.length >= 3)
+      ? slab.vertices
+      : [
+          { x: slab.x1, y: slab.y1 }, { x: slab.x2, y: slab.y1 },
+          { x: slab.x1, y: slab.y2 }, { x: slab.x2, y: slab.y2 },
+        ];
     for (const corner of slabCorners) {
       const col = columns.find(c => Math.abs(c.x - corner.x) < 0.01 && Math.abs(c.y - corner.y) < 0.01);
       if (col) {

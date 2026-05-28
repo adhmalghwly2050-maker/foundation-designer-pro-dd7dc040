@@ -10,14 +10,30 @@ export interface SlabInput {
   y1: number;
   x2: number;
   y2: number;
+  vertices?: { x: number; y: number }[];
+}
+
+/**
+ * Returns the ordered polygon corners of a slab.
+ * Uses slab.vertices if present (polygon slab), otherwise builds the
+ * four corners from x1/y1/x2/y2 (rectangular slab).
+ */
+function getSlabCorners(slab: SlabInput): { x: number; y: number }[] {
+  if (slab.vertices && slab.vertices.length >= 3) return slab.vertices;
+  return [
+    { x: slab.x1, y: slab.y1 },
+    { x: slab.x2, y: slab.y1 },
+    { x: slab.x2, y: slab.y2 },
+    { x: slab.x1, y: slab.y2 },
+  ];
 }
 
 /**
  * Generates structural model from slab geometry:
- * 1. Creates nodes at slab corners
- * 2. Creates beams along slab edges
+ * 1. Creates nodes at slab corners (polygon-aware)
+ * 2. Creates beams along slab edges (polygon-aware)
  * 3. Creates columns at nodes (as vertical frame elements)
- * 4. Creates area elements for slabs
+ * 4. Creates area elements for slabs (polygon-aware)
  */
 export function generateStructureFromSlabs(
   model: ModelManager,
@@ -35,15 +51,10 @@ export function generateStructureFromSlabs(
   const nodeMap = new Map<string, StructuralNode>();
   const slabNodeMap = new Map<string, number[]>();
 
-  // Step 1: Create nodes at all slab corners
+  // Step 1: Create nodes at all slab corners (polygon-aware)
   const cornerPoints = new Set<string>();
   for (const slab of slabs) {
-    const corners = [
-      { x: slab.x1, y: slab.y1 },
-      { x: slab.x2, y: slab.y1 },
-      { x: slab.x1, y: slab.y2 },
-      { x: slab.x2, y: slab.y2 },
-    ];
+    const corners = getSlabCorners(slab);
     for (const p of corners) {
       const key = `${coordKey(p.x)},${coordKey(p.y)}`;
       if (!cornerPoints.has(key)) {
@@ -54,20 +65,17 @@ export function generateStructureFromSlabs(
     }
   }
 
-  // Step 2: Create beams along slab edges (avoiding duplicates)
+  // Step 2: Create beams along slab edges (polygon-aware, avoiding duplicates)
   const edgeSet = new Set<string>();
   for (const slab of slabs) {
-    const edges = [
-      { x1: slab.x1, y1: slab.y1, x2: slab.x2, y2: slab.y1 },
-      { x1: slab.x2, y1: slab.y1, x2: slab.x2, y2: slab.y2 },
-      { x1: slab.x1, y1: slab.y2, x2: slab.x2, y2: slab.y2 },
-      { x1: slab.x1, y1: slab.y1, x2: slab.x1, y2: slab.y2 },
-    ];
-    for (const e of edges) {
-      const [px1, py1, px2, py2] = e.x1 < e.x2 || (e.x1 === e.x2 && e.y1 < e.y2)
-        ? [e.x1, e.y1, e.x2, e.y2] : [e.x2, e.y2, e.x1, e.y1];
+    const corners = getSlabCorners(slab);
+    const n = corners.length;
+    for (let i = 0; i < n; i++) {
+      const a = corners[i];
+      const b = corners[(i + 1) % n];
+      const [px1, py1, px2, py2] = a.x < b.x || (a.x === b.x && a.y < b.y)
+        ? [a.x, a.y, b.x, b.y] : [b.x, b.y, a.x, a.y];
       const edgeKey = `${coordKey(px1)},${coordKey(py1)}-${coordKey(px2)},${coordKey(py2)}`;
-
       if (!edgeSet.has(edgeKey)) {
         edgeSet.add(edgeKey);
         const nodeI = nodeMap.get(`${coordKey(px1)},${coordKey(py1)}`);
@@ -88,15 +96,17 @@ export function generateStructureFromSlabs(
     model.createColumn(bottomNode.id, node.id, columnSection.id, true);
   }
 
-  // Step 4: Create area elements for slabs
+  // Step 4: Create area elements for slabs (polygon-aware)
   for (const slab of slabs) {
-    const n1 = nodeMap.get(`${coordKey(slab.x1)},${coordKey(slab.y1)}`);
-    const n2 = nodeMap.get(`${coordKey(slab.x2)},${coordKey(slab.y1)}`);
-    const n3 = nodeMap.get(`${coordKey(slab.x2)},${coordKey(slab.y2)}`);
-    const n4 = nodeMap.get(`${coordKey(slab.x1)},${coordKey(slab.y2)}`);
-    if (n1 && n2 && n3 && n4) {
-      model.createArea([n1.id, n2.id, n3.id, n4.id], slabThickness, true);
-      slabNodeMap.set(slab.id, [n1.id, n2.id, n3.id, n4.id]);
+    const corners = getSlabCorners(slab);
+    const nodeIds: number[] = [];
+    for (const p of corners) {
+      const node = nodeMap.get(`${coordKey(p.x)},${coordKey(p.y)}`);
+      if (node) nodeIds.push(node.id);
+    }
+    if (nodeIds.length >= 3) {
+      model.createArea(nodeIds, slabThickness, true);
+      slabNodeMap.set(slab.id, nodeIds);
     }
   }
 
