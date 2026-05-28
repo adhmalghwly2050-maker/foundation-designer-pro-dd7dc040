@@ -90,23 +90,41 @@ export function getSlabPolygon(slab: PlanarSlabGeometry): Pt[] {
 }
 
 /**
- * Find beams whose BOTH endpoints lie on the polygon boundary (within tol).
- * These are the beams that support the slab along its edges.
+ * Find beams that lie along one of the polygon's edges (within tol).
+ *
+ * A beam is considered "supporting" only when BOTH its endpoints project
+ * onto the **same** polygon edge within tolerance.  This prevents diagonal
+ * beams whose endpoints happen to touch two *different* edges from being
+ * wrongly included as supporting beams (which would cause them to attract
+ * large loads from the slab interior and starve the true perimeter beams).
  */
 export function findSupportingBeams(
   polygon: Pt[],
   beams: PlanarBeamGeometry[],
   tol?: number,
 ): PlanarBeamGeometry[] {
-  // Auto-scale tolerance: 1.5% of the polygon's characteristic length
+  // Auto-scale tolerance: 1.5 % of the polygon's characteristic length
   const xs = polygon.map(p => p.x), ys = polygon.map(p => p.y);
   const diagLen = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
   const useTol = tol ?? Math.max(0.05, diagLen * 0.015);
 
+  const n = polygon.length;
   return beams.filter(b => {
-    const d1 = distToPolyBoundary(b.x1, b.y1, polygon);
-    const d2 = distToPolyBoundary(b.x2, b.y2, polygon);
-    return d1 < useTol && d2 < useTol;
+    // Check every polygon edge: if both beam endpoints are within `useTol`
+    // of the *same* edge, this beam lies along that perimeter edge.
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const ex1 = polygon[i].x, ey1 = polygon[i].y;
+      const ex2 = polygon[j].x, ey2 = polygon[j].y;
+      const edgeLen = Math.hypot(ex2 - ex1, ey2 - ey1);
+      if (edgeLen < EPS) continue;
+
+      const { dist: d1 } = ptToSeg(b.x1, b.y1, ex1, ey1, ex2, ey2);
+      const { dist: d2 } = ptToSeg(b.x2, b.y2, ex1, ey1, ex2, ey2);
+
+      if (d1 < useTol && d2 < useTol) return true;
+    }
+    return false;
   });
 }
 
