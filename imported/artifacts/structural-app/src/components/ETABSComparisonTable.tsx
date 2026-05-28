@@ -159,19 +159,50 @@ const ETABSComparisonTable: React.FC<Props> = ({
     return m;
   }, [beams]);
 
+  // Build split-beam map: ETABS beam ID → sorted app parts
+  // e.g. ETABS "67" → app beams ["67-1", "67-2", "67-3"] sorted by position
+  const splitBeamPartsMap = useMemo(() => {
+    const appBeamIdSet = new Set(beams.map(b => b.id));
+    const prefixGroups = new Map<string, Array<{ beam: Beam }>>(); 
+    for (const b of beams) {
+      const match = b.id.match(/^(.+)-(\d+)$/);
+      if (!match) continue;
+      const prefix = match[1];
+      if (appBeamIdSet.has(prefix)) continue;
+      if (!prefixGroups.has(prefix)) prefixGroups.set(prefix, []);
+      prefixGroups.get(prefix)!.push({ beam: b });
+    }
+    const m = new Map<string, Array<{ beam: Beam; offset: number }>>();
+    for (const [prefix, parts] of prefixGroups) {
+      if (parts.length < 2) continue;
+      const sorted = [...parts].sort((a, bPart) => {
+        const bA = a.beam, bB = bPart.beam;
+        if (bA.direction === 'horizontal') return Math.min(bA.x1, bA.x2) - Math.min(bB.x1, bB.x2);
+        return Math.min(bA.y1, bA.y2) - Math.min(bB.y1, bB.y2);
+      });
+      let offset = 0;
+      const result: Array<{ beam: Beam; offset: number }> = [];
+      for (const part of sorted) {
+        result.push({ beam: part.beam, offset });
+        offset += part.beam.length;
+      }
+      m.set(prefix, result);
+    }
+    return m;
+  }, [beams]);
+
   // Build etabsMap: maps engine beamId → ETABSBeamData
-  // Handles merged beams by combining constituent ETABS entries
+  // Handles: (1) direct match, (2) merged beams (old→merged), (3) split beams (67→67-1,67-2,67-3)
   const etabsMap = useMemo(() => {
     const m = new Map<string, ETABSBeamData>();
-    // Direct matches first
+
+    // ── (1) Direct matches ────────────────────────────────────────────────
     for (const d of etabsData) {
       const mergedId = mergeReverseMap.get(d.beamId);
-      if (!mergedId) {
-        // Direct match - beam wasn't merged
-        m.set(d.beamId, d);
-      }
+      if (!mergedId) m.set(d.beamId, d);
     }
-    // Handle merged beams: group ETABS entries by their merged target
+
+    // ── (2) Merged beams: group ETABS entries by their merged target ───────
     const mergedGroups = new Map<string, ETABSBeamData[]>();
     for (const d of etabsData) {
       const mergedId = mergeReverseMap.get(d.beamId);
@@ -180,34 +211,54 @@ const ETABSComparisonTable: React.FC<Props> = ({
         mergedGroups.get(mergedId)!.push(d);
       }
     }
-    // For each merged beam, find the constituent beams and combine
     for (const b of beams) {
       if (!b.mergedFrom || b.mergedFrom.length < 2) continue;
       const group = mergedGroups.get(b.id);
       if (!group || group.length === 0) continue;
-      // Order by mergedFrom order (which follows spatial order)
       const ordered: ETABSBeamData[] = [];
       for (const oldId of b.mergedFrom) {
         const found = group.find(g => g.beamId === oldId);
         if (found) ordered.push(found);
       }
       if (ordered.length === 0) continue;
-      // First beam's Mleft, last beam's Mright, weighted mid
       const first = ordered[0];
       const last = ordered[ordered.length - 1];
-      // For mid-span moment, take the max absolute mid-span moment
       const maxMid = ordered.reduce((best, cur) =>
         Math.abs(cur.Mmid) > Math.abs(best.Mmid) ? cur : best
       );
-      m.set(b.id, {
-        beamId: b.id,
-        Mleft: first.Mleft,
-        Mmid: maxMid.Mmid,
-        Mright: last.Mright,
-      });
+      m.set(b.id, { beamId: b.id, Mleft: first.Mleft, Mmid: maxMid.Mmid, Mright: last.Mright });
     }
+
+    // ── (3) Split beams: ETABS has "67", app has "67-1","67-2","67-3" ─────
+    // For each ETABS entry whose beamId matches a prefix in splitBeamPartsMap,
+    // distribute its moment values to each app part using quadratic interpolation.
+    for (const d of etabsData) {
+      const parts = splitBeamPartsMap.get(d.beamId);
+      if (!parts || parts.length === 0) continue;
+      const totalLen = parts[parts.length - 1].offset + parts[parts.length - 1].beam.length;
+      for (const part of parts) {
+        if (m.has(part.beam.id)) continue; // don't overwrite a direct match
+        const L0 = part.offset;
+        const L1 = part.offset + part.beam.length;
+        // Sample ETABS moment curve (quadratic through Mleft/Mmid/Mright) at
+        // the start, middle, and end of this part.
+        const sampleQ = (x: number) => {
+          if (totalLen < 1e-6) return 0;
+          const x0 = 0, x1 = totalLen / 2, x2 = totalLen;
+          const la0 = ((x - x1) * (x - x2)) / ((x0 - x1) * (x0 - x2));
+          const la1 = ((x - x0) * (x - x2)) / ((x1 - x0) * (x1 - x2));
+          const la2 = ((x - x0) * (x - x1)) / ((x2 - x0) * (x2 - x1));
+          return d.Mleft * la0 + d.Mmid * la1 + d.Mright * la2;
+        };
+        const Mleft  = sampleQ(L0);
+        const Mright = sampleQ(L1);
+        const Mmid   = sampleQ((L0 + L1) / 2);
+        m.set(part.beam.id, { beamId: part.beam.id, Mleft, Mmid, Mright });
+      }
+    }
+
     return m;
-  }, [etabsData, mergeReverseMap, beams]);
+  }, [etabsData, mergeReverseMap, beams, splitBeamPartsMap]);
 
   const hasEtabs = etabsData.length > 0;
 

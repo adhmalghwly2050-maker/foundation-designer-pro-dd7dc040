@@ -245,15 +245,44 @@ const ETABSImportPanel: React.FC<Props> = ({
     const m = new Map<string, { mergedId: string; offset: number; oldLength: number }>();
     for (const b of beams) {
       if (!b.mergedFrom || b.mergedFrom.length === 0) continue;
-      // We need to figure out each original beam's offset within the merged beam
-      // The merged beam spans from min to max coords; originals were sorted by position during merge
-      // We'll reconstruct offsets from the beamSpanMap or from the original beam data
-      // Since originals are removed, we can approximate using the ETABS data stations
-      // But better: store the merge info. For now, map all old IDs to the merged beam with offset 0
-      // and let the station remapping happen based on ETABS data grouping
       for (const oldId of b.mergedFrom) {
         m.set(oldId, { mergedId: b.id, offset: 0, oldLength: 0 });
       }
+    }
+    return m;
+  }, [beams]);
+
+  // Build split-beam map: ETABS beam ID → sorted parts in the app
+  // Handles the case where the user split a beam (e.g., ETABS "67") into
+  // numbered parts ("67-1", "67-2", "67-3") in the app.
+  // Pattern: appBeamId === `{etabsId}-{number}` AND the prefix is not itself
+  // an existing app beam.
+  const splitBeamMap = useMemo(() => {
+    const appBeamIdSet = new Set(beams.map(b => b.id));
+    const prefixGroups = new Map<string, Array<{ appBeamId: string; beam: typeof beams[0] }>>();
+    for (const b of beams) {
+      const match = b.id.match(/^(.+)-(\d+)$/);
+      if (!match) continue;
+      const prefix = match[1];
+      if (appBeamIdSet.has(prefix)) continue; // prefix is itself an app beam
+      if (!prefixGroups.has(prefix)) prefixGroups.set(prefix, []);
+      prefixGroups.get(prefix)!.push({ appBeamId: b.id, beam: b });
+    }
+    const m = new Map<string, Array<{ appBeamId: string; offset: number; length: number }>>();
+    for (const [prefix, parts] of prefixGroups) {
+      if (parts.length < 2) continue;
+      const sorted = [...parts].sort((a, bPart) => {
+        const bA = a.beam, bB = bPart.beam;
+        if (bA.direction === 'horizontal') return Math.min(bA.x1, bA.x2) - Math.min(bB.x1, bB.x2);
+        return Math.min(bA.y1, bA.y2) - Math.min(bB.y1, bB.y2);
+      });
+      let offset = 0;
+      const result: Array<{ appBeamId: string; offset: number; length: number }> = [];
+      for (const part of sorted) {
+        result.push({ appBeamId: part.appBeamId, offset, length: part.beam.length });
+        offset += part.beam.length;
+      }
+      m.set(prefix, result);
     }
     return m;
   }, [beams]);
@@ -295,39 +324,97 @@ const ETABSImportPanel: React.FC<Props> = ({
     }
 
     return etabsData.map(row => {
-      // Check if this ETABS beam was merged into another
+      // ── 1. Check: was this ETABS beam merged from old IDs? (old→merged) ──
       const mergeInfo = mergeMap.get(row.beam);
-      const engineBeamId = mergeInfo ? mergeInfo.mergedId : row.beam;
-      const stationOffset = mergeInfo ? (mergeOffsets.get(row.beam) ?? 0) : 0;
-      const adjustedStation = row.station + stationOffset;
+      if (mergeInfo) {
+        const engineBeamId = mergeInfo.mergedId;
+        const stationOffset = mergeOffsets.get(row.beam) ?? 0;
+        const adjustedStation = row.station + stationOffset;
+        const r2d = map2D.get(engineBeamId);
+        const r3d = map3D.get(engineBeamId);
+        const rFem = mapFEM?.get(engineBeamId);
+        const rGF = mapGF?.get(engineBeamId);
+        const rUC = mapUC?.get(engineBeamId);
+        const span = r3d?.span ?? r2d?.span ?? beamSpanMap.get(engineBeamId) ?? 0;
+        const wuFallback = wuMap.get(engineBeamId);
+        const m2d  = sampleMomentAt(r2d,  adjustedStation, span, wuFallback);
+        const m3d  = sampleMomentAt(r3d,  adjustedStation, span, wuFallback);
+        const mFem = sampleMomentAt(rFem, adjustedStation, span, wuFallback);
+        const mGF  = sampleMomentAt(rGF,  adjustedStation, span, wuFallback);
+        const mUC  = sampleMomentAt(rUC,  adjustedStation, span, wuFallback);
+        return {
+          ...row,
+          beam: `${row.beam}→${engineBeamId}`,
+          span,
+          m2d, m3d, mFem, mGF, mUC,
+          diff2d:  m2d  !== null ? pctDiff(m2d,  row.m3) : null,
+          diff3d:  m3d  !== null ? pctDiff(m3d,  row.m3) : null,
+          diffFem: mFem !== null ? pctDiff(mFem, row.m3) : null,
+          diffGF:  mGF  !== null ? pctDiff(mGF,  row.m3) : null,
+          diffUC:  mUC  !== null ? pctDiff(mUC,  row.m3) : null,
+        };
+      }
 
+      // ── 2. Check: was this ETABS beam split into numbered parts in app? ──
+      // e.g. ETABS beam "67" → app beams "67-1", "67-2", "67-3"
+      const splitParts = splitBeamMap.get(row.beam);
+      if (splitParts && splitParts.length > 0) {
+        // Find which part owns this station
+        let targetPart = splitParts[splitParts.length - 1];
+        for (const part of splitParts) {
+          if (row.station <= part.offset + part.length + 0.001) {
+            targetPart = part;
+            break;
+          }
+        }
+        const adjustedStation = Math.max(0, row.station - targetPart.offset);
+        const engineBeamId = targetPart.appBeamId;
+        const r2d = map2D.get(engineBeamId);
+        const r3d = map3D.get(engineBeamId);
+        const rFem = mapFEM?.get(engineBeamId);
+        const rGF = mapGF?.get(engineBeamId);
+        const rUC = mapUC?.get(engineBeamId);
+        const span = r3d?.span ?? r2d?.span ?? beamSpanMap.get(engineBeamId) ?? targetPart.length;
+        const wuFallback = wuMap.get(engineBeamId);
+        const m2d  = sampleMomentAt(r2d,  adjustedStation, span, wuFallback);
+        const m3d  = sampleMomentAt(r3d,  adjustedStation, span, wuFallback);
+        const mFem = sampleMomentAt(rFem, adjustedStation, span, wuFallback);
+        const mGF  = sampleMomentAt(rGF,  adjustedStation, span, wuFallback);
+        const mUC  = sampleMomentAt(rUC,  adjustedStation, span, wuFallback);
+        const totalSpan = splitParts[splitParts.length - 1].offset + splitParts[splitParts.length - 1].length;
+        return {
+          ...row,
+          beam: `${row.beam}[${engineBeamId}]`,
+          span: totalSpan,
+          m2d, m3d, mFem, mGF, mUC,
+          diff2d:  m2d  !== null ? pctDiff(m2d,  row.m3) : null,
+          diff3d:  m3d  !== null ? pctDiff(m3d,  row.m3) : null,
+          diffFem: mFem !== null ? pctDiff(mFem, row.m3) : null,
+          diffGF:  mGF  !== null ? pctDiff(mGF,  row.m3) : null,
+          diffUC:  mUC  !== null ? pctDiff(mUC,  row.m3) : null,
+        };
+      }
+
+      // ── 3. Direct match ───────────────────────────────────────────────────
+      const engineBeamId = row.beam;
       const r2d = map2D.get(engineBeamId);
       const r3d = map3D.get(engineBeamId);
       const rFem = mapFEM?.get(engineBeamId);
       const rGF = mapGF?.get(engineBeamId);
       const rUC = mapUC?.get(engineBeamId);
-      const span =
-        r3d?.span ?? r2d?.span ?? beamSpanMap.get(engineBeamId) ?? 0;
+      const span = r3d?.span ?? r2d?.span ?? beamSpanMap.get(engineBeamId) ?? 0;
       const wuFallback = wuMap.get(engineBeamId);
 
-      // Evaluate every engine at the SAME ETABS station — that is the
-      // unified-stations comparison principle: for each beam, the canonical
-      // station grid is whatever ETABS provides.
-      const m2d  = sampleMomentAt(r2d,  adjustedStation, span, wuFallback);
-      const m3d  = sampleMomentAt(r3d,  adjustedStation, span, wuFallback);
-      const mFem = sampleMomentAt(rFem, adjustedStation, span, wuFallback);
-      const mGF  = sampleMomentAt(rGF,  adjustedStation, span, wuFallback);
-      const mUC  = sampleMomentAt(rUC,  adjustedStation, span, wuFallback);
+      const m2d  = sampleMomentAt(r2d,  row.station, span, wuFallback);
+      const m3d  = sampleMomentAt(r3d,  row.station, span, wuFallback);
+      const mFem = sampleMomentAt(rFem, row.station, span, wuFallback);
+      const mGF  = sampleMomentAt(rGF,  row.station, span, wuFallback);
+      const mUC  = sampleMomentAt(rUC,  row.station, span, wuFallback);
 
       return {
         ...row,
-        beam: mergeInfo ? `${row.beam}→${engineBeamId}` : row.beam,
         span,
-        m2d,
-        m3d,
-        mFem,
-        mGF,
-        mUC,
+        m2d, m3d, mFem, mGF, mUC,
         diff2d:  m2d  !== null ? pctDiff(m2d,  row.m3) : null,
         diff3d:  m3d  !== null ? pctDiff(m3d,  row.m3) : null,
         diffFem: mFem !== null ? pctDiff(mFem, row.m3) : null,
@@ -335,7 +422,7 @@ const ETABSImportPanel: React.FC<Props> = ({
         diffUC:  mUC  !== null ? pctDiff(mUC,  row.m3) : null,
       };
     });
-  }, [etabsData, map2D, map3D, mapFEM, mapGF, mapUC, beamSpanMap, mergeMap, beams]);
+  }, [etabsData, map2D, map3D, mapFEM, mapGF, mapUC, beamSpanMap, mergeMap, splitBeamMap, beams]);
 
   // Unique beam list from ETABS data
   const beamList = useMemo(() => {
