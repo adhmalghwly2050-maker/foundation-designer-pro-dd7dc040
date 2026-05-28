@@ -4,21 +4,21 @@
  * For slabs in LOAD_ONLY mode: converts slab area loads into
  * equivalent beam distributed loads and nodal forces.
  *
- * Uses slab-edge load transfer:
- * - Each rectangular slab generates linear loads on its 4 edges
- *   using the usual one-way / two-way tributary distribution.
- * - Any beam collinear with a slab edge receives the matching
- *   edge load over the overlapping length only.
+ * Uses Voronoi (nearest-segment) distribution:
+ * - Each slab polygon (rectangular OR irregular) is sampled with
+ *   a dense grid; each sample goes to the nearest perimeter beam.
+ * - Supports slabs with any number of nodes (≥ 3), so irregular
+ *   polygons are handled correctly without bounding-box fallback.
  */
 
 import {
-  buildMergedSlabGroups,
-  buildSlabEdgeLoads,
-  computeBeamLoadProfile,
   computeLineProfileStats,
   type PlanarBeamGeometry,
   type PlanarSlabGeometry,
 } from '../../lib/slabLoadTransfer';
+import {
+  buildVoronoiBeamLoads,
+} from '../../lib/voronoiSlabLoad';
 import type { StructuralModel } from '../model/types';
 
 export interface DistributedBeamLoad {
@@ -36,13 +36,14 @@ export interface SlabLoadDistributionResult {
 
 /**
  * Distribute slab loads to supporting beams for LOAD_ONLY slabs.
- * Converts slab area load → beam-edge line load → equivalent nodal forces.
+ * Uses Voronoi (nearest-segment) approach for accurate load transfer
+ * on both rectangular and irregular polygon slabs.
  */
 export function distributeSlabLoads(
   model: StructuralModel,
 ): SlabLoadDistributionResult {
   const nodeMap = new Map(model.nodes.map(n => [n.id, n]));
-  const matMap = new Map(model.materials.map(m => [m.id, m]));
+  const matMap  = new Map(model.materials.map(m => [m.id, m]));
   const beamLoads: DistributedBeamLoad[] = [];
   const nodalForces = new Map<number, { fz: number }>();
 
@@ -57,20 +58,20 @@ export function distributeSlabLoads(
   );
   const beams = model.elements.filter(e => e.type === 'beam' && e.nodeIds.length === 2);
 
-  const slabRects: PlanarSlabGeometry[] = [];
+  // ── Build slab geometries (supports ≥ 3 nodes — irregular polygons OK) ──
+  const slabGeoms: PlanarSlabGeometry[] = [];
   for (const slab of loadOnlySlabs) {
-    if (slab.nodeIds.length !== 4) continue;
     const mat = matMap.get(slab.materialId);
     if (!mat || !slab.slabProperties) continue;
 
     const nodes = slab.nodeIds.map(id => nodeMap.get(id)).filter(Boolean);
-    if (nodes.length !== 4) continue;
+    if (nodes.length < 3) continue;
 
-    const xs = nodes.map(node => node!.x);
-    const ys = nodes.map(node => node!.y);
+    const xs = nodes.map(n => n!.x);
+    const ys = nodes.map(n => n!.y);
     const selfWeight = mat.gamma * slab.slabProperties.thickness; // N/mm²
 
-    slabRects.push({
+    const geom: PlanarSlabGeometry = {
       id: `slab_${slab.id}`,
       x1: Math.min(...xs),
       y1: Math.min(...ys),
@@ -78,51 +79,45 @@ export function distributeSlabLoads(
       y2: Math.max(...ys),
       deadLoad: selfWeight,
       liveLoad: 0,
-    });
+    };
+
+    // For irregular slabs (more than 4 nodes), pass actual polygon vertices
+    if (nodes.length > 4) {
+      geom.vertices = nodes.map(n => ({ x: n!.x, y: n!.y }));
+    }
+
+    slabGeoms.push(geom);
   }
 
-  // Build flat beam geometry list (needed for composite-slab detection)
+  // ── Build beam geometry list ─────────────────────────────────────────────
   const beamGeoms: PlanarBeamGeometry[] = [];
+  const beamNodeMap = new Map<string, { nodeI: typeof nodeMap extends Map<any, infer V> ? V : never; nodeJ: typeof nodeMap extends Map<any, infer V> ? V : never }>();
+
   for (const beam of beams) {
     const nodeI = nodeMap.get(beam.nodeIds[0]);
     const nodeJ = nodeMap.get(beam.nodeIds[1]);
     if (!nodeI || !nodeJ) continue;
-    const len = Math.sqrt((nodeJ.x - nodeI.x) ** 2 + (nodeJ.y - nodeI.y) ** 2);
-    beamGeoms.push({ id: String(beam.id), x1: nodeI.x, y1: nodeI.y, x2: nodeJ.x, y2: nodeJ.y, length: len });
+    const len = Math.hypot(nodeJ.x - nodeI.x, nodeJ.y - nodeI.y);
+    if (len < 1e-9) continue;
+    const id = String(beam.id);
+    beamGeoms.push({ id, x1: nodeI.x, y1: nodeI.y, x2: nodeJ.x, y2: nodeJ.y, length: len });
+    beamNodeMap.set(id, { nodeI, nodeJ });
   }
 
-  // ── Composite slab merging ──────────────────────────────────────────────
-  // Adjacent sub-slabs sharing a free edge (no beam between them) must be
-  // treated as ONE slab for β / tributary-load calculation.  Using each
-  // sub-slab's own dimensions produces the wrong β (e.g. two 2×2 panels are
-  // each "two-way" but together form a 2×4 "one-way" slab).
-  // buildMergedSlabGroups() uses union-find to detect these groups and returns
-  // composite bounding-rectangle slabs whose dimensions drive the profiles.
-  const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
-  const compositeRects = mergedGroups.map(g => g.compositeRect);
-
-  // Edge loads are now built from composite rectangles → β is always correct,
-  // internal shared edges disappear, only the outer perimeter generates loads.
-  const slabEdgeLoads = buildSlabEdgeLoads(compositeRects, 0, 0);
+  // ── Voronoi distribution ─────────────────────────────────────────────────
+  const voronoiMap = buildVoronoiBeamLoads(slabGeoms, beamGeoms, 0, 0, 60);
 
   for (const beam of beams) {
-    const nodeI = nodeMap.get(beam.nodeIds[0]);
-    const nodeJ = nodeMap.get(beam.nodeIds[1]);
-    if (!nodeI || !nodeJ) continue;
+    const id = String(beam.id);
+    const info = beamNodeMap.get(id);
+    if (!info) continue;
+    const { nodeI, nodeJ } = info;
+    const beamLength = Math.hypot(nodeJ.x - nodeI.x, nodeJ.y - nodeI.y);
 
-    const beamLength = Math.sqrt((nodeJ.x - nodeI.x) ** 2 + (nodeJ.y - nodeI.y) ** 2);
-    if (beamLength < 1e-9) continue;
+    const profile = voronoiMap.get(id);
+    if (!profile) continue;
 
-    const slabTransfer = computeBeamLoadProfile({
-      id: String(beam.id),
-      x1: nodeI.x,
-      y1: nodeI.y,
-      x2: nodeJ.x,
-      y2: nodeJ.y,
-      length: beamLength,
-    }, slabEdgeLoads);
-
-    const stats = computeLineProfileStats(slabTransfer.profileDL);
+    const stats = computeLineProfileStats(profile.profileDL);
     if (stats.area < 1e-9) continue;
 
     const totalForce = stats.area * beamLength;
@@ -134,8 +129,8 @@ export function distributeSlabLoads(
 
     beamLoads.push({
       beamElementId: beam.id,
-      wStart: slabTransfer.profileDL[0]?.wy ?? 0,
-      wEnd: slabTransfer.profileDL[slabTransfer.profileDL.length - 1]?.wy ?? 0,
+      wStart: profile.profileDL[0]?.wy ?? 0,
+      wEnd:   profile.profileDL[profile.profileDL.length - 1]?.wy ?? 0,
     });
   }
 

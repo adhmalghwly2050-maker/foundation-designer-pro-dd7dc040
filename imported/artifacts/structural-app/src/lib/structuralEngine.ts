@@ -1,4 +1,5 @@
 import { buildSlabEdgeLoads, computeBeamLoadProfile } from './slabLoadTransfer';
+import { buildVoronoiBeamLoads, getSlabPolygon } from './voronoiSlabLoad';
 import {
   resolveJointStiffnessForFrame,
   runJointValidationTests,
@@ -944,20 +945,40 @@ export function calculateBeamLoads(
   const wLL = slabProps.liveLoad;
   const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
 
-  // Merge adjacent slabs without a separating beam (irregular slab support)
+  // Filter slabs to same story
   const storySlabs = beam.storyId
     ? slabs.filter(s => s.storyId === beam.storyId)
     : slabs;
-  const effectiveSlabs = activeBeamsForMerge && activeBeamsForMerge.length > 0
-    ? mergeAdjacentSlabsForLoading(storySlabs, activeBeamsForMerge)
-    : storySlabs;
 
-  const slabEdgeLoads = buildSlabEdgeLoads(effectiveSlabs, wDL, wLL);
-  const slabTransfer = computeBeamLoadProfile(beam, slabEdgeLoads);
+  // Build slab geometries (with polygon vertices for irregular slabs)
+  const slabGeoms = storySlabs.map(s => ({
+    id: s.id,
+    x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2,
+    vertices: s.vertices,
+    deadLoad: wDL,
+    liveLoad: wLL,
+  }));
+
+  // Build all beam geometries for the story (needed for correct Voronoi regions)
+  const storyBeams: typeof activeBeamsForMerge = activeBeamsForMerge && activeBeamsForMerge.length > 0
+    ? activeBeamsForMerge
+    : [beam];
+  const allBeamGeoms = storyBeams.map(b => ({
+    id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2,
+    length: b.length, direction: b.direction,
+  }));
+  // Ensure current beam is included
+  if (!allBeamGeoms.find(g => g.id === beam.id)) {
+    allBeamGeoms.push({ id: beam.id, x1: beam.x1, y1: beam.y1, x2: beam.x2, y2: beam.y2, length: beam.length, direction: beam.direction });
+  }
+
+  // Voronoi load distribution
+  const voronoiMap = buildVoronoiBeamLoads(slabGeoms, allBeamGeoms, wDL, wLL, 60);
+  const slabTransfer = voronoiMap.get(beam.id);
 
   return {
-    deadLoad: beamSW + slabTransfer.equivalentDL,
-    liveLoad: slabTransfer.equivalentLL,
+    deadLoad: beamSW + (slabTransfer?.equivalentDL ?? 0),
+    liveLoad: slabTransfer?.equivalentLL ?? 0,
   };
 }
 

@@ -12,6 +12,7 @@ import type { Beam, Column, Frame, FrameResult, MatProps, BeamOnBeamConnection, 
 import { analyze3DFrame, analyze3DFrameMultiLoad, type Node3D, type Element3D, type Model3D, type LoadCase3D } from '@/lib/solver3D';
 import { computeFEMSlabProfiles } from '@/lib/femLoadBridge';
 import { buildSlabEdgeLoads, computeBeamLoadProfile } from '@/lib/slabLoadTransfer';
+import { buildVoronoiBeamLoads } from '@/lib/voronoiSlabLoad';
 import { GlobalNodeRegistry } from '@/lib/globalFrameSolver';
 import { getEndpointColumnHalfWidth, sampleBeamEndMomentsAtPhysicalFaces } from '@/lib/beamMomentPostprocess';
 
@@ -683,49 +684,89 @@ function build3DModelWithPatternLoading(
 
       console.log(`[3D Engine] FEM profiles applied to ${elemSlabProfiles.size} beams`);
     } else {
-      // ── Geometric slab-edge transfer fallback ─────────────────────────────
+      // ── Voronoi slab-to-beam load transfer ────────────────────────────────
       const wDL_service = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
       const wLL_service = slabProps.liveLoad;
-      // Build a lookup of slabs by ID for fast per-beam filtering
-      const slabById = new Map(slabs.map(s => [s.id, s]));
 
-      for (const elem of elements3d) {
-        if (elem.type !== 'beam') continue;
-        if (elem.id.endsWith('_A') || elem.id.endsWith('_B')) continue;
+      // Collect beam elements (skip split halves)
+      const beamElems = elements3d.filter(
+        e => e.type === 'beam' && !e.id.endsWith('_A') && !e.id.endsWith('_B'),
+      );
 
-        const baseBeamId = elem.id.replace(/^beam_/, '');
-        const beam = beamsMap.get(baseBeamId);
+      // Group beams by story for story-accurate Voronoi computation
+      const beamsByStoryV = new Map<string, typeof beamElems>();
+      const beamsNoStoryV: typeof beamElems = [];
+      for (const elem of beamElems) {
+        const baseId = elem.id.replace(/^beam_/, '');
+        const beam  = beamsMap.get(baseId);
         if (!beam) continue;
+        if (beam.storyId) {
+          const arr = beamsByStoryV.get(beam.storyId) ?? [];
+          arr.push(elem);
+          beamsByStoryV.set(beam.storyId, arr);
+        } else {
+          beamsNoStoryV.push(elem);
+        }
+      }
 
-        // Filter slabs to the same story as this beam — same approach used by
-        // calculateBeamLoads in structuralEngine.ts. Without this filter, multi-story
-        // models accumulate slab loads from ALL stories that share the same x,y plane,
-        // multiplying loads by the number of stories (the reported ×N bug).
-        // If neither beam nor slabs have storyId, all slabs are passed (single-story model).
-        const beamSlabs = beam.storyId
-          ? slabs.filter(s => !s.storyId || s.storyId === beam.storyId)
-          : slabs;
-
-        const beamSlabEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
-        const slabTransfer = computeBeamLoadProfile(beam, beamSlabEdgeLoads, PROFILE_T);
-        const maxLoad = Math.max(
-          ...slabTransfer.profileDL.map(pt => pt.wy),
-          ...slabTransfer.profileLL.map(pt => pt.wy),
-        );
-        if (maxLoad < 1e-6) continue;
-
-        const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
-        const wallLoad = beam.wallLoad ?? 0;
-        const uniformDL_factored = 1.2 * (beamSW + wallLoad);
-
-        elemSlabProfiles.set(elem.id, {
-          uniformDL_factored,
-          profileDL: slabTransfer.profileDL,
-          profileLL: slabTransfer.profileLL,
+      const applyVoronoiProfiles = (
+        storyElems: typeof beamElems,
+        storySlabs: typeof slabs,
+      ) => {
+        // Build beam geometries for this story (for correct Voronoi regions)
+        const storyBeamGeoms = storyElems.flatMap(elem => {
+          const baseId = elem.id.replace(/^beam_/, '');
+          const b = beamsMap.get(baseId);
+          if (!b) return [];
+          return [{ id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2,
+                    length: b.length, direction: b.direction }];
         });
 
-        beamDeadLoads.set(elem.id, uniformDL_factored);
-        beamLiveLoads.set(elem.id, 0);
+        // Build slab geometries with polygon vertices for irregular slabs
+        const storySlabGeoms = storySlabs.map(s => ({
+          id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2,
+          vertices: s.vertices,
+          deadLoad: wDL_service, liveLoad: wLL_service,
+        }));
+
+        const voronoiMap = buildVoronoiBeamLoads(
+          storySlabGeoms, storyBeamGeoms, wDL_service, wLL_service, 60,
+        );
+
+        for (const elem of storyElems) {
+          const baseId = elem.id.replace(/^beam_/, '');
+          const beam   = beamsMap.get(baseId);
+          if (!beam) continue;
+
+          const slabTransfer = voronoiMap.get(beam.id);
+          const maxLoad = Math.max(
+            ...(slabTransfer?.profileDL.map(pt => pt.wy) ?? [0]),
+            ...(slabTransfer?.profileLL.map(pt => pt.wy) ?? [0]),
+          );
+          if (maxLoad < 1e-6) continue;
+
+          const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
+          const wallLoad = beam.wallLoad ?? 0;
+          const uniformDL_factored = 1.2 * (beamSW + wallLoad);
+
+          elemSlabProfiles.set(elem.id, {
+            uniformDL_factored,
+            profileDL: slabTransfer?.profileDL ?? [{ t: 0, wy: 0 }, { t: 1, wy: 0 }],
+            profileLL: slabTransfer?.profileLL ?? [{ t: 0, wy: 0 }, { t: 1, wy: 0 }],
+          });
+
+          beamDeadLoads.set(elem.id, uniformDL_factored);
+          beamLiveLoads.set(elem.id, 0);
+        }
+      };
+
+      if (beamsNoStoryV.length > 0) {
+        const noStorySlabs = slabs.filter(s => !s.storyId);
+        applyVoronoiProfiles(beamsNoStoryV, noStorySlabs.length > 0 ? noStorySlabs : slabs);
+      }
+      for (const [storyId, storyElems] of beamsByStoryV) {
+        const storySlabs = slabs.filter(s => !s.storyId || s.storyId === storyId);
+        applyVoronoiProfiles(storyElems, storySlabs);
       }
     }
   }

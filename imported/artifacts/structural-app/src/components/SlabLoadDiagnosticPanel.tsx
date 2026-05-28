@@ -36,11 +36,12 @@ import {
   type MatProps,
 } from '@/lib/structuralEngine';
 import {
-  buildMergedSlabGroups,
-  buildSlabEdgeLoads,
-  computeBeamLoadProfile,
-  DEFAULT_PROFILE_T,
-} from '@/lib/slabLoadTransfer';
+  computeVoronoiSlabLoad,
+  findSupportingBeams,
+  getSlabPolygon,
+  buildVoronoiBeamLoads,
+  type VoronoiCell,
+} from '@/lib/voronoiSlabLoad';
 
 interface Props {
   beams: Beam[];
@@ -142,6 +143,9 @@ function beamPositionLabel(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Constants for the Voronoi diagram visualisation
+const VIS_SAMPLES = 28; // grid resolution for SVG Voronoi raster
+
 const SlabTributaryDiagram: React.FC<{
   slabs: Slab[];
   beams: Beam[];
@@ -158,41 +162,73 @@ const SlabTributaryDiagram: React.FC<{
     const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
     const wLL = slabProps.liveLoad;
 
-    const slabRects = slabs.map(s => ({
+    const slabGeoms = slabs.map(s => ({
       id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2,
-      deadLoad: wDL, liveLoad: wLL,
+      vertices: s.vertices, deadLoad: wDL, liveLoad: wLL,
     }));
     const beamGeoms = beams.map(b => ({
       id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2,
       length: b.length, direction: b.direction,
     }));
 
-    const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
-    const compositeRects = mergedGroups.map(g => g.compositeRect);
-    const edgeLoads = buildSlabEdgeLoads(compositeRects, wDL, wLL);
+    // Global beam → colour index
+    const beamColorIdx = new Map(beams.map((b, i) => [b.id, i]));
 
-    const slabGroupIdx = new Map<string, number>();
-    mergedGroups.forEach((g, gi) => g.subSlabIds.forEach(id => slabGroupIdx.set(id, gi)));
+    // Per-slab Voronoi computation (with raster cells for visualisation)
+    const slabVoronoi = slabs.map(s => {
+      const sg = slabGeoms.find(g => g.id === s.id)!;
+      const polygon = getSlabPolygon(sg);
+      const supporting = findSupportingBeams(polygon, beamGeoms);
+      const { cells } = computeVoronoiSlabLoad(sg, supporting, wDL, wLL, VIS_SAMPLES, true);
 
-    const beamProfiles = beams.map(b => {
-      const prof = computeBeamLoadProfile(b, edgeLoads, DEFAULT_PROFILE_T);
-      return { beam: b, prof };
+      // Compute cell size (mirrors the formula inside computeVoronoiSlabLoad)
+      const xs = polygon.map(p => p.x), ys = polygon.map(p => p.y);
+      const rangeX = (Math.max(...xs) - Math.min(...xs)) || 1;
+      const rangeY = (Math.max(...ys) - Math.min(...ys)) || 1;
+      const aspect = rangeX / rangeY;
+      const nx = Math.max(8, Math.round(VIS_SAMPLES * Math.sqrt(aspect)));
+      const ny = Math.max(8, Math.round(VIS_SAMPLES / Math.sqrt(aspect)));
+
+      return {
+        slab: s,
+        polygon,
+        cells: (cells ?? []) as VoronoiCell[],
+        cellW: rangeX / nx,
+        cellH: rangeY / ny,
+        supportingBeams: supporting,
+        hasBeam: supporting.length > 0,
+      };
     });
 
-    // هل يوجد جسر مجاور لكل مجموعة؟
-    const groupHasBeam = mergedGroups.map(g =>
-      groupAdjacentBeams(g.compositeRect, beams).length > 0,
-    );
+    // Voronoi beam load profiles (higher-res, for the load diagram)
+    const voronoiMap = buildVoronoiBeamLoads(slabGeoms, beamGeoms, wDL, wLL, 60);
+
+    const beamProfiles = beams.map(b => {
+      const prof = voronoiMap.get(b.id) ?? {
+        beamId: b.id,
+        profileDL: [{ t: 0, wy: 0 }, { t: 1, wy: 0 }],
+        profileLL: [{ t: 0, wy: 0 }, { t: 1, wy: 0 }],
+        equivalentDL: 0, equivalentLL: 0, connectedSlabIds: [],
+      };
+      return { beam: b, prof };
+    });
 
     const globalMaxW = Math.max(
       ...beamProfiles.map(bp => Math.max(...bp.prof.profileDL.map(p => p.wy), 0)),
       0.001,
     );
 
-    const allX = [...slabs.flatMap(s => [s.x1, s.x2]), ...beams.flatMap(b => [b.x1, b.x2]),
-                  ...columns.filter(c => !c.isRemoved).map(c => c.x)];
-    const allY = [...slabs.flatMap(s => [s.y1, s.y2]), ...beams.flatMap(b => [b.y1, b.y2]),
-                  ...columns.filter(c => !c.isRemoved).map(c => c.y)];
+    // Viewport — use actual polygon vertices when available
+    const allX = [
+      ...slabs.flatMap(s => s.vertices?.map(v => v.x) ?? [s.x1, s.x2]),
+      ...beams.flatMap(b => [b.x1, b.x2]),
+      ...columns.filter(c => !c.isRemoved).map(c => c.x),
+    ];
+    const allY = [
+      ...slabs.flatMap(s => s.vertices?.map(v => v.y) ?? [s.y1, s.y2]),
+      ...beams.flatMap(b => [b.y1, b.y2]),
+      ...columns.filter(c => !c.isRemoved).map(c => c.y),
+    ];
     if (!allX.length) return null;
 
     const minX = Math.min(...allX), maxX = Math.max(...allX);
@@ -210,133 +246,16 @@ const SlabTributaryDiagram: React.FC<{
     const profFactor = PROF_MAX_PX / globalMaxW;
 
     return {
-      mergedGroups, slabGroupIdx, beamProfiles, profFactor, groupHasBeam,
+      slabVoronoi, beamProfiles, profFactor, beamColorIdx,
       tx, ty, sc, SVG_W, SVG_H, wDL, wLL, globalMaxW,
     };
   }, [slabs, beams, columns, slabProps, mat]);
 
   if (!data || !slabs.length) return null;
   const {
-    mergedGroups, slabGroupIdx, beamProfiles, profFactor, groupHasBeam,
+    slabVoronoi, beamProfiles, profFactor, beamColorIdx,
     tx, ty, sc, SVG_W, SVG_H,
   } = data;
-
-  const renderGroup = (gi: number) => {
-    const group = mergedGroups[gi];
-    const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
-    const cr = group.compositeRect;
-    const cx1 = Math.min(cr.x1, cr.x2), cx2 = Math.max(cr.x1, cr.x2);
-    const cy1 = Math.min(cr.y1, cr.y2), cy2 = Math.max(cr.y1, cr.y2);
-    const W = cx2 - cx1, H = cy2 - cy1;
-    const lx = Math.min(W, H), ly = Math.max(W, H);
-    const beta = lx > 0 ? ly / lx : 99;
-    const isWide = W > H;
-
-    const sx1 = tx(cx1), sx2 = tx(cx2);
-    const sy1 = ty(cy2);
-    const sy2 = ty(cy1);
-    const sw = sx2 - sx1, sh = sy2 - sy1;
-
-    const hasBeam = groupHasBeam[gi];
-    const elems: React.ReactNode[] = [];
-
-    elems.push(
-      <rect key="outline" x={sx1} y={sy1} width={sw} height={sh}
-        fill="none" stroke={hasBeam ? pal.fill : '#dc2626'} strokeWidth={hasBeam ? 2 : 2.5}
-        strokeDasharray={hasBeam ? '10,4' : '6,3'} rx={2}/>,
-    );
-
-    const labelTxt = group.subSlabIds.length > 1
-      ? `مركّبة: ${group.subSlabIds.join(' + ')} — β=${beta.toFixed(1)}`
-      : `β=${beta.toFixed(1)}`;
-    elems.push(
-      <text key="glabel" x={(sx1 + sx2) / 2} y={sy1 - 6}
-        textAnchor="middle" fontSize={10} fontWeight="bold"
-        fill={hasBeam ? pal.fill : '#dc2626'} fontFamily="Arial">
-        {labelTxt}
-      </text>,
-    );
-
-    if (!hasBeam) {
-      elems.push(
-        <rect key="nobeam-fill" x={sx1} y={sy1} width={sw} height={sh}
-          fill="rgba(220,38,38,0.07)" rx={2}/>,
-        <text key="nobeam-label" x={(sx1 + sx2) / 2} y={(sy1 + sy2) / 2 - 6}
-          textAnchor="middle" fontSize={12} fontWeight="bold"
-          fill="#dc2626" fontFamily="Arial">⚠</text>,
-        <text key="nobeam-txt" x={(sx1 + sx2) / 2} y={(sy1 + sy2) / 2 + 10}
-          textAnchor="middle" fontSize={9} fontWeight="bold"
-          fill="#dc2626" fontFamily="Arial">لا جسر — أحمال مهدورة</text>,
-      );
-      return <g key={gi}>{elems}</g>;
-    }
-
-    if (beta > 2) {
-      elems.push(
-        <rect key="ow-fill" x={sx1} y={sy1} width={sw} height={sh} fill={pal.mid}/>,
-        <text key="ow-lbl" x={(sx1+sx2)/2} y={(sy1+sy2)/2+4}
-          textAnchor="middle" fontSize={11} fontWeight="bold" fill={pal.fill} fontFamily="Arial">
-          أحادية الاتجاه
-        </text>,
-        <text key="ow-beta" x={(sx1+sx2)/2} y={(sy1+sy2)/2+18}
-          textAnchor="middle" fontSize={9} fill={pal.fill} fontFamily="Arial">
-          β = {beta.toFixed(1)}
-        </text>,
-      );
-    } else if (!isWide) {
-      const a = sw / 2;
-      const midX = (sx1 + sx2) / 2;
-      const iBy = sy2 - a;
-      const iTy = sy1 + a;
-      elems.push(
-        <polygon key="btri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx1},${sy2} ${sx2},${sy2} ${midX},${iBy}`}/>,
-        <polygon key="ttri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx1},${sy1} ${sx2},${sy1} ${midX},${iTy}`}/>,
-        <polygon key="ltrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx1},${sy2} ${sx1+a},${iBy} ${sx1+a},${iTy} ${sx1},${sy1}`}/>,
-        <polygon key="rtrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx2},${sy2} ${sx2-a},${iBy} ${sx2-a},${iTy} ${sx2},${sy1}`}/>,
-        <line key="d1" x1={sx1} y1={sy2} x2={sx1+a} y2={iBy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="d2" x1={sx2} y1={sy2} x2={sx2-a} y2={iBy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="d3" x1={sx1} y1={sy1} x2={sx1+a} y2={iTy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="d4" x1={sx2} y1={sy1} x2={sx2-a} y2={iTy} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="hb1" x1={sx1+a} y1={iBy} x2={sx2-a} y2={iBy} stroke={pal.fill} strokeWidth={1.2}/>,
-        <line key="hb2" x1={sx1+a} y1={iTy} x2={sx2-a} y2={iTy} stroke={pal.fill} strokeWidth={1.2}/>,
-        <text key="dim-lx" x={(sx1+sx2)/2} y={(sy1+sy2)/2+4}
-          textAnchor="middle" fontSize={9} fill={pal.fill} fontFamily="Arial" opacity={0.7}>
-          lx={W.toFixed(1)}م / ly={H.toFixed(1)}م
-        </text>,
-      );
-    } else {
-      const a = sh / 2;
-      const midY = (sy1 + sy2) / 2;
-      const iLx = sx1 + a;
-      const iRx = sx2 - a;
-      elems.push(
-        <polygon key="ltri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx1},${sy1} ${sx1},${sy2} ${iLx},${midY}`}/>,
-        <polygon key="rtri"  fill={pal.light} stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx2},${sy1} ${sx2},${sy2} ${iRx},${midY}`}/>,
-        <polygon key="ttrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx1},${sy1} ${sx2},${sy1} ${iRx},${sy1+a} ${iLx},${sy1+a}`}/>,
-        <polygon key="btrap" fill={pal.mid}   stroke={pal.fill} strokeWidth={0.5}
-          points={`${sx1},${sy2} ${sx2},${sy2} ${iRx},${sy2-a} ${iLx},${sy2-a}`}/>,
-        <line key="d1" x1={sx1} y1={sy1} x2={iLx} y2={sy1+a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="d2" x1={sx1} y1={sy2} x2={iLx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="d3" x1={sx2} y1={sy1} x2={iRx} y2={sy1+a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="d4" x1={sx2} y1={sy2} x2={iRx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2} strokeDasharray="5,3"/>,
-        <line key="vb1" x1={iLx} y1={sy1+a} x2={iLx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2}/>,
-        <line key="vb2" x1={iRx} y1={sy1+a} x2={iRx} y2={sy2-a} stroke={pal.fill} strokeWidth={1.2}/>,
-        <text key="dim" x={(sx1+sx2)/2} y={(sy1+sy2)/2+4}
-          textAnchor="middle" fontSize={9} fill={pal.fill} fontFamily="Arial" opacity={0.7}>
-          lx={H.toFixed(1)}م / ly={W.toFixed(1)}م
-        </text>,
-      );
-    }
-
-    return <g key={gi}>{elems}</g>;
-  };
 
   const renderBeamProfile = (bpIdx: number) => {
     const { beam: b, prof } = beamProfiles[bpIdx];
@@ -344,8 +263,8 @@ const SlabTributaryDiagram: React.FC<{
     const pts = prof.profileDL;
     if (!pts.length || prof.equivalentDL < 0.001) return null;
 
-    const gi = slabGroupIdx.get(b.id) ?? 0;
-    const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
+    const colorIdx = beamColorIdx.get(b.id) ?? bpIdx;
+    const pal = GROUP_PALETTE[colorIdx % GROUP_PALETTE.length];
 
     if (isHoriz) {
       const by = ty(b.y1);
@@ -416,14 +335,12 @@ const SlabTributaryDiagram: React.FC<{
     <div>
       {/* Legend */}
       <div className="text-[11px] text-muted-foreground mb-2 flex flex-wrap gap-4 items-center">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-5 h-3 rounded-sm" style={{ background: GROUP_PALETTE[0].mid }}/>
-          منطقة مثلثة (حافة قصيرة)
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-5 h-3 rounded-sm" style={{ background: GROUP_PALETTE[0].light }}/>
-          منطقة شبه منحرفة (حافة طويلة)
-        </span>
+        {GROUP_PALETTE.slice(0, 3).map((pal, i) => (
+          <span key={i} className="flex items-center gap-1.5">
+            <span className="inline-block w-5 h-3 rounded-sm" style={{ background: pal.mid }}/>
+            جسر {i + 1}
+          </span>
+        ))}
         <span className="flex items-center gap-1.5">
           <span className="inline-block w-5 h-3 border-2 border-dashed border-red-500 rounded-sm"/>
           <span className="text-red-600 font-medium">⚠ بلاطة بلا جسر</span>
@@ -432,7 +349,7 @@ const SlabTributaryDiagram: React.FC<{
           <span className="inline-block w-4 h-4 rounded-sm" style={{ background: '#1a1a2e' }}/>
           جسر / عمود
         </span>
-        <span className="text-[10px] opacity-70">القيم بـ kN/m (حمل ميت)</span>
+        <span className="text-[10px] opacity-70">القيم بـ kN/m (حمل ميت) • Voronoi</span>
         <span className="text-[10px] opacity-70">● اضغط على البلاطة لرؤية مسار الحمل</span>
       </div>
       <div className="overflow-x-auto rounded-xl border border-border/60">
@@ -441,24 +358,65 @@ const SlabTributaryDiagram: React.FC<{
           style={{ width: '100%', minWidth: 440, display: 'block', background: '#f8fafc' }}
           xmlns="http://www.w3.org/2000/svg"
         >
-          {/* ── Tributary fill regions ── */}
-          {mergedGroups.map((_, gi) => renderGroup(gi))}
+          {/* ── Clip paths: one per slab polygon ── */}
+          <defs>
+            {slabVoronoi.map(({ slab, polygon }) => (
+              <clipPath key={`clip-${slab.id}`} id={`clip-${slab.id}`}>
+                <polygon points={polygon.map(p => `${tx(p.x)},${ty(p.y)}`).join(' ')} />
+              </clipPath>
+            ))}
+          </defs>
 
-          {/* ── Sub-slab boundaries ── */}
-          {slabs.map(s => {
-            const gi = slabGroupIdx.get(s.id) ?? 0;
-            const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
+          {/* ── Voronoi raster cells (coloured by nearest beam) ── */}
+          {slabVoronoi.map(({ slab, cells, cellW, cellH, hasBeam }) => {
+            if (!hasBeam) return null;
+            const svgW = cellW * sc + 0.5; // +0.5 px overlap to avoid gaps
+            const svgH = cellH * sc + 0.5;
             return (
-              <g key={`sb-${s.id}`}>
-                <rect
-                  x={tx(Math.min(s.x1, s.x2))} y={ty(Math.max(s.y1, s.y2))}
-                  width={Math.abs(s.x2 - s.x1) * sc} height={Math.abs(s.y2 - s.y1) * sc}
-                  fill="none" stroke={pal.fill} strokeWidth={1} strokeDasharray="4,3" opacity={0.5}/>
-                <text
-                  x={tx((s.x1 + s.x2) / 2)} y={ty((s.y1 + s.y2) / 2) - 3}
-                  textAnchor="middle" fontSize={9} fill={pal.fill} fontFamily="Arial" fontWeight="bold">
-                  {s.id}
-                </text>
+              <g key={`vor-${slab.id}`} clipPath={`url(#clip-${slab.id})`}>
+                {cells.map((cell, idx) => {
+                  const cIdx = (beamColorIdx.get(cell.beamId) ?? cell.beamIdx) % GROUP_PALETTE.length;
+                  return (
+                    <rect
+                      key={idx}
+                      x={tx(cell.x) - svgW / 2}
+                      y={ty(cell.y) - svgH / 2}
+                      width={svgW}
+                      height={svgH}
+                      fill={GROUP_PALETTE[cIdx].light}
+                    />
+                  );
+                })}
+              </g>
+            );
+          })}
+
+          {/* ── Slab polygon outlines ── */}
+          {slabVoronoi.map(({ slab, polygon, hasBeam }) => {
+            const pal = GROUP_PALETTE[(beamColorIdx.get(slab.id) ?? 0) % GROUP_PALETTE.length];
+            const pts = polygon.map(p => `${tx(p.x)},${ty(p.y)}`).join(' ');
+            const cx = polygon.reduce((s, p) => s + p.x, 0) / polygon.length;
+            const cy = polygon.reduce((s, p) => s + p.y, 0) / polygon.length;
+            return (
+              <g key={`so-${slab.id}`}>
+                <polygon
+                  points={pts}
+                  fill={hasBeam ? 'none' : 'rgba(220,38,38,0.07)'}
+                  stroke={hasBeam ? pal.fill : '#dc2626'}
+                  strokeWidth={hasBeam ? 1.5 : 2.5}
+                  strokeDasharray={hasBeam ? '8,4' : '5,3'}
+                />
+                {!hasBeam && (
+                  <>
+                    <text x={tx(cx)} y={ty(cy) - 6} textAnchor="middle" fontSize={12}
+                      fontWeight="bold" fill="#dc2626" fontFamily="Arial">⚠</text>
+                    <text x={tx(cx)} y={ty(cy) + 10} textAnchor="middle" fontSize={9}
+                      fontWeight="bold" fill="#dc2626" fontFamily="Arial">لا جسر</text>
+                  </>
+                )}
+                <text x={tx(cx)} y={ty(cy) + (hasBeam ? -4 : 24)} textAnchor="middle"
+                  fontSize={9} fill={hasBeam ? pal.fill : '#dc2626'}
+                  fontWeight="bold" fontFamily="Arial">{slab.id}</text>
               </g>
             );
           })}
@@ -495,32 +453,27 @@ const SlabTributaryDiagram: React.FC<{
           ))}
 
           {/* ── Clickable slab overlays ── */}
-          {slabs.map(s => {
-            const isSelected = selectedSlabId === s.id;
-            const gi = slabGroupIdx.get(s.id) ?? 0;
-            const hasBeam = groupHasBeam[gi] ?? true;
+          {slabVoronoi.map(({ slab, polygon, hasBeam }) => {
+            const isSelected = selectedSlabId === slab.id;
+            const pts = polygon.map(p => `${tx(p.x)},${ty(p.y)}`).join(' ');
+            const cx = polygon.reduce((s, p) => s + p.x, 0) / polygon.length;
+            const cy = polygon.reduce((s, p) => s + p.y, 0) / polygon.length;
             return (
-              <g key={`click-${s.id}`}
-                style={{ cursor: 'pointer' }}
-                onClick={() => onSlabClick?.(s.id)}>
-                <rect
-                  x={tx(Math.min(s.x1, s.x2))} y={ty(Math.max(s.y1, s.y2))}
-                  width={Math.abs(s.x2 - s.x1) * sc} height={Math.abs(s.y2 - s.y1) * sc}
+              <g key={`click-${slab.id}`} style={{ cursor: 'pointer' }}
+                onClick={() => onSlabClick?.(slab.id)}>
+                <polygon
+                  points={pts}
                   fill={isSelected ? 'rgba(234,179,8,0.20)' : 'transparent'}
                   stroke={isSelected ? '#f59e0b' : 'transparent'}
                   strokeWidth={isSelected ? 3 : 0}
                 />
-                {/* Status icon in corner */}
                 <circle
-                  cx={tx(Math.min(s.x1, s.x2)) + 9}
-                  cy={ty(Math.max(s.y1, s.y2)) + 9}
-                  r={7}
-                  fill={hasBeam ? '#16a34a' : '#dc2626'}
+                  cx={tx(polygon[0].x) + 9} cy={ty(polygon[0].y) + 9}
+                  r={7} fill={hasBeam ? '#16a34a' : '#dc2626'}
                   stroke="white" strokeWidth={1}
                 />
                 <text
-                  x={tx(Math.min(s.x1, s.x2)) + 9}
-                  y={ty(Math.max(s.y1, s.y2)) + 13}
+                  x={tx(polygon[0].x) + 9} y={ty(polygon[0].y) + 13}
                   textAnchor="middle" fontSize={9} fill="white" fontFamily="Arial" fontWeight="bold">
                   {hasBeam ? '✓' : '!'}
                 </text>
@@ -528,27 +481,15 @@ const SlabTributaryDiagram: React.FC<{
             );
           })}
 
-          {/* ── Group legend ── */}
-          {mergedGroups.map((g, gi) => {
-            const pal = GROUP_PALETTE[gi % GROUP_PALETTE.length];
-            const hasBeam = groupHasBeam[gi];
-            const lx_m = Math.min(
-              Math.abs(g.compositeRect.x2 - g.compositeRect.x1),
-              Math.abs(g.compositeRect.y2 - g.compositeRect.y1),
-            );
-            const ly_m = Math.max(
-              Math.abs(g.compositeRect.x2 - g.compositeRect.x1),
-              Math.abs(g.compositeRect.y2 - g.compositeRect.y1),
-            );
-            const beta = lx_m > 0 ? ly_m / lx_m : 0;
+          {/* ── Beam legend (top-right) ── */}
+          {beams.slice(0, 6).map((b, bi) => {
+            const pal = GROUP_PALETTE[bi % GROUP_PALETTE.length];
             return (
-              <g key={`leg-${gi}`} transform={`translate(${SVG_W - 180},${14 + gi * 22})`}>
-                <rect x={0} y={0} width={14} height={12}
-                  fill={hasBeam ? pal.mid : 'rgba(220,38,38,0.2)'}
-                  stroke={hasBeam ? pal.fill : '#dc2626'} strokeWidth={1} rx={2}/>
-                <text x={18} y={10} fontSize={9} fill={hasBeam ? '#333' : '#dc2626'} fontFamily="Arial">
-                  {g.subSlabIds.join('+')} — lx={lx_m.toFixed(1)}م β={beta.toFixed(1)}
-                  {!hasBeam ? ' ⚠' : ''}
+              <g key={`leg-${bi}`} transform={`translate(${SVG_W - 180},${14 + bi * 18})`}>
+                <rect x={0} y={0} width={14} height={10}
+                  fill={pal.mid} stroke={pal.fill} strokeWidth={1} rx={2}/>
+                <text x={18} y={9} fontSize={9} fill="#333" fontFamily="Arial">
+                  {b.id} ({beamProfiles[bi]?.prof.equivalentDL.toFixed(1) ?? '0.0'} kN/m)
                 </text>
               </g>
             );
@@ -556,7 +497,7 @@ const SlabTributaryDiagram: React.FC<{
 
           {/* ── Scale label (bottom) ── */}
           <text x={12} y={SVG_H - 8} fontSize={9} fill="#666" fontFamily="Arial">
-            مقياس: 1 وحدة = {(1 / (data?.sc ?? 1)).toFixed(2)} م/px | الحمل الميت (kN/m)
+            Voronoi | مقياس: 1م/px={sc > 0 ? (1/sc).toFixed(3) : '?'} | الحمل الميت (kN/m)
           </text>
         </svg>
       </div>
@@ -594,45 +535,41 @@ function useSlabDetail(
     const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
     const wLL = slabProps.liveLoad;
 
-    const slabRects = slabs.map(s => ({
-      id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, deadLoad: wDL, liveLoad: wLL,
-    }));
+    const slabGeom = {
+      id: slab.id, x1: slab.x1, y1: slab.y1, x2: slab.x2, y2: slab.y2,
+      vertices: slab.vertices, deadLoad: wDL, liveLoad: wLL,
+    };
     const beamGeoms = beams.map(b => ({
       id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, length: b.length, direction: b.direction,
     }));
 
-    const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
-    const groupIdx = mergedGroups.findIndex(g => g.subSlabIds.includes(selectedSlabId));
-    if (groupIdx < 0) return null;
+    const polygon = getSlabPolygon(slabGeom);
+    const adjBeamGeoms = findSupportingBeams(polygon, beamGeoms);
 
-    const group = mergedGroups[groupIdx];
-    const cr = group.compositeRect;
-    const cx1 = Math.min(cr.x1, cr.x2), cx2 = Math.max(cr.x1, cr.x2);
-    const cy1 = Math.min(cr.y1, cr.y2), cy2 = Math.max(cr.y1, cr.y2);
+    const cx1 = Math.min(slab.x1, slab.x2), cx2 = Math.max(slab.x1, slab.x2);
+    const cy1 = Math.min(slab.y1, slab.y2), cy2 = Math.max(slab.y1, slab.y2);
     const W = cx2 - cx1, H = cy2 - cy1;
     const lx = Math.min(W, H), ly = Math.max(W, H);
     const beta = lx > 0 ? ly / lx : 99;
 
-    // حساب الأحمال المنقولة من هذه المجموعة تحديداً (ليس من كل البلاطات)
-    const thisGroupEdgeLoads = buildSlabEdgeLoads([group.compositeRect], wDL, wLL);
+    const { loads } = computeVoronoiSlabLoad(slabGeom, adjBeamGeoms, wDL, wLL, 60, false);
 
-    const adjBeamObjects = groupAdjacentBeams(group.compositeRect, beams);
-    const adjacentBeams = adjBeamObjects.map(beam => {
-      const prof = computeBeamLoadProfile(beam, thisGroupEdgeLoads, DEFAULT_PROFILE_T);
+    const adjacentBeams = loads.map(load => {
+      const beam = beams.find(b => b.id === load.beamId)!;
       return {
         beam,
-        dl: prof.equivalentDL,
-        ll: prof.equivalentLL,
-        position: beamPositionLabel(beam, cx1, cx2, cy1, cy2),
+        dl: load.equivalentDL,
+        ll: load.equivalentLL,
+        position: beam ? beamPositionLabel(beam, cx1, cx2, cy1, cy2) : '—',
       };
-    });
+    }).filter(r => r.beam);
 
     const hasTransfer = adjacentBeams.length > 0 && adjacentBeams.some(b => b.dl > 0.01);
 
     return {
       slab, beta, lx, ly, W, H,
       adjacentBeams, hasTransfer,
-      groupMembers: group.subSlabIds,
+      groupMembers: [slab.id],
     };
   }, [selectedSlabId, slabs, beams, slabProps, mat]);
 }
@@ -673,33 +610,37 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
     const wDL_service = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
     const wLL_service = slabProps.liveLoad;
 
+    // Pre-compute Voronoi map once for all beams (story-aware)
+    const slabGeoms = filteredSlabs.map(s => ({
+      id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2,
+      vertices: s.vertices, deadLoad: wDL_service, liveLoad: wLL_service,
+    }));
+    const beamGeoms = filteredBeams.map(b => ({
+      id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2,
+      length: b.length, direction: b.direction,
+    }));
+    const voronoiMap = buildVoronoiBeamLoads(slabGeoms, beamGeoms, wDL_service, wLL_service, 60);
+
     return filteredBeams.map(beam => {
       const beamSW = (beam.b / 1000) * (beam.h / 1000) * mat.gamma;
 
-      const r2d = calculateBeamLoads(beam, filteredSlabs, slabProps, mat);
+      // 2D reference (simple tributary method)
+      const r2d = calculateBeamLoads(beam, filteredSlabs, slabProps, mat, filteredBeams);
       const dl_2d = r2d.deadLoad - beamSW;
       const ll_2d = r2d.liveLoad;
 
-      const beamSlabs = beam.storyId
-        ? filteredSlabs.filter(s => !s.storyId || s.storyId === beam.storyId)
-        : filteredSlabs;
-      const beamEdgeLoads = buildSlabEdgeLoads(beamSlabs, wDL_service, wLL_service);
-      const profile = computeBeamLoadProfile(beam, beamEdgeLoads);
-      const dl_3d = profile.equivalentDL;
-      const ll_3d = profile.equivalentLL;
+      // Voronoi method (nearest-segment)
+      const vorProfile = voronoiMap.get(beam.id);
+      const dl_3d = vorProfile?.equivalentDL ?? 0;
+      const ll_3d = vorProfile?.equivalentLL ?? 0;
 
-      const dl_gf = dl_2d;
-      const ll_gf = ll_2d;
-      const dl_uc = dl_2d;
-      const ll_uc = ll_2d;
+      const dl_gf = dl_3d;
+      const ll_gf = ll_3d;
+      const dl_uc = dl_3d;
+      const ll_uc = ll_3d;
 
       const ref = Math.max(1e-6, Math.abs(dl_2d) + Math.abs(ll_2d));
-      const candidates = [
-        Math.abs(dl_3d - dl_2d) + Math.abs(ll_3d - ll_2d),
-        Math.abs(dl_gf - dl_2d) + Math.abs(ll_gf - ll_2d),
-        Math.abs(dl_uc - dl_2d) + Math.abs(ll_uc - ll_2d),
-      ];
-      const maxDiffPct = (Math.max(...candidates) / ref) * 100;
+      const maxDiffPct = ((Math.abs(dl_3d - dl_2d) + Math.abs(ll_3d - ll_2d)) / ref) * 100;
 
       return {
         beamId: beam.id,
@@ -820,26 +761,19 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
     );
   }
 
-  // ── عدد البلاطات غير المنقولة ────────────────────────────────────────────
+  // ── عدد البلاطات غير المنقولة (لا جسر مجاور لها) ──────────────────────────
   const unloadedSlabsCount = useMemo(() => {
     if (!filteredSlabs.length) return 0;
-    const wDL = (slabProps.thickness / 1000) * mat.gamma + slabProps.finishLoad;
-    const wLL = slabProps.liveLoad;
-    const slabRects = filteredSlabs.map(s => ({
-      id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, deadLoad: wDL, liveLoad: wLL,
-    }));
     const beamGeoms = filteredBeams.map(b => ({
       id: b.id, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, length: b.length, direction: b.direction,
     }));
-    const mergedGroups = buildMergedSlabGroups(slabRects, beamGeoms);
-    let count = 0;
-    mergedGroups.forEach(g => {
-      if (groupAdjacentBeams(g.compositeRect, filteredBeams).length === 0) {
-        count += g.subSlabIds.length;
-      }
-    });
-    return count;
-  }, [filteredSlabs, filteredBeams, slabProps, mat]);
+    return filteredSlabs.filter(s => {
+      const polygon = getSlabPolygon({
+        id: s.id, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, vertices: s.vertices,
+      });
+      return findSupportingBeams(polygon, beamGeoms).length === 0;
+    }).length;
+  }, [filteredSlabs, filteredBeams]);
 
   return (
     <div className="space-y-4">
@@ -1117,8 +1051,8 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
         <CardContent className="pt-0">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] mb-3">
             {([
-              ['2D',         totals.dl_2d, totals.ll_2d, 'bg-violet-500/10 border-violet-400/40 text-violet-700 dark:text-violet-300'],
-              ['3D Legacy',  totals.dl_3d, totals.ll_3d, 'bg-blue-500/10 border-blue-400/40 text-blue-700 dark:text-blue-300'],
+              ['2D',        totals.dl_2d, totals.ll_2d, 'bg-violet-500/10 border-violet-400/40 text-violet-700 dark:text-violet-300'],
+              ['Voronoi',   totals.dl_3d, totals.ll_3d, 'bg-blue-500/10 border-blue-400/40 text-blue-700 dark:text-blue-300'],
               ['GF',         totals.dl_gf, totals.ll_gf, 'bg-amber-500/10 border-amber-400/40 text-amber-700 dark:text-amber-300'],
               ['UC',         totals.dl_uc, totals.ll_uc, 'bg-rose-500/10 border-rose-400/40 text-rose-700 dark:text-rose-300'],
             ] as const).map(([name, dl, ll, cls]) => (
@@ -1148,7 +1082,7 @@ export const SlabLoadDiagnosticPanel: React.FC<Props> = ({
                   <TableHead rowSpan={2} className="text-xs align-middle">Beam</TableHead>
                   <TableHead rowSpan={2} className="text-xs align-middle text-center">L (m)</TableHead>
                   <TableHead colSpan={2} className="text-xs text-center bg-violet-500/5 border-x">2D</TableHead>
-                  <TableHead colSpan={2} className="text-xs text-center bg-blue-500/5 border-x">3D Legacy</TableHead>
+                  <TableHead colSpan={2} className="text-xs text-center bg-blue-500/5 border-x">Voronoi</TableHead>
                   <TableHead colSpan={2} className="text-xs text-center bg-amber-500/5 border-x">GF</TableHead>
                   <TableHead colSpan={2} className="text-xs text-center bg-rose-500/5 border-x">UC</TableHead>
                   <TableHead rowSpan={2} className="text-xs align-middle text-center">حالة</TableHead>
