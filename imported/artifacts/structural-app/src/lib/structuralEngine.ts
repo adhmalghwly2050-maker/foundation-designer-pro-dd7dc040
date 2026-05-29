@@ -1173,43 +1173,9 @@ export function analyzeFrame(
   const nodes: MDNode[] = [];
   for (let i = 0; i <= n; i++) {
     const beam = i < n ? frameBeams[i] : frameBeams[n - 1];
-    let colId = i < n ? beam.fromCol : beam.toCol;
-
-    // ── Compute 2D position of this node for geometric fallback ────────────
-    // Node 0: start of first beam; Node i (internal): end of beam[i-1];
-    // Node n: end of last beam.
-    const nodeX2D = i === 0 ? frameBeams[0].x1 : frameBeams[i - 1].x2;
-    const nodeY2D = i === 0 ? frameBeams[0].y1 : frameBeams[i - 1].y2;
-    // 2 cm tolerance — absorbs floating-point drift from slab polygon union
-    const GEO_NODE_TOL = 0.02;
-
-    // Geometric fallback: if colId is empty (can happen when slab polygon union
-    // produces edge vertices that are slightly off-grid), find the nearest column.
-    let col = colId ? columns.find(c => c.id === colId) : undefined;
-    if (!col) {
-      const geoCol = columns.find(c =>
-        Math.abs(c.x - nodeX2D) < GEO_NODE_TOL &&
-        Math.abs(c.y - nodeY2D) < GEO_NODE_TOL
-      );
-      if (geoCol) { col = geoCol; colId = geoCol.id; }
-    }
-
-    // Removed-column check: by ID first, then by geometric position so that
-    // virtual removed columns (added via handleIntersect) are also matched
-    // even when colId is empty.
-    let isRemovedCol = !!colId && removedColumnIds.includes(colId);
-    if (!isRemovedCol) {
-      const geoRcId = removedColumnIds.find(rcId => {
-        const rc = columns.find(c => c.id === rcId);
-        return rc
-          ? Math.abs(rc.x - nodeX2D) < GEO_NODE_TOL && Math.abs(rc.y - nodeY2D) < GEO_NODE_TOL
-          : false;
-      });
-      if (geoRcId) {
-        isRemovedCol = true;
-        if (!colId) colId = geoRcId;
-      }
-    }
+    const colId = i < n ? beam.fromCol : beam.toCol;
+    const col = columns.find(c => c.id === colId);
+    const isRemovedCol = removedColumnIds.includes(colId);
 
     // Determine if this node acts as a support for THIS frame's beams.
     // At a removed column junction:
@@ -1218,20 +1184,7 @@ export function analyzeFrame(
     //   - If beams in this frame are PRIMARY (carrier): isSupport = FALSE
     //     (no real support; merge will combine the collinear segments)
     //   - If no connection info: default to isSupport = !isRemovedCol
-    //
-    // ⚠️  KEY FIX: when colId is empty AND no column found geometrically,
-    // there is NO column at this node → it must NOT default to isSupport=true.
-    // (The old logic `!isRemovedCol` would return true for empty colId, creating
-    // a phantom pinned support that made split carrier-beam parts appear to be
-    // supported on both ends and produce wrong negative-end / positive-mid moments.)
-    let isNodeSupport: boolean;
-    if (col) {
-      // There IS a real column here (found by ID or geometry)
-      isNodeSupport = !isRemovedCol;
-    } else {
-      // No column at this node — treat as non-support unless beam-on-beam logic below overrides
-      isNodeSupport = false;
-    }
+    let isNodeSupport = !isRemovedCol;
     let colStiffnessBelow = 0;
     let colStiffnessAbove = 0;
 
