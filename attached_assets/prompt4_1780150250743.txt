@@ -1,0 +1,302 @@
+You are a senior structural-analysis engine developer working on a custom web-based 3D structural analysis and design platform.
+
+IMPORTANT:
+The application uses a custom 3D structural-analysis engine and DOES NOT use a traditional FEM matrix-based solver like ETABS or SAP2000.
+
+Your task is to redesign and upgrade the rotational joint behavior and moment-transfer logic so the structural behavior becomes similar to ETABS.
+
+====================================================
+CORE PROBLEM
+====================================================
+
+The current engine appears to treat beam-column joints as either:
+
+- Fully Fixed
+OR
+- Fully Pinned
+
+This is incorrect for realistic frame behavior.
+
+Professional structural software such as ETABS does NOT treat beam-column joints as perfectly fixed in all situations.
+
+Instead:
+the rotational restraint naturally depends on the relative stiffness of connected members.
+
+This is especially important for:
+- edge columns
+- exterior frames
+- weak columns
+- asymmetric framing
+- small columns connected to stiff beams
+
+Currently the application likely overestimates:
+- negative end moments
+- column moments
+- joint fixity
+
+particularly at exterior columns.
+
+====================================================
+TARGET BEHAVIOR
+====================================================
+
+The engine must reproduce realistic frame-action behavior similar to ETABS.
+
+Specifically:
+
+When a beam frames into an exterior column:
+- the beam end moment should reduce naturally
+- the joint should partially rotate
+- the connection should behave semi-rigid due to structural stiffness interaction
+
+WITHOUT:
+- explicit releases
+- artificial moment reduction factors
+- fake pinned behavior
+
+The behavior must emerge naturally from:
+- member stiffness interaction
+- frame continuity
+- rotational compatibility
+- structural equilibrium
+
+====================================================
+CRITICAL ENGINEERING PRINCIPLE
+====================================================
+
+DO NOT model joints using:
+
+connection.fixed = true
+connection.pinned = true
+
+Instead:
+calculate rotational restraint dynamically from the connected structural members.
+
+====================================================
+PART 1 — ROTATIONAL RESTRAINT ENGINE
+====================================================
+
+Implement a dedicated rotational restraint system.
+
+Create:
+
+class RotationalRestraint
+class JointRotationalBehavior
+class FrameContinuitySolver
+class JointStiffnessResolver
+
+The rotational behavior of a joint must depend on:
+- connected member stiffness
+- member orientation
+- member length
+- section inertia
+- frame continuity
+- number of connected members
+- exterior/interior joint condition
+
+====================================================
+PART 2 — RELATIVE STIFFNESS CALCULATION
+====================================================
+
+Implement stiffness-based rotational restraint logic.
+
+Use relative rotational stiffness concepts:
+
+K ∝ EI/L
+
+For each connected member:
+- calculate rotational stiffness contribution
+- resolve combined joint rotational restraint
+
+A weak exterior column connected to a stiff beam must:
+- rotate more
+- provide lower end restraint
+- generate smaller negative beam moments
+
+An interior column with beams on multiple sides must:
+- provide higher rotational restraint
+- generate larger negative beam moments
+
+====================================================
+PART 3 — EXTERIOR COLUMN BEHAVIOR
+====================================================
+
+Implement special handling for:
+- edge columns
+- corner columns
+- discontinuous framing
+
+The system must recognize when:
+- restraint exists from one side only
+- rotational continuity is reduced
+- frame participation is asymmetric
+
+The engine must naturally reduce beam end fixity in these cases.
+
+DO NOT hardcode:
+"edge column = pinned"
+
+Instead:
+derive behavior from stiffness participation.
+
+====================================================
+PART 4 — JOINT ROTATION COMPATIBILITY
+====================================================
+
+Implement rotational compatibility between connected members.
+
+Requirements:
+- beam and column rotations must interact
+- joint rotation must be shared structurally
+- moments must redistribute naturally
+
+The joint must behave as:
+- continuous
+- deformable
+- stiffness-dependent
+
+NOT:
+perfectly rigid.
+
+====================================================
+PART 5 — MOMENT REDISTRIBUTION
+====================================================
+
+Implement realistic moment redistribution.
+
+The analysis engine must naturally redistribute:
+- beam negative moments
+- beam positive moments
+- column moments
+
+based on:
+- frame stiffness
+- continuity
+- rotational restraint
+
+Expected behavior:
+- reduced end moments at weak exterior joints
+- increased span moments when restraint decreases
+- realistic frame-action response
+
+====================================================
+PART 6 — RIGID JOINT REGION
+====================================================
+
+Implement rigid joint region behavior.
+
+The connection region itself should:
+- preserve force transfer
+- preserve continuity
+- avoid unrealistic local flexibility
+
+However:
+the entire joint must NOT behave as infinitely fixed.
+
+Distinguish between:
+- rigid force-transfer region
+- global rotational restraint behavior
+
+These are NOT the same thing.
+
+====================================================
+PART 7 — CONNECTIVITY INTEGRATION
+====================================================
+
+Integrate the rotational restraint system with:
+- analytical joints
+- connectivity graph
+- beam-column topology
+
+Joint behavior must depend on:
+- actual structural connectivity
+- connected member participation
+- global frame behavior
+
+====================================================
+PART 8 — STRUCTURAL STABILITY
+====================================================
+
+Prevent:
+- artificial over-fixity
+- unrealistic column moments
+- unstable moment oscillation
+- disconnected rotational states
+
+Ensure:
+- stable force transfer
+- stable frame equilibrium
+- realistic rotational behavior
+
+====================================================
+PART 9 — VALIDATION TESTS
+====================================================
+
+Create automated validation cases:
+
+1. Beam connected to exterior column
+2. Beam connected to interior column
+3. Corner column behavior
+4. Weak column / strong beam
+5. Strong column / weak beam
+6. Multi-story frame interaction
+7. Asymmetric framing
+8. Multiple beams framing into one column
+
+Verify:
+- exterior joints produce lower negative moments
+- interior joints produce higher restraint
+- moment redistribution behaves realistically
+- beam span moments increase when end restraint decreases
+- frame continuity remains stable
+
+====================================================
+PART 10 — DEBUG VISUALIZATION
+====================================================
+
+Add debugging visualization tools for:
+- joint rotational stiffness
+- restraint level
+- moment redistribution
+- joint rotation magnitude
+- effective fixity behavior
+
+Allow developers to inspect:
+- how each joint behaves
+- why moments are redistributed
+- how stiffness contributions are calculated
+
+====================================================
+IMPORTANT ENGINEERING RULES
+====================================================
+
+DO NOT:
+- treat all beam-column joints as fully fixed
+- hardcode edge columns as pinned
+- use artificial moment reduction factors
+- fake semi-rigid behavior
+
+DO:
+- derive restraint from stiffness interaction
+- implement rotational compatibility
+- implement realistic frame continuity
+- allow joints to rotate according to member stiffness
+- reproduce ETABS-style frame behavior
+
+====================================================
+FINAL OBJECTIVE
+====================================================
+
+After implementation:
+
+- exterior beam-column joints should naturally develop smaller end moments
+- interior joints should develop stronger restraint
+- moment distribution should resemble ETABS
+- frame behavior should emerge from stiffness interaction
+
+WITHOUT:
+- manual releases
+- fake springs
+- arbitrary reduction factors
+
+The final behavior must look and behave like a professional structural frame-analysis engine.

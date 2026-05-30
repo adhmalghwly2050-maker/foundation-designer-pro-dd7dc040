@@ -1,14 +1,5 @@
 import { buildSlabEdgeLoads, computeBeamLoadProfile } from './slabLoadTransfer';
 import { buildVoronoiBeamLoads, getSlabPolygon } from './voronoiSlabLoad';
-import {
-  resolveJointStiffnessForFrame,
-  runJointValidationTests,
-  type JointDebugInfo,
-  type ValidationTestResult,
-} from '../core/joints/rotationalRestraint';
-
-export type { JointDebugInfo, ValidationTestResult };
-export { runJointValidationTests };
 
 // ===================== TYPES =====================
 export interface Story {
@@ -1205,45 +1196,33 @@ export function analyzeFrame(
     if (col && !isRemovedCol) {
       const Ec = 4700 * Math.sqrt(mat.fc) * 1000;
 
-      // ── ROTATIONAL RESTRAINT ENGINE ────────────────────────────────────────
-      // Replaces the former hardcoded C=4/3 column stiffness block.
-      // Joint fixity now emerges from RELATIVE member stiffness, not flags:
-      //   K = C × Ec × I_eff / L  where C is derived from structural context
-      //   + torsional contribution from perpendicular beams (GJ/L per beam)
-      //
-      // This produces ETABS-like behavior:
-      //   • Exterior column → smaller negative moments (lower restraint)
-      //   • Interior column → larger negative moments (higher restraint)
-      //   • Columns with perpendicular beams → additional torsional locking
+      // ── DIRECT COLUMN STIFFNESS (C × EI / L) ──────────────────────────────
+      // Column rotational stiffness at the joint is calculated directly from
+      // the standard moment-distribution formula without any reduction based
+      // on joint type or relative member stiffness.
+      //   K = C × Ec × colFactor × I / L
+      //   C = 4  (far end fixed, e.g. foundation or continuous upper story)
+      //   C = 3  (far end pinned)
       // ──────────────────────────────────────────────────────────────────────
 
-      // Find beams in the PERPENDICULAR direction that frame into this column.
-      // These contribute torsional rotational restraint to the joint.
-      const perpDir = frame.direction === 'horizontal' ? 'vertical' : 'horizontal';
-      const perpBeamsAtCol: Beam[] = [];
-      if (allBeams) {
-        for (const [, beam] of allBeams) {
-          if (beam.direction !== perpDir) continue;
-          if (beam.fromCol === colId || beam.toCol === colId) {
-            perpBeamsAtCol.push(beam);
-          }
-        }
+      // Column below (story below the joint)
+      const Lc_below = col.L / 1000; // m
+      if (Lc_below > 1e-6) {
+        const bm = col.b / 1000;
+        const hm = col.h / 1000;
+        const Ic_below = bm * Math.pow(hm, 3) / 12;
+        const C_below = col.bottomEndCondition === 'P' ? 3 : 4;
+        colStiffnessBelow = C_below * Ec * colStiffnessFactor * Ic_below / Lc_below;
       }
 
-      const isExteriorNode = (i === 0 || i === n);
-      const { colStiffnessBelow: resolvedBelow, colStiffnessAbove: resolvedAbove } =
-        resolveJointStiffnessForFrame(
-          col,
-          frame.direction,
-          Ec,
-          colStiffnessFactor,
-          beamStiffnessFactor,
-          perpBeamsAtCol,
-          isExteriorNode,
-        );
-
-      colStiffnessBelow = resolvedBelow;
-      colStiffnessAbove = resolvedAbove;
+      // Column above (story above the joint)
+      const Lc_above = (col.LBelow ?? 0) / 1000; // m
+      if (Lc_above > 1e-6) {
+        const bA = (col.bBelow ?? col.b) / 1000;
+        const hA = (col.hBelow ?? col.h) / 1000;
+        const Ic_above = bA * Math.pow(hA, 3) / 12;
+        colStiffnessAbove = 4 * Ec * colStiffnessFactor * Ic_above / Lc_above;
+      }
     }
 
     const x = i === 0 ? 0 : nodes[i - 1].x + frameBeams[i - 1].length;
