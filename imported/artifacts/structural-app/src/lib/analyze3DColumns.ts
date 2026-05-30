@@ -14,7 +14,6 @@ import { computeFEMSlabProfiles } from '@/lib/femLoadBridge';
 import { buildSlabEdgeLoads, computeBeamLoadProfile } from '@/lib/slabLoadTransfer';
 import { buildVoronoiBeamLoads } from '@/lib/voronoiSlabLoad';
 import { GlobalNodeRegistry } from '@/lib/globalFrameSolver';
-import { getEndpointColumnHalfWidth, sampleBeamEndMomentsAtPhysicalFaces } from '@/lib/beamMomentPostprocess';
 
 export interface ColumnLoads3D {
   Pu: number;
@@ -1084,7 +1083,6 @@ export function getFrameResults3D(
   manualJointOverrides?: ManualJointOverride[],
 ): FrameResult[] {
   const beamsMap = new Map(beams.map(b => [b.id, b]));
-  const ENDPOINT_COLUMN_TOL = 0.05; // m
   const { beamEnvelope, primaryBeamSplitIds } = runPatternEnvelope3D(
     frames, beams, columns, mat, frameEndReleases, beamOnBeamConnections,
     slabs, slabProps, useFEMLoadDistribution, beamStiffnessFactor, colStiffnessFactor,
@@ -1109,22 +1107,12 @@ export function getFrameResults3D(
     }
   }
 
-  const resolveEndpointColumnHalfWidth = (x: number, y: number, isHoriz: boolean) =>
-    getEndpointColumnHalfWidth(columns, x, y, isHoriz, ENDPOINT_COLUMN_TOL);
-
   return frames.map((frame): FrameResult => {
     const frameBeams: FrameResult['beams'] = [];
 
     for (const beamId of frame.beamIds) {
       const beam = beamsMap.get(beamId);
       if (!beam) continue;
-
-      // Compute half-column widths from actual endpoint geometry instead of
-      // from beam metadata, so manually split continuous beams are treated as
-      // continuity joints unless a real column exists at that endpoint.
-      const isHoriz = Math.abs(beam.x2 - beam.x1) >= Math.abs(beam.y2 - beam.y1);
-       const halfColLeft  = resolveEndpointColumnHalfWidth(beam.x1, beam.y1, isHoriz);
-       const halfColRight = resolveEndpointColumnHalfWidth(beam.x2, beam.y2, isHoriz);
 
       // Check whether this beam was split into _A/_B sub-elements
       const envA = beamEnvelope.get(`beam_${beamId}_A`);
@@ -1180,31 +1168,21 @@ export function getFrameResults3D(
         }
       }
 
-      // ── Keep centre-to-centre span, but evaluate end moments at faces ─────
-      // beam.length is stored in mm; halfColLeft/Right are in metres.
-      // Convert span to metres so the station-interpolation index is correct.
+      // ── Use raw end moments directly from the 3D analysis engine ──────────
+      // No face-of-column sampling or positive-moment zeroing — moments are
+      // used exactly as the solver produces them.
       const Mmid_cc = finalEnv?.momentZmid ?? 0;
-       const trimmed = sampleBeamEndMomentsAtPhysicalFaces({
-         span: beam.length / 1000,
-         stations,
-         momentLeft: Mleft,
-         momentRight: Mright,
-         halfColLeft,
-         halfColRight,
-          releaseLeft: rel?.relI_mz ?? false,
-          releaseRight: rel?.relJ_mz ?? false,
-       });
 
       frameBeams.push({
         beamId,
-         span: beam.length,
-        Mleft:  trimmed.Mleft,
-         Mmid:   Mmid_cc,
-        Mright: trimmed.Mright,
-        Vu:     finalEnv?.shearYMax  ?? 0,
-        Rleft:  finalEnv ? Math.abs(finalEnv.shearYI) : 0,
+        span: beam.length,
+        Mleft,
+        Mmid:  Mmid_cc,
+        Mright,
+        Vu:    finalEnv?.shearYMax  ?? 0,
+        Rleft: finalEnv ? Math.abs(finalEnv.shearYI) : 0,
         Rright: finalEnv ? Math.abs(finalEnv.shearYJ) : 0,
-        momentStations: trimmed.stations,
+        momentStations: stations,
       });
     }
 
